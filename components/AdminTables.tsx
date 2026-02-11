@@ -123,8 +123,8 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
       </div>
 
       {showPrintModal && (
-        <div className="fixed inset-0 z-[100] bg-gray-900/95 backdrop-blur-sm flex items-center justify-center p-6 overflow-y-auto">
-          <div className="bg-white w-full max-w-4xl rounded-[32px] p-8 lg:p-10 space-y-10 border border-gray-200">
+        <div className="fixed left-0 top-0 z-[9999] w-screen h-screen bg-gray-900/95 backdrop-blur-sm flex items-center justify-center p-4 lg:p-6 overflow-y-auto">
+          <div className="bg-white w-[min(96vw,1220px)] max-h-[calc(100vh-2rem)] rounded-[32px] p-8 lg:p-10 space-y-10 border border-gray-200 overflow-auto">
             <div className="flex justify-between items-center border-b border-gray-100 pb-6">
               <div>
                 <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900 italic">Preview das Etiquetas</h3>
@@ -138,8 +138,8 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
               </button>
             </div>
 
-            <div className="grid lg:grid-cols-12 gap-10">
-              <div className="lg:col-span-4 space-y-6">
+            <div className="grid xl:grid-cols-12 gap-10">
+              <div className="xl:col-span-4 space-y-6">
                 <div className="bg-gray-50 p-6 rounded-2xl border border-gray-100 space-y-5">
                   <h4 className="text-[8px] font-black uppercase text-gray-400 tracking-[0.2em]">DADOS DO WI-FI</h4>
                   <div className="space-y-3">
@@ -155,8 +155,9 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
                 </button>
               </div>
 
-              <div className="lg:col-span-8 flex flex-col items-center">
-                <div id="print-area" className="grid grid-cols-2 gap-0 border border-dashed border-gray-200 bg-white shadow-inner">
+              <div className="xl:col-span-8 flex flex-col items-center">
+                <div className="w-full overflow-auto">
+                <div id="print-area" className="grid grid-cols-2 gap-0 border border-dashed border-gray-200 bg-white shadow-inner min-w-max">
                   {(selectedTable ? [selectedTable] : tables.slice(0, 6)).map(table => (
                     <div key={table.id} className="qr-card-container">
                       <div className="qr-card" style={{ backgroundColor: stickerTheme.bg, borderColor: stickerTheme.border }}>
@@ -201,6 +202,7 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
                       </div>
                     </div>
                   ))}
+                </div>
                 </div>
               </div>
             </div>
