@@ -37,8 +37,17 @@ export interface Product {
   description: string;
   price_cents: number;
   image_url: string;
+  addon_selection_mode: 'SINGLE' | 'MULTIPLE';
   active: boolean;
   out_of_stock: boolean;
+}
+
+export interface ProductAddon {
+  id: string;
+  product_id: string;
+  name: string;
+  price_cents: number;
+  active: boolean;
 }
 
 export interface Table {
@@ -72,6 +81,9 @@ export interface CartItem {
   note?: string;
   product?: Product;
   guest_name?: string;
+  addon_ids?: string[];
+  addon_names?: string[];
+  addon_total_cents?: number;
 }
 
 export interface Order {

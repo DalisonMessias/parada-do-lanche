@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { supabase, formatCurrency } from './services/supabase';
-import { AppView, Table, Session, Guest, CartItem, Category, Product, Order, OrderStatus, StoreSettings, Profile, UserRole } from './types';
+import { AppView, Table, Session, Guest, CartItem, Category, Product, ProductAddon, StoreSettings, Profile, UserRole } from './types';
 import Layout from './components/Layout';
 import AdminOrders from './components/AdminOrders';
 import AdminTables from './components/AdminTables';
@@ -11,6 +11,7 @@ import AdminStaff from './components/AdminStaff';
 
 const App: React.FC = () => {
   const adminAccessKey = ((import.meta as any).env?.VITE_ADMIN_ACCESS_KEY || '').trim();
+  const tempRegisterEnabled = ((import.meta as any).env?.VITE_ENABLE_TEMP_REGISTER || '').trim().toLowerCase() === 'true';
   const adminHash = adminAccessKey ? `/admin/${adminAccessKey}` : '/admin';
   const [view, setView] = useState<AppView>('LANDING');
   const [activeTable, setActiveTable] = useState<Table | null>(null);
@@ -19,13 +20,18 @@ const App: React.FC = () => {
   const [cart, setCart] = useState<CartItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [addons, setAddons] = useState<ProductAddon[]>([]);
   const [settings, setSettings] = useState<StoreSettings | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [showCart, setShowCart] = useState(false);
+  const [showAddonSelector, setShowAddonSelector] = useState(false);
+  const [pendingProduct, setPendingProduct] = useState<Product | null>(null);
+  const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>([]);
   const [tempRegisterStatus, setTempRegisterStatus] = useState('');
   const [adminTab, setAdminTab] = useState<'ORDERS' | 'TABLES' | 'MENU' | 'SETTINGS' | 'STAFF'>('ORDERS');
   const [isLoading, setIsLoading] = useState(false);
+  const [adminEmail, setAdminEmail] = useState('');
   const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
@@ -33,11 +39,14 @@ const App: React.FC = () => {
       setUser(session?.user ?? null);
       if (session?.user) fetchProfile(session.user.id);
     });
-    supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
       if (session?.user) fetchProfile(session.user.id);
       else setProfile(null);
     });
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
   }, []);
 
   const fetchProfile = async (userId: string) => {
@@ -71,7 +80,7 @@ const App: React.FC = () => {
           setView('CUSTOMER_MENU');
         }
       } else if (hash === '#/cadastro-temp') {
-        setView('TEMP_REGISTER');
+        setView(tempRegisterEnabled ? 'TEMP_REGISTER' : 'LANDING');
       } else if (hash.startsWith('#/admin')) {
         const clean = hash.replace(/^#\//, '');
         const [, providedKey = ''] = clean.split('/');
@@ -93,8 +102,10 @@ const App: React.FC = () => {
     const fetchMenu = async () => {
       const { data: cats } = await supabase.from('categories').select('*').eq('active', true).order('sort_order');
       const { data: prods } = await supabase.from('products').select('*').eq('active', true);
+      const { data: addns } = await supabase.from('product_addons').select('*').eq('active', true);
       if (cats) setCategories(cats);
       if (prods) setProducts(prods);
+      if (addns) setAddons(addns);
     };
     fetchMenu();
   }, []);
@@ -103,7 +114,21 @@ const App: React.FC = () => {
     if (!session) return;
     const fetchCart = async () => {
       const { data } = await supabase.from('cart_items').select('*, product:products(*), guest:session_guests(name)').eq('session_id', session.id);
-      if (data) setCart(data.map(item => ({ ...item, guest_name: (item as any).guest?.name })));
+      if (data) {
+        setCart(data.map(item => {
+          let parsed: any = {};
+          if (item.note) {
+            try { parsed = JSON.parse(item.note); } catch { parsed = {}; }
+          }
+          return {
+            ...item,
+            guest_name: (item as any).guest?.name,
+            addon_ids: Array.isArray(parsed?.addon_ids) ? parsed.addon_ids : [],
+            addon_names: Array.isArray(parsed?.addon_names) ? parsed.addon_names : [],
+            addon_total_cents: Number(parsed?.addon_total_cents || 0),
+          } as CartItem;
+        }));
+      }
     };
     fetchCart();
     const channel = supabase.channel(`cart:${session.id}`)
@@ -131,7 +156,7 @@ const App: React.FC = () => {
 
   const handleUpdateCart = async (productId: string, delta: number) => {
     if (!session || !guest) return;
-    const existing = cart.find(i => i.product_id === productId && i.guest_id === guest.id);
+    const existing = cart.find(i => i.product_id === productId && i.guest_id === guest.id && !i.note);
     if (existing) {
       const newQty = existing.qty + delta;
       if (newQty <= 0) await supabase.from('cart_items').delete().eq('id', existing.id);
@@ -141,9 +166,60 @@ const App: React.FC = () => {
     }
   };
 
+  const getProductAddons = (productId: string) => addons.filter(a => a.product_id === productId);
+
+  const openAddonSelector = (product: Product) => {
+    setPendingProduct(product);
+    setSelectedAddonIds([]);
+    setShowAddonSelector(true);
+  };
+
+  const toggleAddon = (product: Product, addonId: string) => {
+    const mode = product.addon_selection_mode || 'MULTIPLE';
+    if (mode === 'SINGLE') {
+      setSelectedAddonIds((prev) => (prev[0] === addonId ? [] : [addonId]));
+      return;
+    }
+    setSelectedAddonIds((prev) => prev.includes(addonId) ? prev.filter(id => id !== addonId) : [...prev, addonId]);
+  };
+
+  const getCartItemUnitPrice = (item: CartItem) => (item.product?.price_cents || 0) + (item.addon_total_cents || 0);
+
+  const getCartTotal = () => cart.reduce((acc, item) => acc + getCartItemUnitPrice(item) * item.qty, 0);
+
+  const handleAddProductWithAddons = async (product: Product, addonIdsRaw: string[]) => {
+    if (!session || !guest) return;
+    const addonIds = [...addonIdsRaw].sort();
+    const selectedAddons = getProductAddons(product.id).filter(a => addonIds.includes(a.id));
+    const addonTotal = selectedAddons.reduce((acc, a) => acc + a.price_cents, 0);
+    const payload = {
+      addon_ids: addonIds,
+      addon_names: selectedAddons.map(a => a.name),
+      addon_total_cents: addonTotal,
+    };
+    const note = JSON.stringify(payload);
+
+    const existing = cart.find(i =>
+      i.product_id === product.id &&
+      i.guest_id === guest.id &&
+      (i.note || '') === note
+    );
+
+    if (existing) {
+      await supabase.from('cart_items').update({ qty: existing.qty + 1 }).eq('id', existing.id);
+    } else {
+      await supabase.from('cart_items').insert({
+        session_id: session.id,
+        guest_id: guest.id,
+        product_id: product.id,
+        qty: 1,
+        note,
+      });
+    }
+  };
+
   const handleResetPassword = async () => {
-    const emailInput = document.getElementsByName('email')[0] as HTMLInputElement;
-    const email = emailInput?.value;
+    const email = adminEmail.trim().toLowerCase();
     if (!email) {
       alert("Por favor, insira seu e-mail corporativo no campo acima antes de clicar em recuperar senha.");
       return;
@@ -352,13 +428,22 @@ const App: React.FC = () => {
               setIsLoading(true);
               const email = (e.currentTarget.elements.namedItem('email') as HTMLInputElement).value;
               const password = (e.currentTarget.elements.namedItem('password') as HTMLInputElement).value;
+              setAdminEmail(email);
               const { error } = await supabase.auth.signInWithPassword({ email, password });
               setIsLoading(false);
               if (error) alert(error.message);
             }} className="space-y-6">
               <div className="space-y-2">
                  <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">E-MAIL CORPORATIVO</label>
-                 <input name="email" type="email" placeholder="usuario@empresa.com" required className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary transition-all font-bold placeholder:text-gray-200" />
+                 <input
+                   name="email"
+                   type="email"
+                   value={adminEmail}
+                   onChange={(e) => setAdminEmail(e.target.value)}
+                   placeholder="usuario@empresa.com"
+                   required
+                   className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary transition-all font-bold placeholder:text-gray-200"
+                 />
               </div>
               <div className="space-y-2">
                  <div className="flex justify-between items-center px-1">
@@ -377,9 +462,11 @@ const App: React.FC = () => {
 
             <div className="text-center">
                <button onClick={() => window.location.hash = '/'} className="text-[9px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Voltar para o Cardápio</button>
-               <div className="mt-3">
-                 <button onClick={() => window.location.hash = '/cadastro-temp'} className="text-[9px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Cadastro Temporario</button>
-               </div>
+               {tempRegisterEnabled && (
+                 <div className="mt-3">
+                   <button onClick={() => window.location.hash = '/cadastro-temp'} className="text-[9px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Cadastro Temporario</button>
+                 </div>
+               )}
             </div>
           </div>
         </div>
@@ -504,7 +591,8 @@ const App: React.FC = () => {
                 </div>
                 <div className="grid gap-5">
                   {products.filter(p => p.category_id === cat.id).map(p => {
-                    const inCart = cart.find(i => i.product_id === p.id && i.guest_id === guest.id);
+                    const inCartQty = cart.filter(i => i.product_id === p.id && i.guest_id === guest.id).reduce((acc, i) => acc + i.qty, 0);
+                    const hasAddons = getProductAddons(p.id).length > 0;
                     return (
                       <div key={p.id} className="flex bg-white rounded-2xl p-3 gap-4 border border-gray-100 relative group transition-all">
                         <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover bg-gray-50 border border-gray-50" />
@@ -517,10 +605,17 @@ const App: React.FC = () => {
                             <span className="font-black text-primary text-lg tracking-tighter">{formatCurrency(p.price_cents)}</span>
                             {session?.status === 'OPEN' && (
                               <div className="flex items-center gap-2">
-                                {inCart ? (
+                                {hasAddons ? (
+                                  <>
+                                    <button onClick={() => openAddonSelector(p)} className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest transition-transform active:scale-95">
+                                      Adicionar
+                                    </button>
+                                    {inCartQty > 0 && <span className="text-[10px] font-black text-primary">{inCartQty} no carrinho</span>}
+                                  </>
+                                ) : inCartQty > 0 ? (
                                   <div className="flex items-center gap-3 bg-gray-50 border border-gray-100 rounded-lg p-1 px-2.5">
                                     <button onClick={() => handleUpdateCart(p.id, -1)} className="text-lg font-black text-gray-300">-</button>
-                                    <span className="text-xs font-black w-3 text-center text-gray-900">{inCart.qty}</span>
+                                    <span className="text-xs font-black w-3 text-center text-gray-900">{inCartQty}</span>
                                     <button onClick={() => handleUpdateCart(p.id, 1)} className="text-lg font-black text-primary">+</button>
                                   </div>
                                 ) : (
@@ -551,9 +646,58 @@ const App: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex flex-col items-end">
-                   <span className="font-black text-primary text-lg tracking-tighter leading-none italic">{formatCurrency(cart.reduce((a, b) => a + (b.product?.price_cents || 0) * b.qty, 0))}</span>
+                   <span className="font-black text-primary text-lg tracking-tighter leading-none italic">{formatCurrency(getCartTotal())}</span>
                 </div>
               </button>
+            </div>
+          )}
+
+          {showAddonSelector && pendingProduct && (
+            <div className="fixed inset-0 z-[90] bg-gray-900/70 backdrop-blur-sm flex items-end">
+              <div className="bg-white w-full rounded-t-[28px] max-h-[85vh] overflow-y-auto p-6 space-y-6 border-t border-gray-100">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">{pendingProduct.name}</h3>
+                    <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mt-1">
+                      {pendingProduct.addon_selection_mode === 'SINGLE' ? 'Escolha apenas 1 adicional' : 'Escolha um ou mais adicionais'}
+                    </p>
+                  </div>
+                  <button onClick={() => { setShowAddonSelector(false); setPendingProduct(null); setSelectedAddonIds([]); }} className="text-gray-400 font-black">Fechar</button>
+                </div>
+
+                <div className="space-y-2">
+                  {getProductAddons(pendingProduct.id).length === 0 && (
+                    <p className="text-sm text-gray-400 font-bold">Sem adicionais para este produto.</p>
+                  )}
+                  {getProductAddons(pendingProduct.id).map((addon) => {
+                    const selected = selectedAddonIds.includes(addon.id);
+                    return (
+                      <button
+                        key={addon.id}
+                        type="button"
+                        onClick={() => toggleAddon(pendingProduct, addon.id)}
+                        className={`w-full flex items-center justify-between rounded-xl border p-3 ${selected ? 'border-primary bg-orange-50' : 'border-gray-200 bg-white'}`}
+                      >
+                        <span className="font-black text-sm text-gray-800">{addon.name}</span>
+                        <span className="font-black text-sm text-primary">+ {formatCurrency(addon.price_cents)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await handleAddProductWithAddons(pendingProduct, selectedAddonIds);
+                    setShowAddonSelector(false);
+                    setPendingProduct(null);
+                    setSelectedAddonIds([]);
+                  }}
+                  className="w-full bg-gray-900 text-white py-4 rounded-xl font-black uppercase tracking-widest text-[11px]"
+                >
+                  Adicionar ao Carrinho
+                </button>
+              </div>
             </div>
           )}
 
@@ -579,26 +723,39 @@ const App: React.FC = () => {
                           <p className="text-[8px] text-gray-400 uppercase font-black tracking-widest mt-1.5 flex items-center gap-1.5 italic opacity-70">
                              Por {item.guest_name}
                           </p>
+                          {(item.addon_names?.length || 0) > 0 && (
+                            <p className="text-[8px] text-primary uppercase font-black tracking-widest mt-1">
+                              + {item.addon_names?.join(', ')}
+                            </p>
+                          )}
                         </div>
                       </div>
-                      <span className="font-black text-gray-900 text-base tracking-tighter italic">{formatCurrency((item.product?.price_cents || 0) * item.qty)}</span>
+                      <span className="font-black text-gray-900 text-base tracking-tighter italic">{formatCurrency(getCartItemUnitPrice(item) * item.qty)}</span>
                     </div>
                   ))}
                 </div>
                 <div className="pt-6 border-t-2 border-gray-50 space-y-6">
                   <div className="flex justify-between items-baseline font-black">
                     <span className="text-gray-400 text-[8px] uppercase tracking-[0.3em] font-black italic">Total da Mesa</span>
-                    <span className="text-primary text-3xl tracking-tighter italic">{formatCurrency(cart.reduce((a, b) => a + (b.product?.price_cents || 0) * b.qty, 0))}</span>
+                    <span className="text-primary text-3xl tracking-tighter italic">{formatCurrency(getCartTotal())}</span>
                   </div>
                   
                   {guest.is_host ? (
                     <button 
                       onClick={async () => {
                         setIsLoading(true);
-                        const total = cart.reduce((a, b) => a + (b.product?.price_cents || 0) * b.qty, 0);
+                        const total = getCartTotal();
                         const { data: order } = await supabase.from('orders').insert({ table_id: session.table_id, session_id: session.id, status: 'PENDING', total_cents: total }).select().single();
                         if (order) {
-                          const items = cart.map(i => ({ order_id: order.id, product_id: i.product_id, name_snapshot: i.product?.name, unit_price_cents: i.product?.price_cents, qty: i.qty, added_by_name: i.guest_name }));
+                          const items = cart.map(i => ({
+                            order_id: order.id,
+                            product_id: i.product_id,
+                            name_snapshot: i.product?.name,
+                            unit_price_cents: getCartItemUnitPrice(i),
+                            qty: i.qty,
+                            note: (i.addon_names?.length || 0) > 0 ? `Adicionais: ${i.addon_names?.join(', ')}` : null,
+                            added_by_name: i.guest_name,
+                          }));
                           await supabase.from('order_items').insert(items);
                           await supabase.from('sessions').update({ status: 'LOCKED' }).eq('id', session.id);
                           setShowCart(false);

@@ -19,7 +19,7 @@ drop policy if exists "assets_insert_public" on storage.objects;
 create policy "assets_insert_public"
 on storage.objects
 for insert
-to public
+to authenticated
 with check (bucket_id = 'assets');
 
 -- Permissoes para atualizar arquivos no bucket assets
@@ -27,7 +27,7 @@ drop policy if exists "assets_update_public" on storage.objects;
 create policy "assets_update_public"
 on storage.objects
 for update
-to public
+to authenticated
 using (bucket_id = 'assets')
 with check (bucket_id = 'assets');
 
@@ -36,6 +36,5 @@ drop policy if exists "assets_delete_public" on storage.objects;
 create policy "assets_delete_public"
 on storage.objects
 for delete
-to public
+to authenticated
 using (bucket_id = 'assets');
-

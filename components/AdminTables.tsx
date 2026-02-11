@@ -35,9 +35,17 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
   }, [showPrintModal, settings?.wifi_ssid, settings?.wifi_password]);
 
   const handleCreateMesa = async () => {
-    const num = tables.length + 1;
+    const usedNumbers = tables
+      .map((t) => Number((t.name.match(/\d+/)?.[0] || '0')))
+      .filter((n) => n > 0)
+      .sort((a, b) => a - b);
+    let num = 1;
+    for (const n of usedNumbers) {
+      if (n === num) num += 1;
+      else if (n > num) break;
+    }
     const name = `Mesa ${num.toString().padStart(2, '0')}`;
-    const token = Math.random().toString(36).substring(2, 15);
+    const token = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(/-/g, '').slice(0, 20);
     const { error } = await supabase.from('tables').insert({ name, token });
     if (error) {
       alert("Erro ao criar mesa: " + error.message);
