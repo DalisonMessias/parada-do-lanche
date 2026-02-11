@@ -54,6 +54,8 @@ const AdminMenu: React.FC = () => {
   const [productImageName, setProductImageName] = useState('');
   const [saveAndOpenAddons, setSaveAndOpenAddons] = useState(false);
   const [productAddonDrafts, setProductAddonDrafts] = useState<AddonDraft[]>([emptyAddonDraft()]);
+  const [quickAddonName, setQuickAddonName] = useState('');
+  const [quickAddonPriceInput, setQuickAddonPriceInput] = useState('0,00');
 
   const addonsByProduct = useMemo(() => {
     const map = new Map<string, ProductAddon[]>();
@@ -127,6 +129,12 @@ const AdminMenu: React.FC = () => {
       setActiveTab('ALL');
     }
   }, [activeTab, categories]);
+
+  useEffect(() => {
+    if (!showAddonsModal) return;
+    setQuickAddonName('');
+    setQuickAddonPriceInput('0,00');
+  }, [showAddonsModal, selectedProduct?.id]);
 
   const openCreateCategory = () => {
     setEditingCategory(null);
@@ -349,6 +357,32 @@ const AdminMenu: React.FC = () => {
       toast('Adicional removido.', 'success');
       fetchData();
     }
+  };
+
+  const handleCreateAddonFromModal = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!selectedProduct) return;
+    const name = quickAddonName.trim();
+    if (!name) return;
+
+    setLoading(true);
+    const { error } = await supabase.from('product_addons').insert({
+      product_id: selectedProduct.id,
+      name,
+      price_cents: inputToCents(quickAddonPriceInput),
+      active: true,
+    });
+    setLoading(false);
+
+    if (error) {
+      toast(`Erro ao criar adicional: ${error.message}`, 'error');
+      return;
+    }
+
+    setQuickAddonName('');
+    setQuickAddonPriceInput('0,00');
+    toast('Adicional criado.', 'success');
+    fetchData();
   };
 
   return (
@@ -578,6 +612,33 @@ const AdminMenu: React.FC = () => {
               </div>
               <button onClick={() => setShowAddonsModal(false)} className="text-gray-400 font-black">Fechar</button>
             </div>
+
+            <form onSubmit={handleCreateAddonFromModal} className="grid grid-cols-12 gap-2 border border-gray-100 rounded-xl p-3">
+              <input
+                value={quickAddonName}
+                onChange={(e) => setQuickAddonName(e.target.value)}
+                placeholder="Nome do adicional"
+                required
+                className="col-span-6 p-3 bg-white border border-gray-200 rounded-lg font-black outline-none focus:border-primary"
+              />
+              <div className="col-span-4 relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-black text-xs">R$</span>
+                <input
+                  value={quickAddonPriceInput}
+                  onChange={(e) => setQuickAddonPriceInput(applyCurrencyMask(e.target.value))}
+                  inputMode="numeric"
+                  placeholder="0,00"
+                  className="w-full pl-10 p-3 bg-white border border-gray-200 rounded-lg font-black outline-none focus:border-primary"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="col-span-2 rounded-lg bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest"
+              >
+                Adicionar
+              </button>
+            </form>
 
             <div className="space-y-2 max-h-[45vh] overflow-y-auto pr-1">
               {(addonsByProduct.get(selectedProduct.id) || []).length === 0 && (
