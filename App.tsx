@@ -236,6 +236,9 @@ const App: React.FC = () => {
               const password = (form.elements.namedItem('password') as HTMLInputElement).value;
               const role = (form.elements.namedItem('role') as HTMLSelectElement).value as UserRole;
 
+              // Evita conflito de estado caso ja exista sessao ativa no navegador.
+              await supabase.auth.signOut();
+
               const { data, error } = await supabase.auth.signUp({
                 email,
                 password,
@@ -245,9 +248,14 @@ const App: React.FC = () => {
               if (error) {
                 const msg = error.message || '';
                 if (msg.includes('users_email_partial_key') || msg.toLowerCase().includes('already registered')) {
-                  setTempRegisterStatus('Esse e-mail ja existe no auth.users. Use outro e-mail ou redefina a senha do usuario existente.');
+                  const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+                  if (!signInError) {
+                    setTempRegisterStatus(`Esse e-mail ja existe no auth.users (${email}) e a senha informada esta correta. Use o login normal.`);
+                  } else {
+                    setTempRegisterStatus(`Esse e-mail ja existe no auth.users (${email}). Se nao lembra a senha, use redefinicao de senha.`);
+                  }
                 } else {
-                  setTempRegisterStatus(`Erro ao criar no auth.users: ${error.message}`);
+                  setTempRegisterStatus(`Erro ao criar no auth.users (${email}): ${error.message}`);
                 }
                 setIsLoading(false);
                 return;
