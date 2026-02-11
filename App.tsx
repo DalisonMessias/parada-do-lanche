@@ -1,7 +1,7 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { supabase, formatCurrency } from './services/supabase';
-import { AppView, Table, Session, Guest, CartItem, Category, Product, ProductAddon, StoreSettings, Profile, UserRole } from './types';
+import { AppView, Table, Session, Guest, CartItem, Category, Product, ProductAddon, StoreSettings, Profile, UserRole, Order, OrderStatus } from './types';
 import Layout from './components/Layout';
 import AdminOrders from './components/AdminOrders';
 import AdminTables from './components/AdminTables';
@@ -28,6 +28,7 @@ const App: React.FC = () => {
   const [showAddonSelector, setShowAddonSelector] = useState(false);
   const [pendingProduct, setPendingProduct] = useState<Product | null>(null);
   const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>([]);
+  const [sessionOrders, setSessionOrders] = useState<Order[]>([]);
   const [tempRegisterStatus, setTempRegisterStatus] = useState('');
   const [adminTab, setAdminTab] = useState<'ORDERS' | 'TABLES' | 'MENU' | 'SETTINGS' | 'STAFF'>('ORDERS');
   const [isLoading, setIsLoading] = useState(false);
@@ -137,6 +138,41 @@ const App: React.FC = () => {
     return () => { supabase.removeChannel(channel); };
   }, [session?.id]);
 
+  useEffect(() => {
+    if (!session?.id) {
+      setSessionOrders([]);
+      return;
+    }
+
+    const fetchSessionOrders = async () => {
+      const { data } = await supabase
+        .from('orders')
+        .select('*, items:order_items(*)')
+        .eq('session_id', session.id)
+        .order('created_at', { ascending: false });
+
+      if (data) {
+        setSessionOrders(
+          data.map((order) => ({
+            ...order,
+            items: (order as any).items || [],
+          }))
+        );
+      }
+    };
+
+    fetchSessionOrders();
+
+    const channel = supabase
+      .channel(`session_orders:${session.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `session_id=eq.${session.id}` }, fetchSessionOrders)
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [session?.id]);
+
   const handleOpenTable = async (name: string) => {
     if (!activeTable) return;
     setIsLoading(true);
@@ -186,6 +222,43 @@ const App: React.FC = () => {
   const getCartItemUnitPrice = (item: CartItem) => (item.product?.price_cents || 0) + (item.addon_total_cents || 0);
 
   const getCartTotal = () => cart.reduce((acc, item) => acc + getCartItemUnitPrice(item) * item.qty, 0);
+
+  const orderStatusLabel: Record<OrderStatus, string> = {
+    PENDING: 'Pendente',
+    PREPARING: 'Em preparo',
+    READY: 'Pronto',
+    FINISHED: 'Concluido',
+    CANCELLED: 'Cancelado',
+  };
+
+  const orderStatusClass: Record<OrderStatus, string> = {
+    PENDING: 'bg-amber-50 text-amber-700 border-amber-100',
+    PREPARING: 'bg-blue-50 text-blue-700 border-blue-100',
+    READY: 'bg-green-50 text-green-700 border-green-100',
+    FINISHED: 'bg-gray-100 text-gray-600 border-gray-200',
+    CANCELLED: 'bg-red-50 text-red-600 border-red-100',
+  };
+
+  const sessionActiveOrders = useMemo(
+    () => sessionOrders.filter((order) => order.status !== 'CANCELLED'),
+    [sessionOrders]
+  );
+
+  const sessionFinalTotal = useMemo(
+    () => sessionActiveOrders.reduce((acc, order) => acc + order.total_cents, 0),
+    [sessionActiveOrders]
+  );
+
+  const sessionTotalsByGuest = useMemo(() => {
+    const map = new Map<string, number>();
+    sessionActiveOrders.forEach((order) => {
+      (order.items || []).forEach((item) => {
+        const current = map.get(item.added_by_name) || 0;
+        map.set(item.added_by_name, current + item.qty * item.unit_price_cents);
+      });
+    });
+    return Array.from(map.entries()).map(([name, total]) => ({ name, total }));
+  }, [sessionActiveOrders]);
 
   const handleAddProductWithAddons = async (product: Product, addonIdsRaw: string[]) => {
     if (!session || !guest) return;
@@ -588,6 +661,62 @@ const App: React.FC = () => {
 
           <div className="p-4 space-y-8">
             {session?.status === 'LOCKED' && <div className="bg-gray-900 text-white p-4 rounded-xl text-center font-black text-[9px] uppercase tracking-[0.2em] italic animate-pulse">Pedido enviado para a cozinha!</div>}
+
+            {sessionOrders.length > 0 && (
+              <section className="bg-white border border-gray-100 rounded-2xl p-4 space-y-4">
+                <div>
+                  <h3 className="text-base font-black text-gray-900 uppercase tracking-tighter">Acompanhamento da Mesa</h3>
+                  <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest mt-1">
+                    Status dos pedidos enviados e resumo para fechamento
+                  </p>
+                </div>
+
+                <div className="space-y-3">
+                  {sessionOrders.map((order) => (
+                    <div key={order.id} className="border border-gray-100 rounded-xl p-3 space-y-2">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">
+                          Pedido #{order.id.slice(0, 6)}
+                        </span>
+                        <span className={`px-2.5 py-1 rounded-full text-[8px] font-black uppercase tracking-widest border ${orderStatusClass[order.status]}`}>
+                          {orderStatusLabel[order.status]}
+                        </span>
+                      </div>
+                      <div className="space-y-1">
+                        {(order.items || []).map((item, idx) => (
+                          <div key={`${order.id}-${idx}`} className="flex justify-between items-start text-sm">
+                            <div>
+                              <p className="font-black text-gray-800">{item.qty}x {item.name_snapshot}</p>
+                              <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest">
+                                {item.added_by_name}
+                              </p>
+                            </div>
+                            <span className="font-black text-gray-700">{formatCurrency(item.qty * item.unit_price_cents)}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex justify-between items-center border-t border-gray-50 pt-2">
+                        <span className="text-[8px] uppercase tracking-widest text-gray-400 font-black">Subtotal</span>
+                        <span className="text-sm font-black text-gray-900">{formatCurrency(order.total_cents)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="border-t border-gray-100 pt-3 space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">Resumo final da mesa</span>
+                    <span className="text-lg font-black text-primary tracking-tighter">{formatCurrency(sessionFinalTotal)}</span>
+                  </div>
+                  {sessionTotalsByGuest.map((row) => (
+                    <div key={row.name} className="flex justify-between items-center text-sm">
+                      <span className="font-black text-gray-600">{row.name}</span>
+                      <span className="font-black text-gray-800">{formatCurrency(row.total)}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
             
             {categories.filter(c => !selectedCategory || c.id === selectedCategory).map(cat => (
               <div key={cat.id} className="space-y-6">
@@ -645,7 +774,7 @@ const App: React.FC = () => {
             ))}
           </div>
 
-          {cart.length > 0 && (
+          {session?.status === 'OPEN' && cart.length > 0 && (
             <div className="fixed bottom-0 left-0 right-0 p-5 bg-white border-t border-gray-100 z-50">
               <button onClick={() => setShowCart(true)} className="w-full max-w-md mx-auto bg-gray-900 text-white p-4 rounded-xl flex justify-between items-center transition-transform active:scale-95">
                 <div className="flex items-center gap-4">
@@ -769,7 +898,9 @@ const App: React.FC = () => {
                             added_by_name: i.guest_name,
                           }));
                           await supabase.from('order_items').insert(items);
+                          await supabase.from('cart_items').delete().eq('session_id', session.id);
                           await supabase.from('sessions').update({ status: 'LOCKED' }).eq('id', session.id);
+                          setCart([]);
                           setShowCart(false);
                           alert("Cozinha notificada!");
                         }
