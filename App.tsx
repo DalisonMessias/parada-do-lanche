@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { supabase, formatCurrency } from './services/supabase';
-import { AppView, Table, Session, Guest, CartItem, Category, Product, Order, OrderStatus, StoreSettings, Profile } from './types';
+import { AppView, Table, Session, Guest, CartItem, Category, Product, Order, OrderStatus, StoreSettings, Profile, UserRole } from './types';
 import Layout from './components/Layout';
 import AdminOrders from './components/AdminOrders';
 import AdminTables from './components/AdminTables';
@@ -10,6 +10,8 @@ import AdminSettings from './components/AdminSettings';
 import AdminStaff from './components/AdminStaff';
 
 const App: React.FC = () => {
+  const adminAccessKey = ((import.meta as any).env?.VITE_ADMIN_ACCESS_KEY || '').trim();
+  const adminHash = adminAccessKey ? `/admin/${adminAccessKey}` : '/admin';
   const [view, setView] = useState<AppView>('LANDING');
   const [activeTable, setActiveTable] = useState<Table | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -21,6 +23,7 @@ const App: React.FC = () => {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [showCart, setShowCart] = useState(false);
+  const [tempRegisterStatus, setTempRegisterStatus] = useState('');
   const [adminTab, setAdminTab] = useState<'ORDERS' | 'TABLES' | 'MENU' | 'SETTINGS' | 'STAFF'>('ORDERS');
   const [isLoading, setIsLoading] = useState(false);
   const [user, setUser] = useState<any>(null);
@@ -67,7 +70,15 @@ const App: React.FC = () => {
           }
           setView('CUSTOMER_MENU');
         }
-      } else if (hash === '#/admin') {
+      } else if (hash === '#/cadastro-temp') {
+        setView('TEMP_REGISTER');
+      } else if (hash.startsWith('#/admin')) {
+        const clean = hash.replace(/^#\//, '');
+        const [, providedKey = ''] = clean.split('/');
+        if (adminAccessKey && providedKey !== adminAccessKey) {
+          setView('LANDING');
+          return;
+        }
         setView('ADMIN_DASHBOARD');
       } else {
         setView('LANDING');
@@ -140,7 +151,7 @@ const App: React.FC = () => {
     
     setIsLoading(true);
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: window.location.origin + '/#admin',
+      redirectTo: window.location.origin + '/#' + adminHash,
     });
     setIsLoading(false);
     
@@ -150,32 +161,166 @@ const App: React.FC = () => {
 
   if (view === 'LANDING') {
     return (
-      <Layout settings={settings}>
-        <div className="p-8 text-center space-y-12 flex flex-col items-center justify-center min-h-[85vh]">
-          {settings?.logo_url ? (
-            <img src={settings.logo_url} className="w-24 h-24 rounded-2xl object-cover border border-gray-100" />
-          ) : (
-            <div className="w-20 h-20 bg-primary rounded-2xl flex items-center justify-center">
-              <span className="text-white font-black text-4xl">PL</span>
-            </div>
-          )}
-          <div className="space-y-4">
-            <h1 className="text-4xl font-black text-gray-900 uppercase tracking-tighter leading-none">
-              {settings?.store_name || 'Parada do Lanche'}
-            </h1>
-            <p className="text-primary font-black uppercase tracking-[0.2em] text-[10px]">Autonomia e Praticidade no Pedido</p>
+      <Layout settings={settings} wide>
+        <div className="min-h-[85vh] p-6 lg:p-10 space-y-8">
+          <section className="text-center space-y-4 py-4">
+            <h2 className="text-3xl lg:text-5xl font-black text-gray-900 uppercase tracking-tighter leading-none">
+              Cardapio
+            </h2>
+            <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em]">
+              Escaneie o QR Code da mesa para fazer o pedido
+            </p>
+          </section>
+
+          <div className="sticky top-[69px] z-40 bg-white border-y border-gray-100 flex gap-2 overflow-x-auto p-3 no-scrollbar">
+            <button onClick={() => setSelectedCategory(null)} className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${!selectedCategory ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'}`}>Todos</button>
+            {categories.map(c => (
+              <button key={c.id} onClick={() => setSelectedCategory(c.id)} className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest whitespace-nowrap transition-all shrink-0 border ${selectedCategory === c.id ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'}`}>{c.name}</button>
+            ))}
           </div>
-          <div className="pt-8 w-full max-w-xs space-y-4">
-             <button 
-                onClick={() => window.location.hash = '/admin'}
-                className="w-full bg-gray-900 text-white py-4 rounded-xl font-black text-[11px] uppercase tracking-widest transition-transform active:scale-95"
-              >
-                Acesso Administrativo
-              </button>
-              <p className="text-[9px] text-gray-300 font-bold uppercase tracking-widest">Escaneie o QR Code na sua mesa</p>
+
+          <div className="space-y-8 pb-8">
+            {categories.filter(c => !selectedCategory || c.id === selectedCategory).map(cat => (
+              <div key={cat.id} className="space-y-5">
+                <div className="flex items-center gap-3">
+                  <h3 className="text-lg lg:text-xl font-black uppercase text-gray-800 tracking-tighter shrink-0 italic">{cat.name}</h3>
+                  <div className="h-[1px] w-full bg-gray-100"></div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {products.filter(p => p.category_id === cat.id).map(p => (
+                    <div key={p.id} className="flex bg-white rounded-2xl p-3 gap-4 border border-gray-100">
+                      <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover bg-gray-50 border border-gray-50" />
+                      <div className="flex-1 flex flex-col justify-between py-1">
+                        <div>
+                          <h4 className="font-black text-gray-900 text-base leading-none tracking-tighter">{p.name}</h4>
+                          <p className="text-[8px] text-gray-400 mt-2 line-clamp-2 leading-relaxed font-black uppercase tracking-tight">{p.description}</p>
+                        </div>
+                        <div className="flex justify-between items-center mt-2">
+                          <span className="font-black text-primary text-lg tracking-tighter">{formatCurrency(p.price_cents)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {categories.length === 0 && (
+              <div className="text-center py-12">
+                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Cardapio indisponivel no momento</p>
+              </div>
+            )}
           </div>
         </div>
       </Layout>
+    );
+  }
+
+  if (view === 'TEMP_REGISTER') {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6 lg:p-12">
+        <div className="bg-white w-full max-w-[520px] rounded-[32px] border border-gray-200 p-8 lg:p-10 space-y-8">
+          <div className="text-center space-y-3">
+            <h2 className="text-2xl font-black uppercase tracking-tighter text-gray-900 leading-none">Cadastro Temporario</h2>
+            <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.18em]">Teste de criacao no auth.users</p>
+          </div>
+
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setTempRegisterStatus('');
+              setIsLoading(true);
+
+              const form = e.currentTarget;
+              const name = (form.elements.namedItem('name') as HTMLInputElement).value.trim();
+              const email = (form.elements.namedItem('email') as HTMLInputElement).value.trim().toLowerCase();
+              const password = (form.elements.namedItem('password') as HTMLInputElement).value;
+              const role = (form.elements.namedItem('role') as HTMLSelectElement).value as UserRole;
+
+              const { data, error } = await supabase.auth.signUp({
+                email,
+                password,
+                options: { data: { name } },
+              });
+
+              if (error) {
+                const msg = error.message || '';
+                if (msg.includes('users_email_partial_key') || msg.toLowerCase().includes('already registered')) {
+                  setTempRegisterStatus('Esse e-mail ja existe no auth.users. Use outro e-mail ou redefina a senha do usuario existente.');
+                } else {
+                  setTempRegisterStatus(`Erro ao criar no auth.users: ${error.message}`);
+                }
+                setIsLoading(false);
+                return;
+              }
+
+              const userId = data.user?.id;
+              if (!userId) {
+                setTempRegisterStatus('Usuario criado parcialmente. Verifique Auth > Users e confirme o e-mail.');
+                setIsLoading(false);
+                return;
+              }
+
+              const { error: profileError } = await supabase
+                .from('profiles')
+                .upsert({ id: userId, email, name, role }, { onConflict: 'id' });
+
+              setIsLoading(false);
+              if (profileError) {
+                const profileMsg = profileError.message || '';
+                if (profileMsg.toLowerCase().includes('row-level security')) {
+                  setTempRegisterStatus('Usuario criado no auth.users. O profiles falhou por RLS; rode o SQL temporario para ajustar trigger/policies e depois faca login.');
+                } else {
+                  setTempRegisterStatus(`Criou no auth.users, mas falhou em public.profiles: ${profileError.message}`);
+                }
+              } else {
+                setTempRegisterStatus('Cadastro concluido com sucesso em auth.users e public.profiles.');
+                form.reset();
+              }
+            }}
+            className="space-y-5"
+          >
+            <div className="space-y-2">
+              <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Nome</label>
+              <input name="name" type="text" placeholder="Nome do usuario" required className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary transition-all font-bold placeholder:text-gray-300" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">E-mail</label>
+              <input name="email" type="email" placeholder="usuario@empresa.com" required className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary transition-all font-bold placeholder:text-gray-300" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Senha</label>
+              <input name="password" type="password" placeholder="Minimo 6 caracteres" minLength={6} required className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary transition-all font-bold placeholder:text-gray-300" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Perfil</label>
+              <select name="role" defaultValue="WAITER" className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary transition-all font-bold">
+                <option value="ADMIN">ADMIN</option>
+                <option value="MANAGER">MANAGER</option>
+                <option value="WAITER">WAITER</option>
+              </select>
+            </div>
+
+            <button
+              disabled={isLoading}
+              className="w-full bg-gray-900 hover:bg-gray-800 text-white py-4 rounded-xl font-extrabold uppercase tracking-[0.14em] text-sm shadow-[0_8px_18px_rgba(15,23,42,0.22)] hover:shadow-[0_10px_24px_rgba(15,23,42,0.28)] transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading ? 'Cadastrando...' : 'Criar Usuario'}
+            </button>
+          </form>
+
+          {tempRegisterStatus && (
+            <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+              <p className="text-xs font-bold text-gray-700">{tempRegisterStatus}</p>
+            </div>
+          )}
+
+          <div className="text-center">
+            <button onClick={() => (window.location.hash = adminHash)} className="text-[10px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">
+              Voltar para Login
+            </button>
+          </div>
+        </div>
+      </div>
     );
   }
 
@@ -214,13 +359,19 @@ const App: React.FC = () => {
                  </div>
                  <input name="password" type="password" placeholder="••••••••" required className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary transition-all font-bold placeholder:text-gray-200" />
               </div>
-              <button disabled={isLoading} className="w-full bg-gray-900 text-white py-4.5 rounded-xl font-black uppercase tracking-[0.2em] text-[10px] transition-transform active:scale-95 disabled:opacity-50">
+              <button
+                disabled={isLoading}
+                className="w-full bg-gray-900 hover:bg-gray-800 text-white py-4 rounded-xl font-extrabold uppercase tracking-[0.14em] text-sm shadow-[0_8px_18px_rgba(15,23,42,0.22)] hover:shadow-[0_10px_24px_rgba(15,23,42,0.28)] transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed"
+              >
                 {isLoading ? 'Autenticando...' : 'Efetuar Login'}
               </button>
             </form>
 
             <div className="text-center">
                <button onClick={() => window.location.hash = '/'} className="text-[9px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Voltar para o Cardápio</button>
+               <div className="mt-3">
+                 <button onClick={() => window.location.hash = '/cadastro-temp'} className="text-[9px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Cadastro Temporario</button>
+               </div>
             </div>
           </div>
         </div>

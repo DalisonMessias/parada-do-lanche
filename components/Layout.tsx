@@ -9,14 +9,20 @@ interface LayoutProps {
   onBack?: () => void;
   actions?: React.ReactNode;
   isAdmin?: boolean;
+  wide?: boolean;
   settings?: StoreSettings | null;
 }
 
-const Layout: React.FC<LayoutProps> = ({ children, title, showBackButton, onBack, actions, isAdmin, settings }) => {
+const Layout: React.FC<LayoutProps> = ({ children, title, showBackButton, onBack, actions, isAdmin, wide, settings }) => {
   const primaryColor = settings?.primary_color || '#f97316';
+  const shellClass = isAdmin
+    ? 'w-full'
+    : wide
+      ? 'w-full max-w-6xl mx-auto bg-white border-x border-gray-100'
+      : 'max-w-md mx-auto bg-white border-x border-gray-100';
   
   return (
-    <div className={`min-h-screen flex flex-col bg-gray-50 relative overflow-x-hidden ${isAdmin ? 'w-full' : 'max-w-md mx-auto bg-white border-x border-gray-100'}`} style={{ '--primary': primaryColor } as any}>
+    <div className={`min-h-screen flex flex-col bg-gray-50 relative overflow-x-hidden ${shellClass}`} style={{ '--primary': primaryColor } as any}>
       {/* Header */}
       <header className="sticky top-0 z-50 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
