@@ -1,5 +1,6 @@
 ﻿
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '../services/supabase';
 import { Table, StoreSettings } from '../types';
 
@@ -152,7 +153,7 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
         ))}
       </div>
 
-      {showPrintModal && (
+      {showPrintModal && createPortal(
         <div className="fixed left-0 top-0 z-[9999] w-screen h-screen bg-gray-900/95 backdrop-blur-sm flex items-center justify-center p-4 lg:p-6 overflow-y-auto">
           <div className="bg-white w-[min(96vw,1220px)] max-h-[calc(100vh-2rem)] rounded-[32px] p-8 lg:p-10 space-y-10 border border-gray-200 overflow-auto">
             <div className="flex justify-between items-center border-b border-gray-100 pb-6">
@@ -258,7 +259,7 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
             </div>
           </div>
         </div>
-      )}
+      , document.body)}
 
       <style>{`
         .qr-card-container {

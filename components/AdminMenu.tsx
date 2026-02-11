@@ -13,6 +13,8 @@ const AdminMenu: React.FC = () => {
   const [newAddonName, setNewAddonName] = useState('');
   const [newAddonPrice, setNewAddonPrice] = useState('0');
   const [productImageUrl, setProductImageUrl] = useState('');
+  const [productImageName, setProductImageName] = useState('');
+  const [saveAndOpenAddons, setSaveAndOpenAddons] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -45,6 +47,8 @@ const AdminMenu: React.FC = () => {
   useEffect(() => {
     if (!showAddProd) {
       setProductImageUrl('');
+      setProductImageName('');
+      setSaveAndOpenAddons(false);
       setUploadingImage(false);
     }
   }, [showAddProd]);
@@ -54,6 +58,7 @@ const AdminMenu: React.FC = () => {
       setUploadingImage(true);
       if (!event.target.files || event.target.files.length === 0) return;
       const file = event.target.files[0];
+      setProductImageName(file.name);
       const fileExt = file.name.split('.').pop();
       const filePath = `products/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
       const { error: uploadError } = await supabase.storage.from('assets').upload(filePath, file);
@@ -101,14 +106,20 @@ const AdminMenu: React.FC = () => {
       active: true,
     };
 
-    const { error } = await supabase.from('products').insert(newProduct);
+    const { data: createdProduct, error } = await supabase.from('products').insert(newProduct).select('*').single();
 
     if (error) alert(error.message);
     else {
       setShowAddProd(false);
       setProductImageUrl('');
+      setProductImageName('');
       fetchData();
+      if (saveAndOpenAddons && createdProduct) {
+        setSelectedProduct(createdProduct as Product);
+        setShowAddonsModal(true);
+      }
     }
+    setSaveAndOpenAddons(false);
     setLoading(false);
   };
 
@@ -243,7 +254,13 @@ const AdminMenu: React.FC = () => {
                 <div className="space-y-2">
                   <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Foto do Produto</label>
                   <div className="rounded-2xl border border-dashed border-gray-300 p-4 space-y-3 bg-gray-50">
-                    <input type="file" accept="image/*" onChange={handleUploadProductImage} disabled={uploadingImage} className="w-full text-xs font-black" />
+                    <input id="product-photo-upload" type="file" accept="image/*" onChange={handleUploadProductImage} disabled={uploadingImage} className="hidden" />
+                    <div className="flex items-center gap-2">
+                      <label htmlFor="product-photo-upload" className="inline-flex items-center justify-center px-4 py-2.5 rounded-lg bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest cursor-pointer">
+                        Escolher Foto
+                      </label>
+                      <span className="text-[10px] font-black text-gray-400 truncate">{productImageName || 'Nenhum arquivo selecionado'}</span>
+                    </div>
                     {productImageUrl && (
                       <img src={productImageUrl} className="w-full h-28 object-cover rounded-xl border border-gray-200" />
                     )}
@@ -256,7 +273,22 @@ const AdminMenu: React.FC = () => {
 
             <div className="flex gap-4 border-t border-gray-100 pt-8">
               <button type="button" onClick={() => setShowAddProd(false)} className="flex-1 py-4 text-gray-400 font-black uppercase tracking-widest text-[10px]">Descartar</button>
-              <button type="submit" disabled={loading || uploadingImage} className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px]">Salvar Item</button>
+              <button
+                type="submit"
+                onClick={() => setSaveAndOpenAddons(true)}
+                disabled={loading || uploadingImage}
+                className="flex-1 py-4 bg-gray-100 text-gray-700 rounded-xl font-black uppercase tracking-widest text-[10px] border border-gray-200"
+              >
+                Salvar e Adicionais
+              </button>
+              <button
+                type="submit"
+                onClick={() => setSaveAndOpenAddons(false)}
+                disabled={loading || uploadingImage}
+                className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px]"
+              >
+                Salvar Item
+              </button>
             </div>
           </form>
         </div>
