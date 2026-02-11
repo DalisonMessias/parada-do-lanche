@@ -7,6 +7,11 @@ export interface StoreSettings {
   store_name: string;
   primary_color: string;
   logo_url: string;
+  sticker_bg_color: string;
+  sticker_text_color: string;
+  sticker_border_color: string;
+  sticker_muted_text_color: string;
+  sticker_qr_frame_color: string;
 }
 
 export interface Profile {

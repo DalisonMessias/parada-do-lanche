@@ -15,7 +15,12 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
   const [formData, setFormData] = useState({
     store_name: '',
     primary_color: '#f97316',
-    logo_url: ''
+    logo_url: '',
+    sticker_bg_color: '#ffffff',
+    sticker_text_color: '#111827',
+    sticker_border_color: '#111111',
+    sticker_muted_text_color: '#9ca3af',
+    sticker_qr_frame_color: '#111111'
   });
 
   const isAdmin = profile?.role === 'ADMIN';
@@ -25,7 +30,12 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
       setFormData({
         store_name: settings.store_name,
         primary_color: settings.primary_color,
-        logo_url: settings.logo_url || ''
+        logo_url: settings.logo_url || '',
+        sticker_bg_color: settings.sticker_bg_color || '#ffffff',
+        sticker_text_color: settings.sticker_text_color || '#111827',
+        sticker_border_color: settings.sticker_border_color || '#111111',
+        sticker_muted_text_color: settings.sticker_muted_text_color || '#9ca3af',
+        sticker_qr_frame_color: settings.sticker_qr_frame_color || '#111111'
       });
     }
   }, [settings]);
@@ -123,6 +133,60 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
                     Descartar Imagem
                   </button>
                 )}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-6 pt-8 border-t border-gray-100">
+            <div>
+              <h3 className="text-lg font-black uppercase tracking-tighter text-gray-900">Personalizacao do Adesivo</h3>
+              <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em] mt-2 italic">Controle cores do QR da mesa</p>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-8">
+              <div className="space-y-2">
+                <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Fundo do adesivo</label>
+                <div className="flex gap-4 items-center">
+                  <input type="color" value={formData.sticker_bg_color} onChange={e => setFormData({...formData, sticker_bg_color: e.target.value})} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
+                  <input value={formData.sticker_bg_color} onChange={e => setFormData({...formData, sticker_bg_color: e.target.value})} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Texto principal</label>
+                <div className="flex gap-4 items-center">
+                  <input type="color" value={formData.sticker_text_color} onChange={e => setFormData({...formData, sticker_text_color: e.target.value})} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
+                  <input value={formData.sticker_text_color} onChange={e => setFormData({...formData, sticker_text_color: e.target.value})} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Borda do adesivo</label>
+                <div className="flex gap-4 items-center">
+                  <input type="color" value={formData.sticker_border_color} onChange={e => setFormData({...formData, sticker_border_color: e.target.value})} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
+                  <input value={formData.sticker_border_color} onChange={e => setFormData({...formData, sticker_border_color: e.target.value})} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Texto secundario</label>
+                <div className="flex gap-4 items-center">
+                  <input type="color" value={formData.sticker_muted_text_color} onChange={e => setFormData({...formData, sticker_muted_text_color: e.target.value})} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
+                  <input value={formData.sticker_muted_text_color} onChange={e => setFormData({...formData, sticker_muted_text_color: e.target.value})} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
+                </div>
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Borda do QR principal</label>
+                <div className="flex gap-4 items-center">
+                  <input type="color" value={formData.sticker_qr_frame_color} onChange={e => setFormData({...formData, sticker_qr_frame_color: e.target.value})} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
+                  <input value={formData.sticker_qr_frame_color} onChange={e => setFormData({...formData, sticker_qr_frame_color: e.target.value})} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-gray-200 p-6" style={{ backgroundColor: formData.sticker_bg_color }}>
+              <div className="rounded-xl border-2 p-4 text-center" style={{ borderColor: formData.sticker_border_color }}>
+                <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: formData.sticker_text_color }}>Preview da Mesa</p>
+                <p className="text-3xl font-black italic mt-2" style={{ color: formData.sticker_text_color }}>MESA 01</p>
+                <div className="w-16 h-16 mx-auto mt-4 rounded-lg border-2" style={{ borderColor: formData.sticker_qr_frame_color }} />
+                <p className="text-[9px] font-black uppercase tracking-widest mt-3" style={{ color: formData.sticker_muted_text_color }}>Scaneie para pedir</p>
               </div>
             </div>
           </div>

@@ -57,6 +57,13 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
   const generateMenuUrl = (token: string) => `${window.location.origin}/#/m/${token}`;
   const generateWifiString = () => `WIFI:S:${wifiSsid};T:WPA;P:${wifiPass};;`;
   const getQrUrl = (data: string) => `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(data)}&margin=0`;
+  const stickerTheme = {
+    bg: settings?.sticker_bg_color || '#ffffff',
+    text: settings?.sticker_text_color || '#111827',
+    border: settings?.sticker_border_color || '#111111',
+    muted: settings?.sticker_muted_text_color || '#9ca3af',
+    qrFrame: settings?.sticker_qr_frame_color || '#111111',
+  };
 
   return (
     <div className="space-y-8">
@@ -152,26 +159,26 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
                 <div id="print-area" className="grid grid-cols-2 gap-0 border border-dashed border-gray-200 bg-white shadow-inner">
                   {(selectedTable ? [selectedTable] : tables.slice(0, 6)).map(table => (
                     <div key={table.id} className="qr-card-container">
-                      <div className="qr-card">
+                      <div className="qr-card" style={{ backgroundColor: stickerTheme.bg, borderColor: stickerTheme.border }}>
                         <div className="flex flex-col items-center gap-2 mb-4">
                           {settings?.logo_url ? (
                             <img src={settings.logo_url} className="w-12 h-12 object-contain rounded-md" />
                           ) : (
                             <div className="w-10 h-10 bg-gray-900 rounded-lg flex items-center justify-center text-white font-black text-base italic">PL</div>
                           )}
-                          <span className="text-[10px] font-black text-gray-900 uppercase tracking-tighter truncate max-w-[140px] text-center">{settings?.store_name}</span>
+                          <span className="text-[10px] font-black uppercase tracking-tighter truncate max-w-[140px] text-center" style={{ color: stickerTheme.text }}>{settings?.store_name}</span>
                         </div>
 
-                        <div className="w-full border-t border-b border-black py-2 mb-5 text-center">
-                           <span className="text-[24px] font-black text-black uppercase tracking-tighter italic leading-none">{table.name}</span>
+                        <div className="w-full border-t border-b py-2 mb-5 text-center" style={{ borderColor: stickerTheme.border }}>
+                           <span className="text-[24px] font-black uppercase tracking-tighter italic leading-none" style={{ color: stickerTheme.text }}>{table.name}</span>
                         </div>
 
                         <div className="flex flex-row items-start justify-center gap-5 w-full mb-5">
                           <div className="flex flex-col items-center gap-2">
-                            <div className="p-2 bg-white border-2 border-black rounded-xl">
+                            <div className="p-2 bg-white border-2 rounded-xl" style={{ borderColor: stickerTheme.qrFrame }}>
                               <img src={getQrUrl(generateMenuUrl(table.token))} className="w-20 h-20" />
                             </div>
-                            <span className="text-[8px] font-black uppercase text-black tracking-widest italic">CARDAPIO</span>
+                            <span className="text-[8px] font-black uppercase tracking-widest italic" style={{ color: stickerTheme.text }}>CARDAPIO</span>
                           </div>
 
                           {wifiSsid && wifiPass ? (
@@ -179,17 +186,17 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
                               <div className="p-2 bg-white border border-gray-200 rounded-xl">
                                 <img src={getQrUrl(generateWifiString())} className="w-16 h-16 opacity-60" />
                               </div>
-                              <span className="text-[7px] font-black uppercase text-gray-400 tracking-widest italic">WI-FI</span>
+                              <span className="text-[7px] font-black uppercase tracking-widest italic" style={{ color: stickerTheme.muted }}>WI-FI</span>
                             </div>
                           ) : (
                             <div className="w-[84px] h-[104px] rounded-xl border border-dashed border-gray-200 flex items-center justify-center px-2">
-                              <span className="text-[7px] font-black uppercase text-gray-300 tracking-widest text-center leading-relaxed">Preencha SSID + senha para QR Wi-Fi</span>
+                              <span className="text-[7px] font-black uppercase tracking-widest text-center leading-relaxed" style={{ color: stickerTheme.muted }}>Preencha SSID + senha para QR Wi-Fi</span>
                             </div>
                           )}
                         </div>
 
                         <div className="text-center">
-                          <p className="text-[7px] text-gray-400 font-black uppercase tracking-[0.35em] italic leading-none opacity-70">SCANEIE PARA PEDIR</p>
+                          <p className="text-[7px] font-black uppercase tracking-[0.35em] italic leading-none opacity-80" style={{ color: stickerTheme.muted }}>SCANEIE PARA PEDIR</p>
                         </div>
                       </div>
                     </div>
@@ -243,7 +250,7 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
             z-index: 99999;
           }
           .qr-card-container { border: 0.1mm dashed #ddd !important; }
-          .qr-card { border: 1mm solid #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .qr-card { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           @page { size: A4; margin: 0; }
         }
       `}</style>
