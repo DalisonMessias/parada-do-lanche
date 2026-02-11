@@ -282,7 +282,7 @@ const AdminMenu: React.FC = () => {
         description: productDescription.trim(),
         price_cents: inputToCents(productPriceInput),
         category_id: productCategoryId,
-        image_url: productImageUrlUploaded || productImageUrlInput.trim() || 'https://picsum.photos/seed/food/400/300',
+        image_url: productImageUrlUploaded || productImageUrlInput.trim() || '',
         addon_selection_mode: productAddonMode,
         active: editingProduct ? editingProduct.active : true,
       };
@@ -639,7 +639,13 @@ const AdminMenu: React.FC = () => {
                   const productAddons = addonsByProduct.get(product.id) || [];
                   return (
                     <div key={product.id} className="bg-white border border-gray-200 rounded-[28px] p-5 flex flex-col gap-4 group hover:border-primary/20 transition-all">
-                      <img src={product.image_url} className="w-full aspect-video rounded-2xl object-cover bg-gray-50 border border-gray-50" />
+                      {(product.image_url || '').trim() ? (
+                        <img src={product.image_url} className="w-full aspect-video rounded-2xl object-cover bg-gray-50 border border-gray-50" />
+                      ) : (
+                        <div className="w-full aspect-video rounded-2xl bg-gray-50 border border-gray-100 flex items-center justify-center">
+                          <span className="text-[9px] font-black uppercase tracking-widest text-gray-300">Sem imagem</span>
+                        </div>
+                      )}
                       <div className="flex-1 py-1 space-y-1">
                         <h4 className="font-black text-gray-900 text-lg leading-tight truncate">{product.name}</h4>
                         <p className="text-primary font-black text-xl tracking-tighter italic">{formatCurrency(product.price_cents)}</p>

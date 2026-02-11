@@ -265,7 +265,13 @@ const App: React.FC = () => {
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {products.filter(p => p.category_id === cat.id).map(p => (
                     <div key={p.id} className="flex bg-white rounded-2xl p-3 gap-4 border border-gray-100">
-                      <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover bg-gray-50 border border-gray-50" />
+                      {(p.image_url || '').trim() ? (
+                        <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover bg-gray-50 border border-gray-50" />
+                      ) : (
+                        <div className="w-20 h-20 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0">
+                          <span className="text-[7px] font-black uppercase tracking-widest text-gray-300">Sem foto</span>
+                        </div>
+                      )}
                       <div className="flex-1 flex flex-col justify-between py-1">
                         <div>
                           <h4 className="font-black text-gray-900 text-base leading-none tracking-tighter">{p.name}</h4>
@@ -595,7 +601,13 @@ const App: React.FC = () => {
                     const hasAddons = getProductAddons(p.id).length > 0;
                     return (
                       <div key={p.id} className="flex bg-white rounded-2xl p-3 gap-4 border border-gray-100 relative group transition-all">
-                        <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover bg-gray-50 border border-gray-50" />
+                        {(p.image_url || '').trim() ? (
+                          <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover bg-gray-50 border border-gray-50" />
+                        ) : (
+                          <div className="w-20 h-20 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0">
+                            <span className="text-[7px] font-black uppercase tracking-widest text-gray-300">Sem foto</span>
+                          </div>
+                        )}
                         <div className="flex-1 flex flex-col justify-between py-1">
                           <div>
                             <h4 className="font-black text-gray-900 text-base leading-none tracking-tighter">{p.name}</h4>
