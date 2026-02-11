@@ -96,6 +96,10 @@ create table if not exists public.orders (
   id uuid default uuid_generate_v4() primary key,
   table_id uuid references public.tables(id) on delete cascade,
   session_id uuid references public.sessions(id) on delete cascade,
+  -- Valores internos do banco (nao alterar sem migracao completa do app):
+  -- PENDING, PREPARING, READY, FINISHED, CANCELLED
+  -- Rotulos PT-BR na interface:
+  -- Pendente, Em preparo, Pronto, Finalizado, Cancelado
   status text default 'PENDING' check (status in ('PENDING', 'PREPARING', 'READY', 'FINISHED', 'CANCELLED')),
   total_cents integer not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null

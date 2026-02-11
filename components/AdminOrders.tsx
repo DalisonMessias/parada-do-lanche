@@ -22,7 +22,7 @@ const statusLabel: Record<OrderStatus, string> = {
   PENDING: 'Pendente',
   PREPARING: 'Em preparo',
   READY: 'Pronto',
-  FINISHED: 'Concluido',
+  FINISHED: 'Finalizado',
   CANCELLED: 'Cancelado',
 };
 
