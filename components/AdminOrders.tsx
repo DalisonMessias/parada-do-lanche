@@ -2,6 +2,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { supabase, formatCurrency } from '../services/supabase';
 import { Order, OrderStatus } from '../types';
 
+const getTodayInputDate = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 const statusClass: Record<OrderStatus, string> = {
   PENDING: 'bg-amber-50 text-amber-600 border-amber-100',
   PREPARING: 'bg-blue-50 text-blue-600 border-blue-100',
@@ -22,12 +30,21 @@ const AdminOrders: React.FC = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedTableName, setSelectedTableName] = useState<string>('');
+  const [selectedDate, setSelectedDate] = useState<string>(getTodayInputDate());
 
   const fetchOrders = async () => {
-    const { data } = await supabase
+    let query = supabase
       .from('orders')
       .select('*, table:tables(name), items:order_items(*)')
       .order('created_at', { ascending: false });
+
+    if (selectedDate) {
+      const start = new Date(`${selectedDate}T00:00:00`);
+      const end = new Date(`${selectedDate}T23:59:59.999`);
+      query = query.gte('created_at', start.toISOString()).lte('created_at', end.toISOString());
+    }
+
+    const { data } = await query;
 
     if (data) {
       setOrders(
@@ -43,13 +60,13 @@ const AdminOrders: React.FC = () => {
   useEffect(() => {
     fetchOrders();
     const channel = supabase
-      .channel('admin_orders')
+      .channel(`admin_orders_${selectedDate}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, fetchOrders)
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [selectedDate]);
 
   const selectedSessionOrders = useMemo(() => {
     if (!selectedSessionId) return [];
@@ -92,11 +109,29 @@ const AdminOrders: React.FC = () => {
 
   return (
     <>
+      <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-6 flex flex-wrap items-end gap-3">
+        <div className="space-y-1">
+          <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Filtrar por data</label>
+          <input
+            type="date"
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            className="px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-black text-gray-700 outline-none focus:border-primary"
+          />
+        </div>
+        <button
+          onClick={() => setSelectedDate(getTodayInputDate())}
+          className="px-4 py-2.5 rounded-lg bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest"
+        >
+          Hoje
+        </button>
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
         {orders.length === 0 ? (
           <div className="col-span-full text-center py-20 text-gray-300 font-black uppercase tracking-widest text-[10px] flex flex-col items-center gap-4 italic">
             <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="opacity-20"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" /><polyline points="14 2 14 8 20 8" /></svg>
-            Nenhum pedido ativo no momento
+            Nenhum pedido ativo nesta data
           </div>
         ) : (
           orders.map((order) => (

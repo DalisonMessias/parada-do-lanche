@@ -800,7 +800,9 @@ const App: React.FC = () => {
                   <div>
                     <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">{pendingProduct.name}</h3>
                     <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                      {pendingProduct.addon_selection_mode === 'SINGLE' ? 'Escolha apenas 1 adicional' : 'Escolha um ou mais adicionais'}
+                      {pendingProduct.addon_selection_mode === 'SINGLE'
+                        ? 'Adicionais opcionais: escolha 1 ou nenhum'
+                        : 'Adicionais opcionais: escolha quantos quiser ou nenhum'}
                     </p>
                   </div>
                   <button onClick={() => { setShowAddonSelector(false); setPendingProduct(null); setSelectedAddonIds([]); }} className="text-gray-400 font-black">Fechar</button>
@@ -836,7 +838,7 @@ const App: React.FC = () => {
                   }}
                   className="w-full bg-gray-900 text-white py-4 rounded-xl font-black uppercase tracking-widest text-[11px]"
                 >
-                  Adicionar ao Carrinho
+                  {selectedAddonIds.length === 0 ? 'Adicionar sem adicional' : 'Adicionar ao Carrinho'}
                 </button>
               </div>
             </div>
