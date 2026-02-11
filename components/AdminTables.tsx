@@ -158,7 +158,7 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
               <div className="xl:col-span-8 flex flex-col items-center">
                 <div className="w-full overflow-auto">
                 <div id="print-area" className="grid grid-cols-2 gap-0 border border-dashed border-gray-200 bg-white shadow-inner min-w-max">
-                  {(selectedTable ? [selectedTable] : tables.slice(0, 6)).map(table => (
+                  {(selectedTable ? [selectedTable] : tables.slice(0, 4)).map(table => (
                     <div key={table.id} className="qr-card-container">
                       <div className="qr-card" style={{ backgroundColor: stickerTheme.bg, borderColor: stickerTheme.border }}>
                         <div className="flex flex-col items-center gap-2 mb-4">
@@ -239,17 +239,19 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
           #print-area, #print-area * { visibility: visible; }
           #print-area {
             position: fixed;
-            left: 0;
-            top: 0;
-            width: 210mm;
-            height: 297mm;
-            padding: 5mm;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            width: 200mm;
+            height: 200mm;
+            padding: 0;
             display: grid !important;
             grid-template-columns: 100mm 100mm !important;
-            grid-template-rows: 100mm 100mm 100mm !important;
+            grid-template-rows: 100mm 100mm !important;
             gap: 0 !important;
             background: white !important;
             z-index: 99999;
+            overflow: hidden !important;
           }
           .qr-card-container { border: 0.1mm dashed #ddd !important; }
           .qr-card { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
