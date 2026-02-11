@@ -227,7 +227,7 @@ const App: React.FC = () => {
     PENDING: 'Pendente',
     PREPARING: 'Em preparo',
     READY: 'Pronto',
-    FINISHED: 'Concluido',
+    FINISHED: 'Finalizado',
     CANCELLED: 'Cancelado',
   };
 
