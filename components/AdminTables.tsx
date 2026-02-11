@@ -10,8 +10,9 @@ interface AdminTablesProps {
 const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
   const [tables, setTables] = useState<Table[]>([]);
   const [selectedTable, setSelectedTable] = useState<Table | null>(null);
-  const [wifiSsid, setWifiSsid] = useState('');
-  const [wifiPass, setWifiPass] = useState('');
+  const [wifiSsid, setWifiSsid] = useState(settings?.wifi_ssid || '');
+  const [wifiPass, setWifiPass] = useState(settings?.wifi_password || '');
+  const [savingWifi, setSavingWifi] = useState(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
 
   const fetchTables = async () => {
@@ -26,6 +27,12 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
   useEffect(() => {
     fetchTables();
   }, []);
+
+  useEffect(() => {
+    if (!showPrintModal) return;
+    setWifiSsid(settings?.wifi_ssid || '');
+    setWifiPass(settings?.wifi_password || '');
+  }, [showPrintModal, settings?.wifi_ssid, settings?.wifi_password]);
 
   const handleCreateMesa = async () => {
     const num = tables.length + 1;
@@ -57,6 +64,21 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
   const generateMenuUrl = (token: string) => `${window.location.origin}/#/m/${token}`;
   const generateWifiString = () => `WIFI:S:${wifiSsid};T:WPA;P:${wifiPass};;`;
   const getQrUrl = (data: string) => `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(data)}&margin=0`;
+  
+  const handleSaveWifiDefaults = async () => {
+    setSavingWifi(true);
+    const { error } = await supabase.from('settings').upsert({
+      id: 1,
+      wifi_ssid: wifiSsid.trim(),
+      wifi_password: wifiPass,
+    });
+    setSavingWifi(false);
+    if (error) {
+      alert('Erro ao salvar Wi-Fi: ' + error.message);
+    } else {
+      alert('Wi-Fi padrao salvo com sucesso!');
+    }
+  };
   const stickerTheme = {
     bg: settings?.sticker_bg_color || '#ffffff',
     text: settings?.sticker_text_color || '#111827',
@@ -149,6 +171,26 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
                   <p className="text-[9px] text-gray-400 font-black uppercase tracking-[0.12em] leading-relaxed">
                     O QR Wi-Fi abre a tela de conexao. Em alguns celulares, o usuario ainda confirma manualmente.
                   </p>
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={handleSaveWifiDefaults}
+                      disabled={savingWifi}
+                      className="flex-1 bg-gray-900 text-white py-2.5 rounded-lg text-[9px] font-black uppercase tracking-widest disabled:opacity-50"
+                    >
+                      {savingWifi ? 'Salvando...' : 'Salvar Wi-Fi'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWifiSsid(settings?.wifi_ssid || '');
+                        setWifiPass(settings?.wifi_password || '');
+                      }}
+                      className="px-3 bg-white border border-gray-200 text-gray-500 py-2.5 rounded-lg text-[9px] font-black uppercase tracking-widest"
+                    >
+                      Recarregar
+                    </button>
+                  </div>
                 </div>
                 <button onClick={() => window.print()} className="w-full bg-primary text-white py-4 rounded-xl font-black uppercase tracking-widest text-base active:scale-95 italic">
                   IMPRIMIR AGORA

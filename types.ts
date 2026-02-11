@@ -7,6 +7,8 @@ export interface StoreSettings {
   store_name: string;
   primary_color: string;
   logo_url: string;
+  wifi_ssid: string;
+  wifi_password: string;
   sticker_bg_color: string;
   sticker_text_color: string;
   sticker_border_color: string;
