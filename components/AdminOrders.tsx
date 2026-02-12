@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { supabase, formatCurrency } from '../services/supabase';
 import { Guest, Order, OrderItem, OrderStatus, Session } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
