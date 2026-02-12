@@ -60,6 +60,26 @@ const normalizeSession = (row: any): SessionAggregate => {
 
 const sumOrderItems = (items: OrderItem[] = []) => items.reduce((acc, item) => acc + (item.qty || 0), 0);
 
+const beep = () => {
+  try {
+    const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextCtor) return;
+    const ctx = new AudioContextCtor();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.value = 740;
+    gain.gain.value = 0.02;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.1);
+    osc.onended = () => ctx.close();
+  } catch {
+    // noop
+  }
+};
+
 const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
   const [sessions, setSessions] = useState<SessionAggregate[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
@@ -92,7 +112,20 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     const channel = supabase
       .channel(`admin_tables_${mode}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions' }, fetchSessions)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, fetchSessions)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
+        fetchSessions();
+        if (mode !== 'ACTIVE') return;
+        const row = (payload.new || payload.old || {}) as any;
+        if (payload.eventType === 'INSERT') {
+          beep();
+          if (row.approval_status === 'PENDING_APPROVAL') toast('Novo pedido aguardando aceite.', 'info');
+          else toast('Novo pedido entrou em uma mesa ativa.', 'info');
+        }
+        if (payload.eventType === 'UPDATE' && row.status === 'READY') {
+          beep();
+          toast('Pedido marcado como pronto.', 'success');
+        }
+      })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, fetchSessions)
       .subscribe();
 
