@@ -1,4 +1,4 @@
-﻿
+
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { supabase } from '../services/supabase';
@@ -154,8 +154,8 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
       </div>
 
       {showPrintModal && createPortal(
-        <div className="fixed left-0 top-0 z-[9999] w-screen h-screen bg-gray-900/95 backdrop-blur-sm flex items-center justify-center p-4 lg:p-6 overflow-y-auto">
-          <div className="bg-white w-[min(96vw,1220px)] max-h-[calc(100vh-2rem)] rounded-[32px] p-8 lg:p-10 space-y-10 border border-gray-200 overflow-auto">
+        <div className="fixed left-0 top-0 z-[9999] w-screen h-screen bg-gray-900/95 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-4 lg:p-6 overflow-y-auto">
+          <div className="bg-white w-[min(96vw,1220px)] max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-2rem)] rounded-t-[28px] sm:rounded-[32px] p-5 sm:p-8 lg:p-10 flex flex-col gap-8 sm:gap-10 border border-gray-200 overflow-auto">
             <div className="flex justify-between items-center border-b border-gray-100 pb-6">
               <div>
                 <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900 italic">Preview das Etiquetas</h3>

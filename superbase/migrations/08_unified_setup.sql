@@ -11,6 +11,7 @@ create table if not exists public.settings (
   logo_url text,
   wifi_ssid text not null default '',
   wifi_password text not null default '',
+  order_approval_mode text not null default 'HOST' check (order_approval_mode in ('HOST', 'SELF')),
   sticker_bg_color text not null default '#ffffff',
   sticker_text_color text not null default '#111827',
   sticker_border_color text not null default '#111111',
@@ -71,8 +72,12 @@ create table if not exists public.sessions (
   table_id uuid references public.tables(id) on delete cascade,
   status text default 'OPEN' check (status in ('OPEN', 'LOCKED', 'EXPIRED')),
   host_guest_id uuid,
+  closed_at timestamp with time zone,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+create unique index if not exists uq_sessions_one_open_per_table
+on public.sessions(table_id)
+where status = 'OPEN';
 
 create table if not exists public.session_guests (
   id uuid default uuid_generate_v4() primary key,
@@ -96,6 +101,10 @@ create table if not exists public.orders (
   id uuid default uuid_generate_v4() primary key,
   table_id uuid references public.tables(id) on delete cascade,
   session_id uuid references public.sessions(id) on delete cascade,
+  created_by_guest_id uuid references public.session_guests(id) on delete set null,
+  approval_status text not null default 'PENDING_APPROVAL' check (approval_status in ('PENDING_APPROVAL', 'APPROVED', 'REJECTED')),
+  approved_by_guest_id uuid references public.session_guests(id) on delete set null,
+  approved_at timestamp with time zone,
   -- Valores internos do banco (nao alterar sem migracao completa do app):
   -- PENDING, PREPARING, READY, FINISHED, CANCELLED
   -- Rotulos PT-BR na interface:
@@ -112,6 +121,7 @@ create table if not exists public.order_items (
   name_snapshot text not null,
   unit_price_cents integer not null,
   qty integer not null,
+  status text not null default 'PENDING' check (status in ('PENDING', 'READY')),
   note text,
   added_by_name text not null
 );
@@ -124,6 +134,7 @@ update public.settings
 set
   wifi_ssid = coalesce(wifi_ssid, ''),
   wifi_password = coalesce(wifi_password, ''),
+  order_approval_mode = coalesce(order_approval_mode, 'HOST'),
   sticker_bg_color = coalesce(sticker_bg_color, '#ffffff'),
   sticker_text_color = coalesce(sticker_text_color, '#111827'),
   sticker_border_color = coalesce(sticker_border_color, '#111111'),
@@ -131,18 +142,55 @@ set
   sticker_qr_frame_color = coalesce(sticker_qr_frame_color, '#111111')
 where id = 1;
 
--- Mantem o app funcionando sem bloqueios de RLS enquanto regras finais nao foram modeladas.
-alter table if exists public.settings disable row level security;
-alter table if exists public.profiles disable row level security;
-alter table if exists public.categories disable row level security;
-alter table if exists public.products disable row level security;
-alter table if exists public.product_addons disable row level security;
-alter table if exists public.tables disable row level security;
-alter table if exists public.sessions disable row level security;
-alter table if exists public.session_guests disable row level security;
-alter table if exists public.cart_items disable row level security;
-alter table if exists public.orders disable row level security;
-alter table if exists public.order_items disable row level security;
+-- Mantem o app funcionando com RLS habilitado, sem bloquear o fluxo atual.
+-- As policies abaixo sao abertas (to public) e devem ser endurecidas depois.
+do $$
+declare
+  r record;
+begin
+  for r in
+    select tablename
+    from pg_tables
+    where schemaname = 'public'
+  loop
+    execute format('alter table public.%I enable row level security', r.tablename);
+
+    execute format('drop policy if exists rls_public_select on public.%I', r.tablename);
+    execute format('create policy rls_public_select on public.%I for select to public using (true)', r.tablename);
+
+    execute format('drop policy if exists rls_public_insert on public.%I', r.tablename);
+    execute format('create policy rls_public_insert on public.%I for insert to public with check (true)', r.tablename);
+
+    execute format('drop policy if exists rls_public_update on public.%I', r.tablename);
+    execute format('create policy rls_public_update on public.%I for update to public using (true) with check (true)', r.tablename);
+
+    execute format('drop policy if exists rls_public_delete on public.%I', r.tablename);
+    execute format('create policy rls_public_delete on public.%I for delete to public using (true)', r.tablename);
+  end loop;
+end $$;
+
+create or replace function public.get_or_create_open_session(p_table_id uuid)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_session_id uuid;
+begin
+  insert into public.sessions (table_id, status)
+  values (p_table_id, 'OPEN')
+  on conflict (table_id) where (status = 'OPEN')
+  do update set table_id = excluded.table_id
+  returning id into v_session_id;
+
+  update public.tables
+    set status = 'OCCUPIED'
+  where id = p_table_id;
+
+  return v_session_id;
+end;
+$$;
 
 -- Storage bucket e policies para assets (logo/fotos)
 insert into storage.buckets (id, name, public)

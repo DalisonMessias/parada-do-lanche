@@ -52,7 +52,6 @@ const AdminMenu: React.FC = () => {
   const [productImageUrlInput, setProductImageUrlInput] = useState('');
   const [productImageUrlUploaded, setProductImageUrlUploaded] = useState('');
   const [productImageName, setProductImageName] = useState('');
-  const [saveAndOpenAddons, setSaveAndOpenAddons] = useState(false);
   const [productAddonDrafts, setProductAddonDrafts] = useState<AddonDraft[]>([emptyAddonDraft()]);
   const [quickAddonName, setQuickAddonName] = useState('');
   const [quickAddonPriceInput, setQuickAddonPriceInput] = useState('0,00');
@@ -94,7 +93,6 @@ const AdminMenu: React.FC = () => {
     setProductImageUrlUploaded('');
     setProductImageName('');
     setProductAddonDrafts([emptyAddonDraft()]);
-    setSaveAndOpenAddons(false);
   };
 
   const fetchData = async () => {
@@ -207,7 +205,6 @@ const AdminMenu: React.FC = () => {
         ? productAddons.map((a) => ({ id: a.id, name: a.name, priceInput: centsToInput(a.price_cents), markedDelete: false }))
         : [emptyAddonDraft()]
     );
-    setSaveAndOpenAddons(false);
     setShowProductModal(true);
   };
 
@@ -311,18 +308,10 @@ const AdminMenu: React.FC = () => {
       setShowProductModal(false);
       await fetchData();
 
-      if (saveAndOpenAddons) {
-        const targetProduct = products.find((p) => p.id === productId) || editingProduct || null;
-        if (targetProduct) {
-          setSelectedProduct(targetProduct);
-          setShowAddonsModal(true);
-        }
-      }
     } catch (error: any) {
       toast(`Erro ao salvar produto: ${error.message}`, 'error');
     } finally {
       setLoading(false);
-      setSaveAndOpenAddons(false);
     }
   };
 
@@ -446,8 +435,8 @@ const AdminMenu: React.FC = () => {
         </div>
       </div>
       {showCategoryModal && (
-        <div className="fixed inset-0 z-[110] bg-gray-900/90 backdrop-blur-sm flex items-center justify-center p-6">
-          <form onSubmit={handleSaveCategory} className="bg-white w-full max-w-md rounded-[32px] p-10 space-y-8 border border-gray-200">
+        <div className="fixed inset-0 z-[110] bg-gray-900/90 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6">
+          <form onSubmit={handleSaveCategory} className="bg-white w-full max-w-md rounded-t-[28px] sm:rounded-[32px] p-6 sm:p-10 flex flex-col gap-8 border border-gray-200 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto">
             <h3 className="text-2xl font-black uppercase tracking-tighter italic text-gray-900">
               {editingCategory ? 'Editar Categoria' : 'Nova Categoria'}
             </h3>
@@ -474,8 +463,8 @@ const AdminMenu: React.FC = () => {
       )}
 
       {showProductModal && (
-        <div className="fixed inset-0 z-[110] bg-gray-900/90 backdrop-blur-sm flex items-center justify-center p-6 overflow-y-auto">
-          <form onSubmit={handleSaveProduct} className="bg-white w-full max-w-4xl rounded-[40px] p-10 space-y-8 border border-gray-200">
+        <div className="fixed inset-0 z-[110] bg-gray-900/90 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6 overflow-y-auto">
+          <form onSubmit={handleSaveProduct} className="bg-white w-full max-w-4xl rounded-t-[28px] sm:rounded-[40px] p-5 sm:p-10 flex flex-col gap-6 sm:gap-8 border border-gray-200 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto">
             <h3 className="text-3xl font-black uppercase tracking-tighter italic text-gray-900">
               {editingProduct ? 'Editar Produto' : 'Novo Produto'}
             </h3>
@@ -592,10 +581,7 @@ const AdminMenu: React.FC = () => {
               <button type="button" onClick={() => setShowProductModal(false)} className="flex-1 py-4 text-gray-400 font-black uppercase tracking-widest text-[10px]">
                 Cancelar
               </button>
-              <button type="submit" onClick={() => setSaveAndOpenAddons(true)} disabled={loading || uploadingImage} className="flex-1 py-4 bg-gray-100 text-gray-700 rounded-xl font-black uppercase tracking-widest text-[10px] border border-gray-200">
-                Salvar e Adicionais
-              </button>
-              <button type="submit" onClick={() => setSaveAndOpenAddons(false)} disabled={loading || uploadingImage} className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px]">
+              <button type="submit" disabled={loading || uploadingImage} className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px]">
                 Salvar
               </button>
             </div>
@@ -603,8 +589,8 @@ const AdminMenu: React.FC = () => {
         </div>
       )}
       {showAddonsModal && selectedProduct && (
-        <div className="fixed inset-0 z-[120] bg-gray-900/90 backdrop-blur-sm flex items-center justify-center p-6 overflow-y-auto">
-          <div className="bg-white w-full max-w-2xl rounded-[32px] p-8 space-y-6 border border-gray-200">
+        <div className="fixed inset-0 z-[120] bg-gray-900/90 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6 overflow-y-auto">
+          <div className="bg-white w-full max-w-2xl rounded-t-[28px] sm:rounded-[32px] p-5 sm:p-8 flex flex-col gap-6 border border-gray-200 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto">
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900">Adicionais Avulsos</h3>

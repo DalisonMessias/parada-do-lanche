@@ -201,8 +201,8 @@ const AdminStaff: React.FC = () => {
       </div>
 
       {showModal && (
-        <div className="fixed inset-0 z-[150] bg-gray-900/90 backdrop-blur-sm flex items-center justify-center p-6">
-          <form onSubmit={handleCreateOrUpdate} className="bg-white w-full max-w-md rounded-[32px] p-10 space-y-10 border border-gray-200">
+        <div className="fixed inset-0 z-[150] bg-gray-900/90 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6">
+          <form onSubmit={handleCreateOrUpdate} className="bg-white w-full max-w-md rounded-t-[28px] sm:rounded-[32px] p-6 sm:p-10 flex flex-col gap-8 sm:gap-10 border border-gray-200 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto">
             <h3 className="text-2xl font-black uppercase tracking-tighter italic text-gray-900">
               {isEditing ? 'Editar Perfil' : 'Novo Perfil'}
             </h3>

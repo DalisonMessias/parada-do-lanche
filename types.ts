@@ -1,6 +1,8 @@
 
 export type OrderStatus = 'PENDING' | 'PREPARING' | 'READY' | 'FINISHED' | 'CANCELLED';
 export type UserRole = 'ADMIN' | 'MANAGER' | 'WAITER';
+export type OrderApprovalStatus = 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
+export type OrderApprovalMode = 'HOST' | 'SELF';
 
 export interface StoreSettings {
   id: string;
@@ -14,6 +16,7 @@ export interface StoreSettings {
   sticker_border_color: string;
   sticker_muted_text_color: string;
   sticker_qr_frame_color: string;
+  order_approval_mode?: OrderApprovalMode;
 }
 
 export interface Profile {
@@ -63,6 +66,10 @@ export interface Session {
   status: 'OPEN' | 'LOCKED' | 'EXPIRED';
   host_guest_id: string;
   created_at: string;
+  closed_at?: string | null;
+  table?: { name: string } | null;
+  guests?: Guest[];
+  orders?: Order[];
 }
 
 export interface Guest {
@@ -91,6 +98,10 @@ export interface Order {
   table_id: string;
   session_id: string;
   status: OrderStatus;
+  approval_status?: OrderApprovalStatus;
+  created_by_guest_id?: string | null;
+  approved_by_guest_id?: string | null;
+  approved_at?: string | null;
   total_cents: number;
   created_at: string;
   table_name?: string;
@@ -104,6 +115,7 @@ export interface OrderItem {
   name_snapshot: string;
   unit_price_cents: number;
   qty: number;
+  status?: 'PENDING' | 'READY';
   note?: string;
   added_by_name: string;
 }

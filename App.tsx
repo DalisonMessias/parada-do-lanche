@@ -794,8 +794,8 @@ const App: React.FC = () => {
           )}
 
           {showAddonSelector && pendingProduct && (
-            <div className="fixed inset-0 z-[90] bg-gray-900/70 backdrop-blur-sm flex items-end">
-              <div className="bg-white w-full rounded-t-[28px] max-h-[85vh] overflow-y-auto p-6 space-y-6 border-t border-gray-100">
+            <div className="fixed inset-0 z-[90] bg-gray-900/70 backdrop-blur-sm flex items-end sm:items-center sm:justify-center p-0 sm:p-6">
+              <div className="bg-white w-full sm:max-w-2xl rounded-t-[28px] sm:rounded-[28px] max-h-[92dvh] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto p-5 sm:p-6 flex flex-col gap-6 border-t sm:border border-gray-100">
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">{pendingProduct.name}</h3>
@@ -808,7 +808,7 @@ const App: React.FC = () => {
                   <button onClick={() => { setShowAddonSelector(false); setPendingProduct(null); setSelectedAddonIds([]); }} className="text-gray-400 font-black">Fechar</button>
                 </div>
 
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   {getProductAddons(pendingProduct.id).length === 0 && (
                     <p className="text-sm text-gray-400 font-bold">Sem adicionais para este produto.</p>
                   )}
@@ -845,8 +845,8 @@ const App: React.FC = () => {
           )}
 
           {showCart && (
-            <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-sm flex items-end">
-              <div className="bg-white w-full rounded-t-[32px] max-h-[85vh] overflow-y-auto p-8 space-y-8 animate-in slide-in-from-bottom duration-300 border-t border-gray-100">
+            <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-sm flex items-end sm:items-center sm:justify-center p-0 sm:p-6">
+              <div className="bg-white w-full sm:max-w-3xl rounded-t-[32px] sm:rounded-[32px] max-h-[92dvh] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto p-5 sm:p-8 flex flex-col gap-6 sm:gap-8 animate-in slide-in-from-bottom duration-300 border-t sm:border border-gray-100">
                 <div className="flex justify-between items-center border-b border-gray-50 pb-5">
                    <div>
                     <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900 italic">Resumo Coletivo</h3>
@@ -856,7 +856,7 @@ const App: React.FC = () => {
                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
                   </button>
                 </div>
-                <div className="space-y-4">
+                <div className="flex flex-col gap-4">
                   {cart.map(item => (
                     <div key={item.id} className="flex justify-between items-center border-b border-gray-50 pb-4 last:border-0 last:pb-0">
                       <div className="flex gap-4 items-center">
@@ -877,7 +877,7 @@ const App: React.FC = () => {
                     </div>
                   ))}
                 </div>
-                <div className="pt-6 border-t-2 border-gray-50 space-y-6">
+                <div className="pt-6 border-t-2 border-gray-50 flex flex-col gap-6">
                   <div className="flex justify-between items-baseline font-black">
                     <span className="text-gray-400 text-[8px] uppercase tracking-[0.3em] font-black italic">Total da Mesa</span>
                     <span className="text-primary text-3xl tracking-tighter italic">{formatCurrency(getCartTotal())}</span>
@@ -913,7 +913,7 @@ const App: React.FC = () => {
                       Enviar para Preparo
                     </button>
                   ) : (
-                    <div className="bg-amber-50 border border-amber-100 p-5 rounded-xl text-center space-y-1.5 italic">
+                    <div className="bg-amber-50 border border-amber-100 p-5 rounded-xl text-center flex flex-col gap-1.5 italic">
                       <p className="text-[9px] font-black text-amber-800 uppercase tracking-widest">Aguardando Líder da Mesa</p>
                       <p className="text-[8px] text-amber-600 font-black uppercase tracking-[0.15em]">Apenas o responsável pela abertura pode fechar.</p>
                     </div>

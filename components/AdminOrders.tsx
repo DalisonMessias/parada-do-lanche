@@ -189,8 +189,8 @@ const AdminOrders: React.FC = () => {
       </div>
 
       {selectedSessionId && (
-        <div className="fixed inset-0 z-[200] bg-gray-900/75 backdrop-blur-sm flex items-center justify-center p-6">
-          <div className="w-full max-w-4xl bg-white rounded-[30px] border border-gray-200 p-8 max-h-[90vh] overflow-y-auto space-y-6">
+        <div className="fixed inset-0 z-[200] bg-gray-900/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6">
+          <div className="w-full max-w-4xl bg-white rounded-t-[28px] sm:rounded-[30px] border border-gray-200 p-5 sm:p-8 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto flex flex-col gap-6">
             <div className="flex items-center justify-between border-b border-gray-100 pb-4">
               <div>
                 <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900">Resumo da {selectedTableName}</h3>
