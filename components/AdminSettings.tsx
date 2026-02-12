@@ -16,6 +16,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
     store_name: '',
     primary_color: '#f97316',
     logo_url: '',
+    order_approval_mode: 'HOST' as 'HOST' | 'SELF',
     sticker_bg_color: '#ffffff',
     sticker_text_color: '#111827',
     sticker_border_color: '#111111',
@@ -31,6 +32,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
         store_name: settings.store_name,
         primary_color: settings.primary_color,
         logo_url: settings.logo_url || '',
+        order_approval_mode: (settings.order_approval_mode || 'HOST') as 'HOST' | 'SELF',
         sticker_bg_color: settings.sticker_bg_color || '#ffffff',
         sticker_text_color: settings.sticker_text_color || '#111827',
         sticker_border_color: settings.sticker_border_color || '#111111',
@@ -107,6 +109,17 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
                 <input type="color" value={formData.primary_color} onChange={e => setFormData({...formData, primary_color: e.target.value})} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
                 <input value={formData.primary_color} onChange={e => setFormData({...formData, primary_color: e.target.value})} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
               </div>
+            </div>
+            <div className="space-y-2 md:col-span-2">
+              <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">MODO DE ACEITE DA MESA</label>
+              <select
+                value={formData.order_approval_mode}
+                onChange={e => setFormData({ ...formData, order_approval_mode: e.target.value as 'HOST' | 'SELF' })}
+                className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black appearance-none"
+              >
+                <option value="HOST">Responsavel da mesa aprova tudo (recomendado)</option>
+                <option value="SELF">Cada pessoa aprova o proprio pedido</option>
+              </select>
             </div>
           </div>
 
