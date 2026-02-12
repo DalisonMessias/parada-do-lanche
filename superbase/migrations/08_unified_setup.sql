@@ -19,6 +19,35 @@ create table if not exists public.settings (
   sticker_qr_frame_color text not null default '#111111',
   constraint single_row check (id = 1)
 );
+alter table if exists public.settings
+  add column if not exists wifi_ssid text not null default '';
+alter table if exists public.settings
+  add column if not exists wifi_password text not null default '';
+alter table if exists public.settings
+  add column if not exists order_approval_mode text not null default 'HOST';
+alter table if exists public.settings
+  add column if not exists sticker_bg_color text not null default '#ffffff';
+alter table if exists public.settings
+  add column if not exists sticker_text_color text not null default '#111827';
+alter table if exists public.settings
+  add column if not exists sticker_border_color text not null default '#111111';
+alter table if exists public.settings
+  add column if not exists sticker_muted_text_color text not null default '#9ca3af';
+alter table if exists public.settings
+  add column if not exists sticker_qr_frame_color text not null default '#111111';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'settings_order_approval_mode_check'
+      and conrelid = 'public.settings'::regclass
+  ) then
+    alter table public.settings
+      add constraint settings_order_approval_mode_check
+      check (order_approval_mode in ('HOST', 'SELF'));
+  end if;
+end $$;
 
 create table if not exists public.profiles (
   id uuid references auth.users on delete cascade primary key,
@@ -48,6 +77,20 @@ create table if not exists public.products (
   out_of_stock boolean default false,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+alter table if exists public.products
+  add column if not exists addon_selection_mode text not null default 'MULTIPLE';
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'products_addon_selection_mode_check'
+      and conrelid = 'public.products'::regclass
+  ) then
+    alter table public.products
+      add constraint products_addon_selection_mode_check
+      check (addon_selection_mode in ('SINGLE', 'MULTIPLE'));
+  end if;
+end $$;
 
 create table if not exists public.product_addons (
   id uuid default uuid_generate_v4() primary key,
@@ -75,6 +118,33 @@ create table if not exists public.sessions (
   closed_at timestamp with time zone,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+alter table if exists public.sessions
+  add column if not exists closed_at timestamp with time zone;
+
+-- Corrige legado: se existir mais de uma sessao OPEN na mesma mesa, mantem apenas a mais recente.
+do $$
+begin
+  update public.sessions s
+  set
+    status = 'EXPIRED',
+    closed_at = coalesce(s.closed_at, timezone('utc'::text, now()))
+  from (
+    select id
+    from (
+      select
+        id,
+        row_number() over (
+          partition by table_id
+          order by created_at desc, id desc
+        ) as rn
+      from public.sessions
+      where status = 'OPEN'
+    ) ranked
+    where ranked.rn > 1
+  ) dup
+  where s.id = dup.id;
+end $$;
+
 create unique index if not exists uq_sessions_one_open_per_table
 on public.sessions(table_id)
 where status = 'OPEN';
@@ -113,6 +183,27 @@ create table if not exists public.orders (
   total_cents integer not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+alter table if exists public.orders
+  add column if not exists created_by_guest_id uuid references public.session_guests(id) on delete set null;
+alter table if exists public.orders
+  add column if not exists approval_status text not null default 'PENDING_APPROVAL';
+alter table if exists public.orders
+  add column if not exists approved_by_guest_id uuid references public.session_guests(id) on delete set null;
+alter table if exists public.orders
+  add column if not exists approved_at timestamp with time zone;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'orders_approval_status_check'
+      and conrelid = 'public.orders'::regclass
+  ) then
+    alter table public.orders
+      add constraint orders_approval_status_check
+      check (approval_status in ('PENDING_APPROVAL', 'APPROVED', 'REJECTED'));
+  end if;
+end $$;
 
 create table if not exists public.order_items (
   id uuid default uuid_generate_v4() primary key,
@@ -125,6 +216,20 @@ create table if not exists public.order_items (
   note text,
   added_by_name text not null
 );
+alter table if exists public.order_items
+  add column if not exists status text not null default 'PENDING';
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'order_items_status_check'
+      and conrelid = 'public.order_items'::regclass
+  ) then
+    alter table public.order_items
+      add constraint order_items_status_check
+      check (status in ('PENDING', 'READY'));
+  end if;
+end $$;
 
 insert into public.settings (id, store_name, primary_color)
 values (1, 'Parada do Lanche', '#f97316')
@@ -191,6 +296,9 @@ begin
   return v_session_id;
 end;
 $$;
+
+-- Garante refresh do schema cache da API (PostgREST/Supabase)
+select pg_notify('pgrst', 'reload schema');
 
 -- Storage bucket e policies para assets (logo/fotos)
 insert into storage.buckets (id, name, public)

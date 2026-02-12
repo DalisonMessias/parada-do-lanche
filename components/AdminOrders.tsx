@@ -60,6 +60,18 @@ const normalizeSession = (row: any): SessionAggregate => {
 
 const sumOrderItems = (items: OrderItem[] = []) => items.reduce((acc, item) => acc + (item.qty || 0), 0);
 
+const approvalLabel: Record<string, string> = {
+  PENDING_APPROVAL: 'Aguardando aceite',
+  APPROVED: 'Confirmado',
+  REJECTED: 'Rejeitado',
+};
+
+const approvalClass: Record<string, string> = {
+  PENDING_APPROVAL: 'bg-amber-50 text-amber-700 border-amber-100',
+  APPROVED: 'bg-green-50 text-green-700 border-green-100',
+  REJECTED: 'bg-red-50 text-red-700 border-red-100',
+};
+
 const beep = () => {
   try {
     const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
@@ -152,12 +164,12 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     [filteredSessions, selectedSessionId]
   );
 
-  const getApprovedOrders = (session: SessionAggregate) => {
+  const getVisibleOrders = (session: SessionAggregate) => {
     return (session.orders || []).filter((order) => order.approval_status !== 'REJECTED');
   };
 
   const getConfirmedOrders = (session: SessionAggregate) => {
-    return getApprovedOrders(session).filter((order) => order.approval_status === 'APPROVED');
+    return getVisibleOrders(session).filter((order) => order.approval_status === 'APPROVED');
   };
 
   const getSessionTotal = (session: SessionAggregate) => {
@@ -167,7 +179,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
   };
 
   const getSessionItemsCount = (session: SessionAggregate) => {
-    return getConfirmedOrders(session)
+    return getVisibleOrders(session)
       .filter((order) => order.status !== 'CANCELLED')
       .reduce((acc, order) => acc + sumOrderItems(order.items), 0);
   };
@@ -194,10 +206,10 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     return Array.from(map.entries()).map(([name, row]) => ({ name, total: row.total, items: row.items }));
   };
 
-  const getConsolidatedItems = (session: SessionAggregate) => {
+  const getConsolidatedItems = (orders: (Order & { items?: OrderItem[] })[]) => {
     const map = new Map<string, { qty: number; total: number; notes: string[]; ready: number; pending: number }>();
 
-    getConfirmedOrders(session)
+    orders
       .filter((order) => order.status !== 'CANCELLED')
       .forEach((order) => {
         (order.items || []).forEach((item) => {
@@ -282,10 +294,22 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
 
     const nowIso = new Date().toISOString();
 
-    const { error: sessionError } = await supabase
+    let { error: sessionError } = await supabase
       .from('sessions')
       .update({ status: 'EXPIRED', closed_at: nowIso })
       .eq('id', session.id);
+
+    if (sessionError && /closed_at/i.test(sessionError.message || '')) {
+      const retry = await supabase
+        .from('sessions')
+        .update({ status: 'EXPIRED' })
+        .eq('id', session.id);
+      sessionError = retry.error;
+
+      if (!sessionError) {
+        toast('Mesa finalizada sem campo closed_at (atualize o SQL unificado no banco).', 'info');
+      }
+    }
 
     if (sessionError) {
       toast(`Erro ao finalizar mesa: ${sessionError.message}`, 'error');
@@ -314,7 +338,8 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     const tableName = session.table?.name || 'Mesa';
     const createdAt = new Date(session.created_at).toLocaleString();
     const closedAt = session.closed_at ? new Date(session.closed_at).toLocaleString() : '-';
-    const consolidated = getConsolidatedItems(session);
+    const visibleOrders = getVisibleOrders(session);
+    const consolidated = getConsolidatedItems(visibleOrders);
     const byGuest = getTotalsByGuest(session);
     const total = getSessionTotal(session);
 
@@ -340,6 +365,22 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     <div class="meta">Abertura: ${createdAt}</div>
     <div class="meta">Fechamento: ${closedAt}</div>
     <div class="sep"></div>
+    ${visibleOrders
+      .map(
+        (order) => `
+      <div class="row"><span>Pedido #${order.id.slice(0, 6)} - ${approvalLabel[order.approval_status || 'APPROVED'] || 'Confirmado'}</span><span>${formatCurrency(order.total_cents)}</span></div>
+      ${(order.items || [])
+        .map(
+          (item) =>
+            `<div class="small">${item.qty}x ${item.name_snapshot} (${item.added_by_name})</div>${
+              item.note ? `<div class="small">Obs: ${item.note}</div>` : ''
+            }`
+        )
+        .join('')}
+      <div class="sep"></div>
+      `
+      )
+      .join('')}
     ${consolidated
       .map(
         (item) => `
@@ -456,7 +497,8 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
   const selectedTotalsByGuest = selectedSession ? getTotalsByGuest(selectedSession) : [];
   const selectedTotal = selectedSession ? getSessionTotal(selectedSession) : 0;
   const selectedPendingApprovals = selectedSession ? getPendingApprovals(selectedSession) : [];
-  const selectedConsolidated = selectedSession ? getConsolidatedItems(selectedSession) : [];
+  const selectedVisibleOrders = selectedSession ? getVisibleOrders(selectedSession) : [];
+  const selectedConsolidated = selectedSession ? getConsolidatedItems(selectedVisibleOrders) : [];
 
   const equalSplitValue = splitPeople > 0 ? selectedTotal / splitPeople : 0;
 
@@ -520,6 +562,44 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
                 ))}
               </div>
             )}
+
+            <section className="border border-gray-100 rounded-2xl p-4 flex flex-col gap-3">
+              <h4 className="text-xs font-black uppercase tracking-widest text-gray-500">Pedidos da mesa (individuais)</h4>
+              <div className="flex flex-col gap-2 max-h-[32vh] overflow-auto pr-1">
+                {selectedVisibleOrders.length === 0 && (
+                  <p className="text-sm text-gray-400 font-bold">Nenhum pedido enviado.</p>
+                )}
+                {selectedVisibleOrders.map((order) => (
+                  <div key={order.id} className="border border-gray-100 rounded-xl p-3 flex flex-col gap-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-black text-gray-800">
+                        Pedido #{order.id.slice(0, 6)} • {new Date(order.created_at).toLocaleTimeString()}
+                      </p>
+                      <div className="flex gap-1.5">
+                        <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest ${approvalClass[order.approval_status || 'APPROVED'] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>
+                          {approvalLabel[order.approval_status || 'APPROVED'] || 'Confirmado'}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest ${orderStatusClass[order.status]}`}>
+                          {orderStatusLabel[order.status]}
+                        </span>
+                      </div>
+                    </div>
+                    {(order.items || []).map((item) => (
+                      <div key={item.id} className="flex items-start justify-between gap-2 border-t border-gray-50 pt-2">
+                        <div>
+                          <p className="font-black text-gray-700 text-sm">{item.qty}x {item.name_snapshot}</p>
+                          <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
+                            Pedido por {item.added_by_name}
+                          </p>
+                          {item.note && <p className="text-[10px] text-gray-500 font-black mt-1">{item.note}</p>}
+                        </div>
+                        <span className="font-black text-gray-800 text-sm">{formatCurrency(item.qty * item.unit_price_cents)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </section>
 
             <div className="grid lg:grid-cols-2 gap-6">
               <section className="border border-gray-100 rounded-2xl p-4 flex flex-col gap-3">
