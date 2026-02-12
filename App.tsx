@@ -910,19 +910,56 @@ const App: React.FC = () => {
           </div>
 
           <div className="p-4 space-y-8">
-            {session?.status === 'LOCKED' && <div className="bg-gray-900 text-white p-4 rounded-xl text-center font-black text-[9px] uppercase tracking-[0.2em] italic animate-pulse">Pedido enviado para a cozinha!</div>}
+            {pendingApprovalOrders.length > 0 && (
+              <section className="bg-amber-50 border border-amber-100 rounded-2xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-black text-amber-800 uppercase tracking-widest">Aguardando Aceite</h3>
+                  <span className="text-[9px] text-amber-700 font-black uppercase tracking-widest">
+                    {pendingApprovalOrders.length} pedido(s)
+                  </span>
+                </div>
+                {pendingApprovalOrders.map((order) => (
+                  <div key={order.id} className="bg-white border border-amber-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="font-black text-gray-800">Pedido #{order.id.slice(0, 6)}</p>
+                      <p className="text-[9px] text-gray-500 font-black uppercase tracking-widest mt-1">
+                        {new Date(order.created_at).toLocaleTimeString()} • {formatCurrency(order.total_cents)}
+                      </p>
+                    </div>
+                    {guest.is_host ? (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleApprovePendingOrder(order.id, true)}
+                          className="px-3 py-2 rounded-lg bg-green-600 text-white text-[9px] font-black uppercase tracking-widest"
+                        >
+                          Aceitar
+                        </button>
+                        <button
+                          onClick={() => handleApprovePendingOrder(order.id, false)}
+                          className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600 text-[9px] font-black uppercase tracking-widest"
+                        >
+                          Rejeitar
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="text-[9px] text-amber-700 font-black uppercase tracking-widest">Aguardando responsavel</p>
+                    )}
+                  </div>
+                ))}
+              </section>
+            )}
 
-            {sessionOrders.length > 0 && (
+            {sessionConfirmedOrders.length > 0 && (
               <section className="bg-white border border-gray-100 rounded-2xl p-4 space-y-4">
                 <div>
                   <h3 className="text-base font-black text-gray-900 uppercase tracking-tighter">Acompanhamento da Mesa</h3>
                   <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                    Status dos pedidos enviados e resumo para fechamento
+                    Pedidos confirmados e totais por pessoa
                   </p>
                 </div>
 
                 <div className="space-y-3">
-                  {sessionOrders.map((order) => (
+                  {sessionConfirmedOrders.map((order) => (
                     <div key={order.id} className="border border-gray-100 rounded-xl p-3 space-y-2">
                       <div className="flex justify-between items-center">
                         <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">
@@ -1024,20 +1061,20 @@ const App: React.FC = () => {
             ))}
           </div>
 
-          {session?.status === 'OPEN' && cart.length > 0 && (
+          {session?.status === 'OPEN' && myCartItems.length > 0 && (
             <div className="fixed bottom-0 left-0 right-0 p-5 bg-white border-t border-gray-100 z-50">
               <button onClick={() => setShowCart(true)} className="w-full max-w-md mx-auto bg-gray-900 text-white p-4 rounded-xl flex justify-between items-center transition-transform active:scale-95">
                 <div className="flex items-center gap-4">
                   <div className="w-9 h-9 bg-primary rounded-lg flex items-center justify-center text-xs font-black text-white italic">
-                    {cart.reduce((a, b) => a + b.qty, 0)}
+                    {myCartItems.reduce((a, b) => a + b.qty, 0)}
                   </div>
                   <div className="text-left">
-                    <span className="block font-black text-[9px] uppercase tracking-[0.2em] leading-none mb-1 italic">Itens da Mesa</span>
-                    <span className="text-[7px] text-gray-500 font-black uppercase tracking-widest">{cart.length} pessoas pedindo</span>
+                    <span className="block font-black text-[9px] uppercase tracking-[0.2em] leading-none mb-1 italic">Meu Carrinho</span>
+                    <span className="text-[7px] text-gray-500 font-black uppercase tracking-widest">{myCartItems.length} item(ns) seus</span>
                   </div>
                 </div>
                 <div className="flex flex-col items-end">
-                   <span className="font-black text-primary text-lg tracking-tighter leading-none italic">{formatCurrency(getCartTotal())}</span>
+                   <span className="font-black text-primary text-lg tracking-tighter leading-none italic">{formatCurrency(myCartTotal)}</span>
                 </div>
               </button>
             </div>
