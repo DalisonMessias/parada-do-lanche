@@ -1,5 +1,5 @@
 
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { supabase, formatCurrency } from './services/supabase';
 import { AppView, Table, Session, Guest, CartItem, Category, Product, ProductAddon, StoreSettings, Profile, UserRole, Order, OrderStatus } from './types';
 import Layout from './components/Layout';
@@ -8,6 +8,29 @@ import AdminTables from './components/AdminTables';
 import AdminMenu from './components/AdminMenu';
 import AdminSettings from './components/AdminSettings';
 import AdminStaff from './components/AdminStaff';
+import { useFeedback } from './components/feedback/FeedbackProvider';
+
+const playLocalBeep = () => {
+  try {
+    const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextCtor) return;
+    const ctx = new AudioContextCtor();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.value = 880;
+    gain.gain.value = 0.02;
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.12);
+    osc.onended = () => ctx.close();
+  } catch {
+    // noop
+  }
+};
 
 const App: React.FC = () => {
   const adminAccessKey = ((import.meta as any).env?.VITE_ADMIN_ACCESS_KEY || '').trim();
@@ -30,10 +53,13 @@ const App: React.FC = () => {
   const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>([]);
   const [sessionOrders, setSessionOrders] = useState<Order[]>([]);
   const [tempRegisterStatus, setTempRegisterStatus] = useState('');
-  const [adminTab, setAdminTab] = useState<'ORDERS' | 'TABLES' | 'MENU' | 'SETTINGS' | 'STAFF'>('ORDERS');
+  const [adminTab, setAdminTab] = useState<'ACTIVE_TABLES' | 'FINISHED_ORDERS' | 'TABLES' | 'MENU' | 'SETTINGS' | 'STAFF'>('ACTIVE_TABLES');
   const [isLoading, setIsLoading] = useState(false);
   const [adminEmail, setAdminEmail] = useState('');
   const [user, setUser] = useState<any>(null);
+  const swRegistrationRef = useRef<ServiceWorkerRegistration | null>(null);
+  const lastNotificationRef = useRef<string>('');
+  const { toast, confirm } = useFeedback();
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -60,8 +86,49 @@ const App: React.FC = () => {
     if (data) setSettings(data);
   };
 
+  const pushLocalNotification = async (title: string, body: string, tag: string) => {
+    const dedupeKey = `${tag}:${title}:${body}`;
+    if (lastNotificationRef.current === dedupeKey) return;
+    lastNotificationRef.current = dedupeKey;
+    setTimeout(() => {
+      if (lastNotificationRef.current === dedupeKey) lastNotificationRef.current = '';
+    }, 1200);
+
+    playLocalBeep();
+    toast(body, 'info');
+
+    try {
+      if (!('Notification' in window)) return;
+      if (Notification.permission === 'default') {
+        await Notification.requestPermission();
+      }
+      if (Notification.permission !== 'granted') return;
+
+      const reg = swRegistrationRef.current;
+      if (reg?.active) {
+        reg.active.postMessage({ type: 'SHOW_NOTIFICATION', title, body, tag });
+      } else {
+        new Notification(title, { body, tag });
+      }
+    } catch {
+      // noop
+    }
+  };
+
   useEffect(() => {
     fetchSettings();
+  }, []);
+
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker
+      .register('/sw.js')
+      .then((reg) => {
+        swRegistrationRef.current = reg;
+      })
+      .catch(() => {
+        swRegistrationRef.current = null;
+      });
   }, []);
 
   useEffect(() => {
@@ -165,7 +232,54 @@ const App: React.FC = () => {
 
     const channel = supabase
       .channel(`session_orders:${session.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `session_id=eq.${session.id}` }, fetchSessionOrders)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders', filter: `session_id=eq.${session.id}` },
+        async (payload) => {
+          fetchSessionOrders();
+          const row = (payload.new || payload.old || {}) as any;
+
+          if (payload.eventType === 'INSERT' && row.created_by_guest_id !== guest?.id) {
+            await pushLocalNotification('Mesa atualizada', 'Novo pedido enviado para esta mesa.', `order-insert-${session.id}`);
+          }
+
+          if (payload.eventType === 'UPDATE' && row.status === 'READY') {
+            await pushLocalNotification('Pedido pronto', 'Um pedido da mesa foi marcado como pronto.', `order-ready-${session.id}`);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [session?.id, guest?.id]);
+
+  useEffect(() => {
+    if (!session?.id) return;
+
+    const channel = supabase
+      .channel(`session_state:${session.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'sessions', filter: `id=eq.${session.id}` },
+        async (payload) => {
+          const row = payload.new as Session;
+          if (row.status === 'EXPIRED') {
+            localStorage.removeItem(`guest_${session.id}`);
+            setCart([]);
+            setGuest(null);
+            setSession(null);
+            setActiveTable(null);
+            setSessionOrders([]);
+            setShowCart(false);
+            await pushLocalNotification('Mesa finalizada', 'A mesa foi encerrada pelo atendimento.', `session-closed-${session.id}`);
+            window.location.hash = '/';
+          } else {
+            setSession(row);
+          }
+        }
+      )
       .subscribe();
 
     return () => {
@@ -176,17 +290,48 @@ const App: React.FC = () => {
   const handleOpenTable = async (name: string) => {
     if (!activeTable) return;
     setIsLoading(true);
-    const { data: newSession } = await supabase.from('sessions').insert({ table_id: activeTable.id, status: 'OPEN' }).select().single();
-    if (newSession) {
-      const { data: newGuest } = await supabase.from('session_guests').insert({ session_id: newSession.id, name, is_host: true }).select().single();
-      if (newGuest) {
-        await supabase.from('sessions').update({ host_guest_id: newGuest.id }).eq('id', newSession.id);
-        await supabase.from('tables').update({ status: 'OCCUPIED' }).eq('id', activeTable.id);
-        setSession(newSession);
-        setGuest(newGuest);
-        localStorage.setItem(`guest_${newSession.id}`, JSON.stringify(newGuest));
+    let openSession: Session | null = session;
+
+    if (!openSession || openSession.status !== 'OPEN') {
+      const { data: sessionId, error: sessionError } = await supabase.rpc('get_or_create_open_session', { p_table_id: activeTable.id });
+      if (sessionError || !sessionId) {
+        setIsLoading(false);
+        toast(sessionError?.message || 'Nao foi possivel abrir a mesa.', 'error');
+        return;
       }
+
+      const { data: loadedSession } = await supabase.from('sessions').select('*').eq('id', sessionId).maybeSingle();
+      openSession = (loadedSession as Session) || null;
     }
+
+    if (!openSession) {
+      setIsLoading(false);
+      toast('Nao foi possivel iniciar a sessao da mesa.', 'error');
+      return;
+    }
+
+    const isFirstGuest = !openSession.host_guest_id;
+    const { data: newGuest } = await supabase
+      .from('session_guests')
+      .insert({ session_id: openSession.id, name, is_host: isFirstGuest })
+      .select()
+      .single();
+
+    if (newGuest) {
+      if (isFirstGuest) {
+        await supabase.from('sessions').update({ host_guest_id: newGuest.id }).eq('id', openSession.id);
+      }
+
+      const { data: refreshedSession } = await supabase.from('sessions').select('*').eq('id', openSession.id).maybeSingle();
+      if (refreshedSession) {
+        setSession(refreshedSession as Session);
+      } else {
+        setSession(openSession);
+      }
+      setGuest(newGuest);
+      localStorage.setItem(`guest_${openSession.id}`, JSON.stringify(newGuest));
+    }
+
     setIsLoading(false);
   };
 
@@ -239,26 +384,126 @@ const App: React.FC = () => {
     CANCELLED: 'bg-red-50 text-red-600 border-red-100',
   };
 
-  const sessionActiveOrders = useMemo(
-    () => sessionOrders.filter((order) => order.status !== 'CANCELLED'),
+  const myCartItems = useMemo(
+    () => cart.filter((item) => item.guest_id === guest?.id),
+    [cart, guest?.id]
+  );
+
+  const pendingApprovalOrders = useMemo(
+    () => sessionOrders.filter((order) => order.approval_status === 'PENDING_APPROVAL'),
+    [sessionOrders]
+  );
+
+  const sessionConfirmedOrders = useMemo(
+    () => sessionOrders.filter((order) => order.approval_status === 'APPROVED' && order.status !== 'CANCELLED'),
     [sessionOrders]
   );
 
   const sessionFinalTotal = useMemo(
-    () => sessionActiveOrders.reduce((acc, order) => acc + order.total_cents, 0),
-    [sessionActiveOrders]
+    () => sessionConfirmedOrders.reduce((acc, order) => acc + order.total_cents, 0),
+    [sessionConfirmedOrders]
   );
 
   const sessionTotalsByGuest = useMemo(() => {
     const map = new Map<string, number>();
-    sessionActiveOrders.forEach((order) => {
+    sessionConfirmedOrders.forEach((order) => {
       (order.items || []).forEach((item) => {
         const current = map.get(item.added_by_name) || 0;
         map.set(item.added_by_name, current + item.qty * item.unit_price_cents);
       });
     });
     return Array.from(map.entries()).map(([name, total]) => ({ name, total }));
-  }, [sessionActiveOrders]);
+  }, [sessionConfirmedOrders]);
+
+  const myCartTotal = useMemo(
+    () => myCartItems.reduce((acc, item) => acc + getCartItemUnitPrice(item) * item.qty, 0),
+    [myCartItems]
+  );
+
+  const handleApprovePendingOrder = async (orderId: string, approve: boolean) => {
+    if (!guest?.is_host) return;
+
+    const accepted = approve ? 'aceitar' : 'rejeitar';
+    const ok = await confirm(`Deseja ${accepted} este pedido para a mesa?`);
+    if (!ok) return;
+
+    const payload = approve
+      ? { approval_status: 'APPROVED', status: 'PENDING', approved_by_guest_id: guest.id, approved_at: new Date().toISOString() }
+      : { approval_status: 'REJECTED', status: 'CANCELLED' };
+
+    const { error } = await supabase.from('orders').update(payload).eq('id', orderId);
+    if (error) {
+      toast(`Erro ao atualizar aceite: ${error.message}`, 'error');
+      return;
+    }
+
+    toast(approve ? 'Pedido aceito e enviado para preparo.' : 'Pedido rejeitado.', approve ? 'success' : 'info');
+  };
+
+  const handleSendMyCart = async () => {
+    if (!session || !guest) return;
+    if (myCartItems.length === 0) {
+      toast('Seu carrinho esta vazio.', 'info');
+      return;
+    }
+
+    setIsLoading(true);
+
+    const approvalMode = (settings?.order_approval_mode || 'HOST') as 'HOST' | 'SELF';
+    const requiresHostApproval = approvalMode === 'HOST' && !guest.is_host;
+    const total = myCartItems.reduce((acc, item) => acc + getCartItemUnitPrice(item) * item.qty, 0);
+
+    const { data: order, error: orderError } = await supabase
+      .from('orders')
+      .insert({
+        table_id: session.table_id,
+        session_id: session.id,
+        status: 'PENDING',
+        approval_status: requiresHostApproval ? 'PENDING_APPROVAL' : 'APPROVED',
+        created_by_guest_id: guest.id,
+        approved_by_guest_id: requiresHostApproval ? null : guest.id,
+        approved_at: requiresHostApproval ? null : new Date().toISOString(),
+        total_cents: total,
+      })
+      .select()
+      .single();
+
+    if (orderError || !order) {
+      setIsLoading(false);
+      toast(orderError?.message || 'Erro ao enviar pedido.', 'error');
+      return;
+    }
+
+    const items = myCartItems.map((item) => ({
+      order_id: order.id,
+      product_id: item.product_id,
+      name_snapshot: item.product?.name || 'Item',
+      unit_price_cents: getCartItemUnitPrice(item),
+      qty: item.qty,
+      note: (item.addon_names?.length || 0) > 0 ? `Adicionais: ${item.addon_names?.join(', ')}` : null,
+      added_by_name: item.guest_name || guest.name,
+      status: 'PENDING',
+    }));
+
+    const { error: itemsError } = await supabase.from('order_items').insert(items);
+    if (itemsError) {
+      setIsLoading(false);
+      toast(`Erro ao salvar itens: ${itemsError.message}`, 'error');
+      return;
+    }
+
+    await supabase.from('cart_items').delete().eq('session_id', session.id).eq('guest_id', guest.id);
+    setShowCart(false);
+    setIsLoading(false);
+
+    if (requiresHostApproval) {
+      toast(`Seus itens foram enviados para a ${activeTable?.name}. Aguardando aceite do responsavel.`, 'info');
+      await pushLocalNotification('Pedido enviado', 'Aguardando aceite do responsavel da mesa.', `pending-approval-${order.id}`);
+    } else {
+      toast('Pedido enviado para a cozinha.', 'success');
+      await pushLocalNotification('Pedido confirmado', 'Seu pedido entrou na fila de preparo.', `approved-order-${order.id}`);
+    }
+  };
 
   const handleAddProductWithAddons = async (product: Product, addonIdsRaw: string[]) => {
     if (!session || !guest) return;
@@ -564,9 +809,13 @@ const App: React.FC = () => {
               <div className="px-2">
                 <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Operação</h3>
                 <nav className="space-y-1">
-                  <button onClick={() => setAdminTab('ORDERS')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border ${adminTab === 'ORDERS' ? 'bg-primary text-white border-primary font-black' : 'text-gray-500 font-bold hover:bg-gray-50 border-transparent'}`}>
+                  <button onClick={() => setAdminTab('ACTIVE_TABLES')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border ${adminTab === 'ACTIVE_TABLES' ? 'bg-primary text-white border-primary font-black' : 'text-gray-500 font-bold hover:bg-gray-50 border-transparent'}`}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                    Pedidos
+                    Mesas Ativas
+                  </button>
+                  <button onClick={() => setAdminTab('FINISHED_ORDERS')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border ${adminTab === 'FINISHED_ORDERS' ? 'bg-primary text-white border-primary font-black' : 'text-gray-500 font-bold hover:bg-gray-50 border-transparent'}`}>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
+                    Pedidos Finalizados
                   </button>
                   <button onClick={() => setAdminTab('TABLES')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border ${adminTab === 'TABLES' ? 'bg-primary text-white border-primary font-black' : 'text-gray-500 font-bold hover:bg-gray-50 border-transparent'}`}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
@@ -613,7 +862,8 @@ const App: React.FC = () => {
           {/* Conteúdo Principal */}
           <main className="flex-1 overflow-y-auto">
             <div className="p-8">
-              {adminTab === 'ORDERS' && <AdminOrders />}
+              {adminTab === 'ACTIVE_TABLES' && <AdminOrders mode="ACTIVE" />}
+              {adminTab === 'FINISHED_ORDERS' && <AdminOrders mode="FINISHED" />}
               {adminTab === 'MENU' && <AdminMenu />}
               {adminTab === 'TABLES' && <AdminTables settings={settings} />}
               {adminTab === 'SETTINGS' && <AdminSettings settings={settings} onUpdate={fetchSettings} profile={profile} />}
