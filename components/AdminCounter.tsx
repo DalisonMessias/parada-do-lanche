@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+﻿import React, { useEffect, useMemo, useState } from 'react';
 import { formatCurrency, supabase } from '../services/supabase';
 import { printKitchenTicket } from '../services/kitchenPrint';
-import { DiscountMode, Order, OrderItem, Product, ProductAddon, Profile, Session, StoreSettings } from '../types';
+import { DeliveryAddress, DiscountMode, Order, OrderItem, Product, ProductAddon, Profile, ServiceType, Session, StoreSettings } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
 
 type SessionWithDetails = Session & {
@@ -71,6 +71,14 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
   const [customerName, setCustomerName] = useState('Balcao');
   const [customerPhone, setCustomerPhone] = useState('');
   const [generalNote, setGeneralNote] = useState('');
+  const [serviceType, setServiceType] = useState<ServiceType>('RETIRADA');
+  const [deliveryStreet, setDeliveryStreet] = useState('');
+  const [deliveryNumber, setDeliveryNumber] = useState('');
+  const [deliveryNeighborhood, setDeliveryNeighborhood] = useState('');
+  const [deliveryComplement, setDeliveryComplement] = useState('');
+  const [deliveryReference, setDeliveryReference] = useState('');
+  const [deliveryCity, setDeliveryCity] = useState('');
+  const [deliveryFeeInput, setDeliveryFeeInput] = useState('0');
 
   const [discountMode, setDiscountMode] = useState<DiscountMode>('NONE');
   const [discountInput, setDiscountInput] = useState('');
@@ -183,13 +191,44 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
     return 0;
   }, [discountMode, discountValueNormalized, subtotalCents]);
 
-  const totalCents = Math.max(0, subtotalCents - discountCents);
+  const deliveryFeeCents = useMemo(
+    () => (serviceType === 'ENTREGA' ? parseMoneyToCents(deliveryFeeInput) : 0),
+    [serviceType, deliveryFeeInput]
+  );
+
+  const totalCents = Math.max(0, subtotalCents - discountCents + deliveryFeeCents);
 
   const resetCart = () => {
     setCartItems([]);
     setDiscountMode('NONE');
     setDiscountInput('');
     setGeneralNote('');
+    setServiceType('RETIRADA');
+    setCustomerName('Balcao');
+    setCustomerPhone('');
+    setDeliveryStreet('');
+    setDeliveryNumber('');
+    setDeliveryNeighborhood('');
+    setDeliveryComplement('');
+    setDeliveryReference('');
+    setDeliveryCity('');
+    setDeliveryFeeInput('0');
+  };
+
+  const activatePickup = () => {
+    setServiceType('RETIRADA');
+    if (!customerName.trim()) {
+      setCustomerName('Balcao');
+    }
+  };
+
+  const activateDelivery = () => {
+    setServiceType('ENTREGA');
+    const defaultFee = Math.max(0, Number(settings?.default_delivery_fee_cents || 0));
+    setDeliveryFeeInput((defaultFee / 100).toFixed(2));
+    if ((customerName || '').trim().toLowerCase() === 'balcao') {
+      setCustomerName('');
+    }
   };
 
   const openAddModal = (product: Product) => {
@@ -301,6 +340,17 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
       return;
     }
 
+    if (serviceType === 'ENTREGA') {
+      if (!customerName.trim()) {
+        toast('Nome do cliente e obrigatorio para entrega.', 'error');
+        return;
+      }
+      if (!deliveryStreet.trim() || !deliveryNumber.trim() || !deliveryNeighborhood.trim()) {
+        toast('Preencha rua, numero e bairro para pedidos de entrega.', 'error');
+        return;
+      }
+    }
+
     setLoading(true);
     const target = await resolveTarget();
     if ('error' in target) {
@@ -319,6 +369,18 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
       status: 'PENDING',
     }));
 
+    const deliveryAddress: DeliveryAddress | null =
+      serviceType === 'ENTREGA'
+        ? {
+            street: deliveryStreet.trim(),
+            number: deliveryNumber.trim(),
+            neighborhood: deliveryNeighborhood.trim(),
+            complement: deliveryComplement.trim() || undefined,
+            reference: deliveryReference.trim() || undefined,
+            city: deliveryCity.trim() || undefined,
+          }
+        : null;
+
     const { data: orderId, error } = await supabase.rpc('create_staff_order', {
       p_session_id: target.session_id,
       p_table_id: target.table_id,
@@ -326,9 +388,12 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
       p_created_by_profile_id: profile.id,
       p_added_by_name: profile.name || 'Operador',
       p_parent_order_id: target.parent_order_id,
-      p_customer_name: customerName.trim() || 'Balcao',
+      p_customer_name: serviceType === 'ENTREGA' ? customerName.trim() : (customerName.trim() || 'Balcao'),
       p_customer_phone: customerPhone.trim() || null,
       p_general_note: generalNote.trim() || null,
+      p_service_type: serviceType,
+      p_delivery_address: deliveryAddress,
+      p_delivery_fee_cents: deliveryFeeCents,
       p_discount_mode: discountMode,
       p_discount_value: discountValueNormalized,
       p_items: payloadItems,
@@ -349,10 +414,25 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
 
       if (createdOrder) {
         const order = createdOrder as Order & { items?: OrderItem[] };
+        const deliveryLines =
+          serviceType === 'ENTREGA' && deliveryAddress
+            ? [
+                `${deliveryAddress.street}, ${deliveryAddress.number} - ${deliveryAddress.neighborhood}`,
+                [deliveryAddress.complement, deliveryAddress.reference, deliveryAddress.city].filter(Boolean).join(' | '),
+                customerPhone.trim() ? `Tel: ${customerPhone.trim()}` : '',
+              ].filter(Boolean)
+            : [];
+
         const result = await printKitchenTicket({
           storeName: settings?.store_name || 'Parada do Lanche',
           tableName: target.table_name || 'BALCAO',
           filterLabel: `Pedido #${String(orderId).slice(0, 6)}`,
+          ticketTitle:
+            serviceType === 'ENTREGA'
+              ? (customerName.trim() || order.customer_name || 'Cliente')
+              : `COMANDA BALCAO ${profile.name || 'Operador'}`,
+          orderTypeLabel: serviceType === 'ENTREGA' ? 'ENTREGA' : 'RETIRADA',
+          deliveryDetails: deliveryLines,
           openedAt: new Date().toISOString(),
           closedAt: null,
           totalCents: order.total_cents || 0,
@@ -410,7 +490,7 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
       <div className="bg-white border border-gray-200 rounded-[28px] p-10 text-center">
         <h2 className="text-2xl font-black uppercase tracking-tighter text-gray-900">Modulo Balcao Desabilitado</h2>
         <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-3">
-          Habilite o modulo em Identidade para permitir lancamentos no balcao.
+          Habilite o modulo em Configuracoes para permitir lancamentos no balcao.
         </p>
       </div>
     );
@@ -519,7 +599,7 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
               <div key={product.id} className="border border-gray-100 rounded-xl p-3 flex justify-between items-center gap-2">
                 <div>
                   <p className="text-sm font-black text-gray-800">{product.name}</p>
-                  <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">{(categories.find((category) => category.id === product.category_id)?.name || 'Categoria').toUpperCase()} � {product.id.slice(0, 8)}</p>
+                  <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">{(categories.find((category) => category.id === product.category_id)?.name || 'Categoria').toUpperCase()} • {product.id.slice(0, 8)}</p>
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="font-black text-gray-900">{formatCurrency(product.price_cents)}</span>
@@ -647,3 +727,4 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
 };
 
 export default AdminCounter;
+
