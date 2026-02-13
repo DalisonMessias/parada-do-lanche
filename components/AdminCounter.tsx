@@ -523,7 +523,7 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
 
         <div className="grid lg:grid-cols-3 gap-4">
           <div className="space-y-2">
-            <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Tipo de pedido</label>
+            <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Fluxo do pedido</label>
             <div className="flex gap-2">
               <button onClick={() => setMode('NEW')} className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${mode === 'NEW' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}>
                 Novo
@@ -535,15 +535,79 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
           </div>
 
           <div className="space-y-2">
-            <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Cliente (opcional)</label>
-            <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="Balcao" className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary" />
+            <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Tipo de atendimento</label>
+            <div className="flex gap-2">
+              <button
+                onClick={activatePickup}
+                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${serviceType === 'RETIRADA' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}
+              >
+                Retirada
+              </button>
+              <button
+                onClick={activateDelivery}
+                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${serviceType === 'ENTREGA' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}
+              >
+                Entrega
+              </button>
+            </div>
           </div>
 
+          <div className="space-y-2">
+            <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">
+              Cliente {serviceType === 'ENTREGA' ? '(obrigatorio)' : '(opcional)'}
+            </label>
+            <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder={serviceType === 'ENTREGA' ? 'Nome do cliente' : 'Balcao'} className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary" />
+          </div>
+        </div>
+
+        <div className="grid lg:grid-cols-3 gap-4">
           <div className="space-y-2">
             <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Telefone (opcional)</label>
             <input value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} placeholder="(00) 00000-0000" className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary" />
           </div>
+          {serviceType === 'ENTREGA' && (
+            <>
+              <div className="space-y-2">
+                <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Taxa de entrega (R$)</label>
+                <input
+                  value={deliveryFeeInput}
+                  onChange={(e) => setDeliveryFeeInput(e.target.value)}
+                  placeholder="0,00"
+                  className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary"
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Cidade (opcional)</label>
+                <input value={deliveryCity} onChange={(e) => setDeliveryCity(e.target.value)} placeholder="Cidade" className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary" />
+              </div>
+            </>
+          )}
         </div>
+
+        {serviceType === 'ENTREGA' && (
+          <div className="grid lg:grid-cols-2 gap-4 border border-gray-100 rounded-2xl p-4 bg-gray-50">
+            <div className="space-y-2">
+              <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Rua (obrigatorio)</label>
+              <input value={deliveryStreet} onChange={(e) => setDeliveryStreet(e.target.value)} placeholder="Rua" className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary bg-white" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Numero (obrigatorio)</label>
+              <input value={deliveryNumber} onChange={(e) => setDeliveryNumber(e.target.value)} placeholder="Numero" className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary bg-white" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Bairro (obrigatorio)</label>
+              <input value={deliveryNeighborhood} onChange={(e) => setDeliveryNeighborhood(e.target.value)} placeholder="Bairro" className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary bg-white" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Complemento (opcional)</label>
+              <input value={deliveryComplement} onChange={(e) => setDeliveryComplement(e.target.value)} placeholder="Apartamento, bloco..." className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary bg-white" />
+            </div>
+            <div className="space-y-2 lg:col-span-2">
+              <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Referencia (opcional)</label>
+              <input value={deliveryReference} onChange={(e) => setDeliveryReference(e.target.value)} placeholder="Proximo ao mercado..." className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary bg-white" />
+            </div>
+          </div>
+        )}
 
         {mode === 'ADDITIONAL' && (
           <div className="grid lg:grid-cols-3 gap-4 border border-gray-100 rounded-2xl p-4 bg-gray-50">
@@ -652,6 +716,13 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
               <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Desconto aplicado</span>
               <span className="font-black text-red-500">- {formatCurrency(discountCents)}</span>
             </div>
+
+            {serviceType === 'ENTREGA' && (
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Taxa de entrega</span>
+                <span className="font-black text-gray-900">+ {formatCurrency(deliveryFeeCents)}</span>
+              </div>
+            )}
 
             <div className="flex items-center justify-between border-t border-gray-200 pt-3">
               <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Total</span>

@@ -25,6 +25,9 @@ export type KitchenPrintPayload = {
   storeName: string;
   tableName: string;
   filterLabel: string;
+  ticketTitle?: string;
+  orderTypeLabel?: string;
+  deliveryDetails?: string[];
   openedAt?: string | null;
   closedAt?: string | null;
   totalCents: number;
@@ -114,6 +117,11 @@ const renderKitchenTicketHtml = (payload: KitchenPrintPayload) => {
 
   const openedAt = payload.openedAt ? new Date(payload.openedAt).toLocaleString('pt-BR') : '-';
   const closedAt = payload.closedAt ? new Date(payload.closedAt).toLocaleString('pt-BR') : '-';
+  const ticketTitle = payload.ticketTitle || `Comanda ${payload.tableName || 'Mesa'}`;
+  const deliveryHtml = (payload.deliveryDetails || [])
+    .filter((line) => !!line && line.trim().length > 0)
+    .map((line) => `<div class="small">${escapeHtml(line)}</div>`)
+    .join('');
 
   return `<!doctype html>
 <html>
@@ -150,10 +158,12 @@ const renderKitchenTicketHtml = (payload: KitchenPrintPayload) => {
 <body>
   <div class="ticket">
     <p class="store">${escapeHtml(payload.storeName || 'Loja')}</p>
-    <h1>Comanda ${escapeHtml(payload.tableName || 'Mesa')}</h1>
+    <h1>${escapeHtml(ticketTitle)}</h1>
+    ${payload.orderTypeLabel ? `<div class="meta meta-line"><span>Tipo</span><span>${escapeHtml(payload.orderTypeLabel)}</span></div>` : ''}
     <div class="meta meta-line"><span>Filtro</span><span>${escapeHtml(payload.filterLabel || 'Todos')}</span></div>
     <div class="meta meta-line"><span>Abertura</span><span>${escapeHtml(openedAt)}</span></div>
     <div class="meta meta-line"><span>Fechamento</span><span>${escapeHtml(closedAt)}</span></div>
+    ${deliveryHtml ? `<div class="sep"></div><div class="section-title">Entrega</div>${deliveryHtml}` : ''}
     <div class="sep"></div>
     ${ordersHtml}
     <div class="total row"><span class="label-col">Total Geral</span><span class="value-col">${formatCurrency(payload.totalCents || 0)}</span></div>
