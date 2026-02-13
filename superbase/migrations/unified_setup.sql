@@ -1,8 +1,7 @@
--- Setup unificado do app (schema + ajustes de policies + recursos extras)
+﻿-- Setup unificado do app (schema + ajustes de policies + recursos extras)
 -- Execute este arquivo em ambiente novo para subir tudo de uma vez.
 -- Em ambiente existente, tambem e seguro (idempotente na maior parte).
 
-create extension if not exists "uuid-ossp";
 create extension if not exists "pgcrypto";
 
 create table if not exists public.settings (
@@ -78,7 +77,7 @@ create table if not exists public.profiles (
 );
 
 create table if not exists public.categories (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   name text not null,
   sort_order integer default 0,
   active boolean default true,
@@ -86,7 +85,7 @@ create table if not exists public.categories (
 );
 
 create table if not exists public.products (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   category_id uuid references public.categories(id) on delete cascade,
   name text not null,
   description text,
@@ -113,7 +112,7 @@ begin
 end $$;
 
 create table if not exists public.product_addons (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   product_id uuid not null references public.products(id) on delete cascade,
   name text not null,
   price_cents integer not null default 0,
@@ -123,7 +122,7 @@ create table if not exists public.product_addons (
 create index if not exists idx_product_addons_product_id on public.product_addons(product_id);
 
 create table if not exists public.tables (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   name text not null,
   token text unique not null,
   table_type text not null default 'DINING' check (table_type in ('DINING', 'COUNTER')),
@@ -146,7 +145,7 @@ begin
 end $$;
 
 create table if not exists public.sessions (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   table_id uuid references public.tables(id) on delete cascade,
   status text default 'OPEN' check (status in ('OPEN', 'LOCKED', 'EXPIRED')),
   host_guest_id uuid,
@@ -194,7 +193,7 @@ on public.sessions(table_id)
 where status = 'OPEN';
 
 create table if not exists public.session_guests (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   session_id uuid references public.sessions(id) on delete cascade,
   name text not null,
   is_host boolean default false,
@@ -202,7 +201,7 @@ create table if not exists public.session_guests (
 );
 
 create table if not exists public.cart_items (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   session_id uuid references public.sessions(id) on delete cascade,
   guest_id uuid references public.session_guests(id) on delete cascade,
   product_id uuid references public.products(id) on delete cascade,
@@ -212,7 +211,7 @@ create table if not exists public.cart_items (
 );
 
 create table if not exists public.orders (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   table_id uuid references public.tables(id) on delete cascade,
   session_id uuid references public.sessions(id) on delete cascade,
   origin text not null default 'CUSTOMER' check (origin in ('CUSTOMER', 'WAITER', 'BALCAO')),
@@ -366,7 +365,7 @@ begin
 end $$;
 
 create table if not exists public.order_items (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   order_id uuid references public.orders(id) on delete cascade,
   product_id uuid references public.products(id) on delete set null,
   name_snapshot text not null,
@@ -401,7 +400,7 @@ create index if not exists idx_orders_parent_order_id on public.orders(parent_or
 create index if not exists idx_order_items_order_printed on public.order_items(order_id, printed_at);
 
 create table if not exists public.session_events (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   session_id uuid not null references public.sessions(id) on delete cascade,
   table_id uuid references public.tables(id) on delete set null,
   event_type text not null,
@@ -411,13 +410,26 @@ create table if not exists public.session_events (
 create index if not exists idx_session_events_session_created_at on public.session_events(session_id, created_at desc);
 
 create table if not exists public.staff_password_audit (
-  id uuid default uuid_generate_v4() primary key,
+  id uuid default gen_random_uuid() primary key,
   actor_profile_id uuid references public.profiles(id) on delete set null,
   actor_name text,
   target_profile_id uuid not null references public.profiles(id) on delete cascade,
   changed_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 create index if not exists idx_staff_password_audit_changed_at on public.staff_password_audit(changed_at desc);
+
+-- Garante default UUID consistente mesmo em bases antigas que ainda usam uuid_generate_v4().
+alter table if exists public.categories alter column id set default gen_random_uuid();
+alter table if exists public.products alter column id set default gen_random_uuid();
+alter table if exists public.product_addons alter column id set default gen_random_uuid();
+alter table if exists public.tables alter column id set default gen_random_uuid();
+alter table if exists public.sessions alter column id set default gen_random_uuid();
+alter table if exists public.session_guests alter column id set default gen_random_uuid();
+alter table if exists public.cart_items alter column id set default gen_random_uuid();
+alter table if exists public.orders alter column id set default gen_random_uuid();
+alter table if exists public.order_items alter column id set default gen_random_uuid();
+alter table if exists public.session_events alter column id set default gen_random_uuid();
+alter table if exists public.staff_password_audit alter column id set default gen_random_uuid();
 
 insert into public.settings (id, store_name, primary_color)
 values (1, 'Parada do Lanche', '#f97316')
@@ -562,7 +574,7 @@ create or replace function public.create_waiter_virtual_session(
 returns uuid
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_role text;
@@ -586,9 +598,9 @@ begin
     raise exception 'apenas garcom pode criar mesa virtual';
   end if;
 
-  v_code := upper(substring(replace(uuid_generate_v4()::text, '-', '') from 1 for 6));
+  v_code := upper(substring(replace(gen_random_uuid()::text, '-', '') from 1 for 6));
   v_table_name := 'MV-' || v_code;
-  v_token := 'waiter-virtual-' || replace(uuid_generate_v4()::text, '-', '');
+  v_token := 'waiter-virtual-' || replace(gen_random_uuid()::text, '-', '');
 
   insert into public.tables (name, token, table_type, status)
   values (v_table_name, v_token, 'DINING', 'OCCUPIED')
@@ -628,7 +640,7 @@ create or replace function public.admin_set_user_password(
 returns void
 language plpgsql
 security definer
-set search_path = public, auth
+set search_path = public, auth, extensions
 as $$
 declare
   v_actor_role text;
@@ -1212,3 +1224,4 @@ on storage.objects
 for delete
 to authenticated
 using (bucket_id = 'assets');
+
