@@ -6,6 +6,16 @@ export type OrderApprovalMode = 'HOST' | 'SELF';
 export type OrderOrigin = 'CUSTOMER' | 'WAITER' | 'BALCAO';
 export type DiscountMode = 'NONE' | 'AMOUNT' | 'PERCENT';
 export type TableType = 'DINING' | 'COUNTER';
+export type ServiceType = 'ON_TABLE' | 'RETIRADA' | 'ENTREGA';
+
+export interface DeliveryAddress {
+  street: string;
+  number: string;
+  neighborhood: string;
+  complement?: string;
+  reference?: string;
+  city?: string;
+}
 
 export interface StoreSettings {
   id: string;
@@ -21,6 +31,7 @@ export interface StoreSettings {
   sticker_qr_frame_color: string;
   order_approval_mode?: OrderApprovalMode;
   enable_counter_module?: boolean;
+  default_delivery_fee_cents?: number;
 }
 
 export interface Profile {
@@ -124,6 +135,9 @@ export interface Order {
   discount_mode?: DiscountMode;
   discount_value?: number;
   discount_cents?: number;
+  service_type?: ServiceType;
+  delivery_fee_cents?: number;
+  delivery_address?: DeliveryAddress | null;
   total_cents: number;
   created_at: string;
   table_name?: string;

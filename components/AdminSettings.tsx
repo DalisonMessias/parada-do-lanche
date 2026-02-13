@@ -18,6 +18,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
     logo_url: '',
     order_approval_mode: 'HOST' as 'HOST' | 'SELF',
     enable_counter_module: true,
+    default_delivery_fee_cents: 0,
     sticker_bg_color: '#ffffff',
     sticker_text_color: '#111827',
     sticker_border_color: '#111111',
@@ -35,6 +36,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
         logo_url: settings.logo_url || '',
         order_approval_mode: (settings.order_approval_mode || 'HOST') as 'HOST' | 'SELF',
         enable_counter_module: settings.enable_counter_module !== false,
+        default_delivery_fee_cents: Number(settings.default_delivery_fee_cents || 0),
         sticker_bg_color: settings.sticker_bg_color || '#ffffff',
         sticker_text_color: settings.sticker_text_color || '#111827',
         sticker_border_color: settings.sticker_border_color || '#111111',
@@ -94,8 +96,8 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
       <div className="bg-white p-10 rounded-[32px] border border-gray-200 space-y-10">
         <div className="flex items-center justify-between border-b border-gray-100 pb-8">
           <div>
-            <h2 className="text-3xl font-black uppercase tracking-tighter text-gray-900">Identidade Visual</h2>
-            <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em] mt-2 italic">Customize as cores e logo do sistema</p>
+            <h2 className="text-3xl font-black uppercase tracking-tighter text-gray-900">Configuracoes</h2>
+            <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em] mt-2 italic">Parametros gerais da loja e identidade visual</p>
           </div>
         </div>
         
@@ -137,6 +139,24 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
                   className="w-5 h-5 accent-primary"
                 />
               </label>
+            </div>
+
+            <div className="space-y-2 md:col-span-2">
+              <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Taxa de entrega padrao (R$)</label>
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={(Math.max(0, Number(formData.default_delivery_fee_cents || 0)) / 100).toString()}
+                onChange={(e) => {
+                  const value = Number(e.target.value || 0);
+                  const cents = Number.isFinite(value) ? Math.max(0, Math.round(value * 100)) : 0;
+                  setFormData({ ...formData, default_delivery_fee_cents: cents });
+                }}
+                className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
+                placeholder="0.00"
+              />
+              <p className="text-[10px] text-gray-500 font-bold">Usada como valor inicial em pedidos de entrega no Balcao.</p>
             </div>
           </div>
 

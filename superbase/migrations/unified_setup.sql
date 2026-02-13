@@ -3,6 +3,7 @@
 -- Em ambiente existente, tambem e seguro (idempotente na maior parte).
 
 create extension if not exists "uuid-ossp";
+create extension if not exists "pgcrypto";
 
 create table if not exists public.settings (
   id integer primary key default 1,
@@ -13,6 +14,7 @@ create table if not exists public.settings (
   wifi_password text not null default '',
   order_approval_mode text not null default 'HOST' check (order_approval_mode in ('HOST', 'SELF')),
   enable_counter_module boolean not null default true,
+  default_delivery_fee_cents integer not null default 0,
   sticker_bg_color text not null default '#ffffff',
   sticker_text_color text not null default '#111827',
   sticker_border_color text not null default '#111111',
@@ -28,6 +30,8 @@ alter table if exists public.settings
   add column if not exists order_approval_mode text not null default 'HOST';
 alter table if exists public.settings
   add column if not exists enable_counter_module boolean not null default true;
+alter table if exists public.settings
+  add column if not exists default_delivery_fee_cents integer not null default 0;
 alter table if exists public.settings
   add column if not exists sticker_bg_color text not null default '#ffffff';
 alter table if exists public.settings
@@ -204,6 +208,9 @@ create table if not exists public.orders (
   customer_name text,
   customer_phone text,
   general_note text,
+  service_type text not null default 'ON_TABLE' check (service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA')),
+  delivery_address jsonb,
+  delivery_fee_cents integer not null default 0,
   created_by_guest_id uuid references public.session_guests(id) on delete set null,
   approval_status text not null default 'PENDING_APPROVAL' check (approval_status in ('PENDING_APPROVAL', 'APPROVED', 'REJECTED')),
   approved_by_guest_id uuid references public.session_guests(id) on delete set null,
@@ -235,6 +242,12 @@ alter table if exists public.orders
   add column if not exists customer_phone text;
 alter table if exists public.orders
   add column if not exists general_note text;
+alter table if exists public.orders
+  add column if not exists service_type text not null default 'ON_TABLE';
+alter table if exists public.orders
+  add column if not exists delivery_address jsonb;
+alter table if exists public.orders
+  add column if not exists delivery_fee_cents integer not null default 0;
 alter table if exists public.orders
   add column if not exists created_by_guest_id uuid references public.session_guests(id) on delete set null;
 alter table if exists public.orders
@@ -268,6 +281,19 @@ begin
     alter table public.orders
       add constraint orders_approval_status_check
       check (approval_status in ('PENDING_APPROVAL', 'APPROVED', 'REJECTED'));
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'orders_service_type_check'
+      and conrelid = 'public.orders'::regclass
+  ) then
+    alter table public.orders
+      add constraint orders_service_type_check
+      check (service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA'));
   end if;
 end $$;
 
@@ -342,6 +368,15 @@ create table if not exists public.session_events (
 );
 create index if not exists idx_session_events_session_created_at on public.session_events(session_id, created_at desc);
 
+create table if not exists public.staff_password_audit (
+  id uuid default uuid_generate_v4() primary key,
+  actor_profile_id uuid references public.profiles(id) on delete set null,
+  actor_name text,
+  target_profile_id uuid not null references public.profiles(id) on delete cascade,
+  changed_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+create index if not exists idx_staff_password_audit_changed_at on public.staff_password_audit(changed_at desc);
+
 insert into public.settings (id, store_name, primary_color)
 values (1, 'Parada do Lanche', '#f97316')
 on conflict (id) do nothing;
@@ -352,6 +387,7 @@ set
   wifi_password = coalesce(wifi_password, ''),
   order_approval_mode = coalesce(order_approval_mode, 'HOST'),
   enable_counter_module = coalesce(enable_counter_module, true),
+  default_delivery_fee_cents = greatest(coalesce(default_delivery_fee_cents, 0), 0),
   sticker_bg_color = coalesce(sticker_bg_color, '#ffffff'),
   sticker_text_color = coalesce(sticker_text_color, '#111827'),
   sticker_border_color = coalesce(sticker_border_color, '#111111'),
@@ -365,7 +401,9 @@ set
   subtotal_cents = case when coalesce(subtotal_cents, 0) <= 0 then coalesce(total_cents, 0) else subtotal_cents end,
   discount_mode = coalesce(discount_mode, 'NONE'),
   discount_value = coalesce(discount_value, 0),
-  discount_cents = coalesce(discount_cents, 0);
+  discount_cents = coalesce(discount_cents, 0),
+  service_type = coalesce(service_type, 'ON_TABLE'),
+  delivery_fee_cents = greatest(coalesce(delivery_fee_cents, 0), 0);
 
 -- Mantem o app funcionando com RLS habilitado, sem bloquear o fluxo atual.
 -- As policies abaixo sao abertas (to public) e devem ser endurecidas depois.
@@ -462,6 +500,127 @@ begin
 end;
 $$;
 
+create or replace function public.create_waiter_virtual_session(
+  p_profile_id uuid,
+  p_profile_name text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_role text;
+  v_table_id uuid;
+  v_session_id uuid;
+  v_code text;
+  v_table_name text;
+  v_token text;
+begin
+  if p_profile_id is null then
+    raise exception 'p_profile_id e obrigatorio';
+  end if;
+
+  select role
+    into v_role
+  from public.profiles
+  where id = p_profile_id
+  limit 1;
+
+  if coalesce(v_role, '') <> 'WAITER' then
+    raise exception 'apenas garcom pode criar mesa virtual';
+  end if;
+
+  v_code := upper(substring(replace(uuid_generate_v4()::text, '-', '') from 1 for 6));
+  v_table_name := 'MV-' || v_code;
+  v_token := 'waiter-virtual-' || replace(uuid_generate_v4()::text, '-', '');
+
+  insert into public.tables (name, token, table_type, status)
+  values (v_table_name, v_token, 'DINING', 'OCCUPIED')
+  returning id into v_table_id;
+
+  insert into public.sessions (table_id, status)
+  values (v_table_id, 'OPEN')
+  on conflict (table_id) where (status = 'OPEN')
+  do update set table_id = excluded.table_id
+  returning id into v_session_id;
+
+  update public.tables
+    set status = 'OCCUPIED'
+  where id = v_table_id;
+
+  insert into public.session_events (session_id, table_id, event_type, payload)
+  values (
+    v_session_id,
+    v_table_id,
+    'WAITER_VIRTUAL_TABLE_CREATED',
+    jsonb_build_object(
+      'created_by_profile_id', p_profile_id,
+      'created_by_name', coalesce(nullif(trim(p_profile_name), ''), 'Garcom')
+    )
+  );
+
+  return v_session_id;
+end;
+$$;
+
+create or replace function public.admin_set_user_password(
+  p_actor_profile_id uuid,
+  p_actor_name text,
+  p_target_profile_id uuid,
+  p_new_password text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_actor_role text;
+begin
+  if p_actor_profile_id is null then
+    raise exception 'p_actor_profile_id e obrigatorio';
+  end if;
+  if p_target_profile_id is null then
+    raise exception 'p_target_profile_id e obrigatorio';
+  end if;
+  if p_new_password is null or length(trim(p_new_password)) < 8 then
+    raise exception 'a senha deve ter no minimo 8 caracteres';
+  end if;
+
+  select role
+    into v_actor_role
+  from public.profiles
+  where id = p_actor_profile_id
+  limit 1;
+
+  if coalesce(v_actor_role, '') <> 'ADMIN' then
+    raise exception 'permissao insuficiente para alterar senha';
+  end if;
+
+  update auth.users
+    set encrypted_password = crypt(trim(p_new_password), gen_salt('bf')),
+        updated_at = timezone('utc'::text, now()),
+        email_confirmed_at = coalesce(email_confirmed_at, timezone('utc'::text, now()))
+  where id = p_target_profile_id;
+
+  if not found then
+    raise exception 'usuario nao encontrado para troca de senha';
+  end if;
+
+  insert into public.staff_password_audit (
+    actor_profile_id,
+    actor_name,
+    target_profile_id
+  )
+  values (
+    p_actor_profile_id,
+    nullif(trim(coalesce(p_actor_name, '')), ''),
+    p_target_profile_id
+  );
+end;
+$$;
+
 create or replace function public.register_session_event(
   p_session_id uuid,
   p_table_id uuid,
@@ -533,6 +692,8 @@ begin
     table_id,
     session_id,
     origin,
+    service_type,
+    delivery_fee_cents,
     created_by_guest_id,
     approval_status,
     approved_by_guest_id,
@@ -549,6 +710,8 @@ begin
     p_table_id,
     p_session_id,
     'CUSTOMER',
+    'ON_TABLE',
+    0,
     p_guest_id,
     v_approval,
     case when v_approval = 'APPROVED' then p_guest_id else null end,
@@ -624,6 +787,9 @@ create or replace function public.create_staff_order(
   p_customer_name text default null,
   p_customer_phone text default null,
   p_general_note text default null,
+  p_service_type text default 'RETIRADA',
+  p_delivery_address jsonb default null,
+  p_delivery_fee_cents integer default 0,
   p_discount_mode text default 'NONE',
   p_discount_value integer default 0,
   p_items jsonb default '[]'::jsonb
@@ -637,10 +803,13 @@ declare
   v_order_id uuid;
   v_round integer;
   v_origin text;
+  v_service_type text;
   v_discount_mode text;
   v_discount_value integer;
   v_subtotal integer;
   v_discount integer;
+  v_delivery_fee integer;
+  v_delivery_address jsonb;
   v_total integer;
   v_parent_order_id uuid;
 begin
@@ -663,8 +832,17 @@ begin
     when p_discount_mode in ('NONE', 'AMOUNT', 'PERCENT') then p_discount_mode
     else 'NONE'
   end;
+  v_service_type := case
+    when p_service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA') then p_service_type
+    else null
+  end;
 
   v_discount_value := greatest(coalesce(p_discount_value, 0), 0);
+  v_delivery_fee := greatest(coalesce(p_delivery_fee_cents, 0), 0);
+  v_delivery_address := case
+    when p_delivery_address is null or p_delivery_address = 'null'::jsonb then null
+    else p_delivery_address
+  end;
 
   if p_parent_order_id is not null then
     select id
@@ -707,7 +885,21 @@ begin
     v_discount_value := 0;
   end if;
 
-  v_total := greatest(v_subtotal - v_discount, 0);
+  if v_origin <> 'BALCAO' then
+    v_service_type := 'ON_TABLE';
+    v_delivery_fee := 0;
+    v_delivery_address := null;
+  else
+    if v_service_type is null or v_service_type = 'ON_TABLE' then
+      v_service_type := 'RETIRADA';
+    end if;
+    if v_service_type <> 'ENTREGA' then
+      v_delivery_fee := 0;
+      v_delivery_address := null;
+    end if;
+  end if;
+
+  v_total := greatest(v_subtotal - v_discount + v_delivery_fee, 0);
 
   insert into public.orders (
     table_id,
@@ -718,6 +910,9 @@ begin
     customer_name,
     customer_phone,
     general_note,
+    service_type,
+    delivery_address,
+    delivery_fee_cents,
     approval_status,
     round_number,
     status,
@@ -736,6 +931,9 @@ begin
     nullif(trim(coalesce(p_customer_name, '')), ''),
     nullif(trim(coalesce(p_customer_phone, '')), ''),
     nullif(trim(coalesce(p_general_note, '')), ''),
+    v_service_type,
+    v_delivery_address,
+    v_delivery_fee,
     'APPROVED',
     v_round,
     'PENDING',
@@ -786,6 +984,9 @@ begin
       'parent_order_id', v_parent_order_id,
       'created_by_profile_id', p_created_by_profile_id,
       'round_number', v_round,
+      'service_type', v_service_type,
+      'delivery_fee_cents', v_delivery_fee,
+      'delivery_address', v_delivery_address,
       'subtotal_cents', v_subtotal,
       'discount_mode', v_discount_mode,
       'discount_value', v_discount_value,

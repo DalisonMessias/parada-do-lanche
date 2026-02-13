@@ -19,13 +19,23 @@ const emptyForm: StaffForm = {
   password: '',
 };
 
-const AdminStaff: React.FC = () => {
+interface AdminStaffProps {
+  profile: Profile | null;
+}
+
+const AdminStaff: React.FC<AdminStaffProps> = ({ profile }) => {
   const { toast, confirm } = useFeedback();
   const [staff, setStaff] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState<StaffForm>(emptyForm);
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [passwordTarget, setPasswordTarget] = useState<Profile | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [updatingPassword, setUpdatingPassword] = useState(false);
 
   const fetchStaff = async () => {
     const { data, error } = await supabase.from('profiles').select('*').order('name');
@@ -56,11 +66,6 @@ const AdminStaff: React.FC = () => {
       password: '',
     });
     setShowModal(true);
-  };
-
-  const getResetRedirectTo = () => {
-    const redirectHash = window.location.hash.startsWith('#/admin') ? window.location.hash : '#/admin';
-    return `${window.location.origin}/${redirectHash}`;
   };
 
   const handleCreateOrUpdate = async (e: React.FormEvent) => {
@@ -99,7 +104,7 @@ const AdminStaff: React.FC = () => {
         if (signupError) {
           const msg = (signupError.message || '').toLowerCase();
           if (msg.includes('already') || msg.includes('registered')) {
-            throw new Error('Este e-mail ja esta cadastrado no Auth. Use o botao Senha para redefinir acesso.');
+            throw new Error('Este e-mail ja esta cadastrado no Auth. Use o botao Senha para alterar acesso.');
           }
           throw signupError;
         }
@@ -148,22 +153,52 @@ const AdminStaff: React.FC = () => {
     fetchStaff();
   };
 
-  const handleSendPasswordReset = async (email: string) => {
-    const normalizedEmail = email.trim().toLowerCase();
-    if (!normalizedEmail) return;
+  const openPasswordModal = (user: Profile) => {
+    setPasswordTarget(user);
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordError('');
+    setShowPasswordModal(true);
+  };
 
-    setLoading(true);
-    const redirectTo = getResetRedirectTo();
+  const handleUpdatePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!passwordTarget) return;
 
-    const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, { redirectTo });
-    setLoading(false);
-
-    if (error) {
-      toast(`Erro ao enviar redefinicao: ${error.message}`, 'error');
+    if (profile?.role !== 'ADMIN') {
+      setPasswordError('Permissao insuficiente para alterar senha.');
       return;
     }
 
-    toast(`Link de redefinicao enviado para ${normalizedEmail}.`, 'success');
+    const cleanPassword = newPassword.trim();
+    if (cleanPassword.length < 8) {
+      setPasswordError('A senha deve ter no minimo 8 caracteres.');
+      return;
+    }
+    if (cleanPassword !== confirmPassword.trim()) {
+      setPasswordError('A confirmacao de senha precisa ser igual a nova senha.');
+      return;
+    }
+
+    setUpdatingPassword(true);
+    setPasswordError('');
+
+    const { error } = await supabase.rpc('admin_set_user_password', {
+      p_actor_profile_id: profile.id,
+      p_actor_name: profile.name || 'Administrador',
+      p_target_profile_id: passwordTarget.id,
+      p_new_password: cleanPassword,
+    });
+
+    setUpdatingPassword(false);
+    if (error) {
+      setPasswordError(error.message || 'Falha ao atualizar senha.');
+      return;
+    }
+
+    setShowPasswordModal(false);
+    setPasswordTarget(null);
+    toast(`Senha de ${passwordTarget.name} atualizada com sucesso.`, 'success');
   };
 
   return (
@@ -222,8 +257,8 @@ const AdminStaff: React.FC = () => {
                       Editar
                     </button>
                     <button
-                      onClick={() => handleSendPasswordReset(user.email)}
-                      disabled={loading}
+                      onClick={() => openPasswordModal(user)}
+                      disabled={loading || updatingPassword}
                       className="px-3 py-2 rounded-lg border border-gray-200 text-[9px] font-black uppercase tracking-widest text-amber-600 hover:bg-amber-50"
                     >
                       Senha
@@ -308,6 +343,76 @@ const AdminStaff: React.FC = () => {
               </button>
               <button type="submit" disabled={loading} className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px]">
                 {isEditing ? 'Salvar' : 'Criar Agora'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {showPasswordModal && passwordTarget && (
+        <div className="fixed inset-0 z-[160] bg-gray-900/90 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6">
+          <form
+            onSubmit={handleUpdatePassword}
+            className="bg-white w-full max-w-md rounded-t-[28px] sm:rounded-[32px] p-6 sm:p-10 flex flex-col gap-8 border border-gray-200"
+          >
+            <div>
+              <h3 className="text-2xl font-black uppercase tracking-tighter italic text-gray-900">Alterar Senha</h3>
+              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-2">
+                Colaborador: {passwordTarget.name}
+              </p>
+            </div>
+
+            <div className="space-y-5">
+              <div className="space-y-2">
+                <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Nova senha</label>
+                <input
+                  required
+                  type="password"
+                  minLength={8}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="w-full p-4 border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
+                  placeholder="Minimo 8 caracteres"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Confirmar nova senha</label>
+                <input
+                  required
+                  type="password"
+                  minLength={8}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="w-full p-4 border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
+                  placeholder="Repita a senha"
+                />
+              </div>
+
+              {passwordError && (
+                <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3">
+                  <p className="text-[10px] text-red-600 font-black uppercase tracking-widest">{passwordError}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-4 border-t border-gray-100 pt-6">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPasswordModal(false);
+                  setPasswordTarget(null);
+                }}
+                className="flex-1 py-4 text-gray-400 font-black uppercase tracking-widest text-[10px]"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                disabled={updatingPassword}
+                className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px] disabled:opacity-50"
+              >
+                {updatingPassword ? 'Salvando...' : 'Salvar'}
               </button>
             </div>
           </form>

@@ -7,13 +7,14 @@ interface LayoutProps {
   title?: string;
   showBackButton?: boolean;
   onBack?: () => void;
+  leadingAction?: React.ReactNode;
   actions?: React.ReactNode;
   isAdmin?: boolean;
   wide?: boolean;
   settings?: StoreSettings | null;
 }
 
-const Layout: React.FC<LayoutProps> = ({ children, title, showBackButton, onBack, actions, isAdmin, wide, settings }) => {
+const Layout: React.FC<LayoutProps> = ({ children, title, showBackButton, onBack, leadingAction, actions, isAdmin, wide, settings }) => {
   const primaryColor = settings?.primary_color || '#f97316';
   const currentYear = new Date().getFullYear();
   const shellClass = isAdmin
@@ -27,6 +28,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title, showBackButton, onBack
       {/* Header */}
       <header className="sticky top-0 z-50 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-4">
+          {leadingAction}
           {showBackButton && (
             <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors text-gray-400">
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
