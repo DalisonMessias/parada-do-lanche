@@ -35,6 +35,20 @@ const escapeHtml = (value: string) =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
+const formatTicketNoteHtml = (note: string) => {
+  const trimmed = note.trim();
+  if (!trimmed) return '';
+
+  const labelMatch = trimmed.match(/^([^:\n]{1,40}):\s*(.*)$/);
+  if (!labelMatch) {
+    return `<div class="small note-value">${escapeHtml(trimmed)}</div>`;
+  }
+
+  const label = escapeHtml(labelMatch[1]);
+  const text = escapeHtml(labelMatch[2]);
+  return `<div class="small note-value"><span class="note-key">${label}:</span> ${text}</div>`;
+};
+
 const buildThermalLayout = (paperWidthMm: ReceiptPaperWidth) => {
   const isAutoWidth = paperWidthMm === 'AUTO';
   const compact = paperWidthMm === 58;
@@ -432,12 +446,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
         <span class="value-col">${formatCurrency(item.qty * item.unit_price_cents)}</span>
       </div>
       <div class="small muted">${escapeHtml(`Por: ${item.added_by_name}`)}</div>
-      ${
-        item.note
-          ? `<div class="small note-label">Obs:</div>
-      <div class="small note-value">${escapeHtml(item.note)}</div>`
-          : ''
-      }`
+      ${item.note ? `<div class="small note-title">Observacao:</div>${formatTicketNoteHtml(item.note)}` : ''}`
           )
           .join('');
 
@@ -513,8 +522,9 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
   .value-col { white-space: nowrap; margin-left: 4px; font-weight: 700; }
   .small { font-size: ${layout.metaFontPx}px; margin: 0.3mm 0 0.7mm; word-break: break-word; overflow-wrap: anywhere; }
   .small.muted { color: #444; }
-  .small.note-label { color: #111; margin-bottom: 0.1mm; font-weight: 700; }
-  .small.note-value { color: #111; margin-top: 0; padding-left: 1.6mm; }
+  .small.note-title { color: #111; margin-bottom: 0.1mm; font-weight: 400; }
+  .small.note-value { color: #111; margin-top: 0; padding-left: 0; }
+  .note-key { font-weight: 800; }
   .total { font-size: ${layout.totalFontPx}px; font-weight: 800; margin-top: 0.8mm; }
   .footer {
     margin-top: 3.4mm;
@@ -649,6 +659,11 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
   const selectedVisibleOrders = selectedSession ? getVisibleOrders(selectedSession) : [];
   const selectedConsolidated = selectedSession ? getConsolidatedItems(selectedVisibleOrders) : [];
 
+  const finishedRevenueTotal = useMemo(() => {
+    if (mode !== 'FINISHED') return 0;
+    return filteredSessions.reduce((acc, session) => acc + getSessionTotal(session), 0);
+  }, [mode, filteredSessions]);
+
   const equalSplitValue = splitPeople > 0 ? selectedTotal / splitPeople : 0;
 
   return (
@@ -670,6 +685,13 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
           Hoje
         </button>
       </div>
+
+      {mode === 'FINISHED' && (
+        <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 mb-6">
+          <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700">Soma total de ganhos das mesas</p>
+          <p className="text-3xl font-black tracking-tighter text-emerald-800 mt-2 italic">{formatCurrency(finishedRevenueTotal)}</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
         {renderCards()}
