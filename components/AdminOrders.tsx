@@ -99,6 +99,23 @@ const approvalClass: Record<string, string> = {
   REJECTED: 'bg-red-50 text-red-700 border-red-100',
 };
 
+const serviceTypeLabel = (serviceType?: string | null) => {
+  if (serviceType === 'ENTREGA') return 'Entrega';
+  if (serviceType === 'RETIRADA') return 'Retirada';
+  return 'Mesa';
+};
+
+const getDeliveryLines = (order: Order) => {
+  const address = order.delivery_address;
+  if (!address) return [];
+
+  const firstLine = [address.street, address.number].filter(Boolean).join(', ');
+  const secondLine = [address.neighborhood, address.city].filter(Boolean).join(' - ');
+  const thirdLine = [address.complement, address.reference].filter(Boolean).join(' | ');
+
+  return [firstLine, secondLine, thirdLine].filter((line) => !!line);
+};
+
 const beep = () => {
   try {
     const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
@@ -699,6 +716,9 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
                                 {orderStatusLabel[order.status]}
                               </span>
                             )}
+                            <span className="px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest bg-slate-50 border-slate-200 text-slate-600">
+                              {serviceTypeLabel(order.service_type)}
+                            </span>
                             <button
                               onClick={() => selectedSession && printSession(selectedSession, { scope: 'ORDER', orderId: order.id })}
                               className="px-2 py-0.5 rounded-full border border-gray-200 text-[9px] font-black uppercase tracking-widest text-gray-600"
@@ -707,6 +727,30 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
                             </button>
                           </div>
                         </div>
+                        {(order.service_type === 'RETIRADA' || order.service_type === 'ENTREGA') && (
+                          <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 space-y-1.5">
+                            <p className="text-[10px] text-blue-700 font-black uppercase tracking-widest">
+                              {serviceTypeLabel(order.service_type)}
+                            </p>
+                            {order.customer_name && (
+                              <p className="text-[10px] text-blue-800 font-black">Cliente: {order.customer_name}</p>
+                            )}
+                            {order.customer_phone && (
+                              <p className="text-[10px] text-blue-700 font-black">Telefone: {order.customer_phone}</p>
+                            )}
+                            {order.service_type === 'ENTREGA' &&
+                              getDeliveryLines(order).map((line, index) => (
+                                <p key={`${order.id}-delivery-${index}`} className="text-[10px] text-blue-700 font-black">
+                                  {line}
+                                </p>
+                              ))}
+                            {order.service_type === 'ENTREGA' && (order.delivery_fee_cents || 0) > 0 && (
+                              <p className="text-[10px] text-blue-700 font-black">
+                                Taxa de entrega: {formatCurrency(order.delivery_fee_cents || 0)}
+                              </p>
+                            )}
+                          </div>
+                        )}
                         {(order.items || []).map((item) => (
                           <div key={item.id} className="flex items-start justify-between gap-2 border-t border-gray-50 pt-2">
                             <div>

@@ -5,7 +5,7 @@ import { Order, OrderItem, Product, ProductAddon, Profile, Session, StoreSetting
 import { useFeedback } from './feedback/FeedbackProvider';
 
 type SessionWithDetails = Session & {
-  table?: { id: string; name: string; table_type?: string; status?: string } | null;
+  table?: { id: string; name: string; table_type?: string; status?: string; token?: string } | null;
   orders?: (Order & { items?: OrderItem[] })[];
 };
 
@@ -66,13 +66,15 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
   const [pendingObservation, setPendingObservation] = useState('');
   const [pendingAddonIds, setPendingAddonIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [creatingVirtual, setCreatingVirtual] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
 
   const isWaiter = profile?.role === 'WAITER';
 
   const fetchSessions = async () => {
     const { data, error } = await supabase
       .from('sessions')
-      .select('*, table:tables!inner(id,name,table_type,status), orders:orders(*, items:order_items(*))')
+      .select('*, table:tables!inner(id,name,table_type,status,token), orders:orders(*, items:order_items(*))')
       .eq('status', 'OPEN')
       .eq('table.table_type', 'DINING')
       .order('created_at', { ascending: false });
@@ -144,6 +146,13 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
     () => visibleOrders.filter((order) => order.origin === 'WAITER' && !order.printed_at),
     [visibleOrders]
   );
+
+  const isVirtualSession = (session: SessionWithDetails | null) => {
+    if (!session) return false;
+    const token = (session.table?.token || '').toLowerCase();
+    const name = (session.table?.name || '').toUpperCase();
+    return token.startsWith('waiter-virtual-') || name.startsWith('MV-');
+  };
 
   const filteredProducts = useMemo(() => {
     const query = productSearch.trim().toLowerCase();
@@ -231,6 +240,51 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
     fetchSessions();
   };
 
+  const handleCreateVirtualSession = async () => {
+    if (!profile) {
+      toast('Perfil de garcom nao encontrado.', 'error');
+      return;
+    }
+
+    setCreatingVirtual(true);
+    const { data: sessionId, error } = await supabase.rpc('create_waiter_virtual_session', {
+      p_profile_id: profile.id,
+      p_profile_name: profile.name || 'Garcom',
+    });
+    setCreatingVirtual(false);
+
+    if (error || !sessionId) {
+      toast(error?.message || 'Nao foi possivel criar mesa virtual.', 'error');
+      return;
+    }
+
+    setSelectedSessionId(String(sessionId));
+    setDraftItems([]);
+    setProductSearch('');
+    await fetchSessions();
+    toast(`Mesa virtual criada: sessao #${String(sessionId).slice(0, 6)}.`, 'success');
+  };
+
+  const handleFinalizeSession = async () => {
+    if (!selectedSession) return;
+    setFinalizing(true);
+
+    const { error } = await supabase.rpc('finalize_session_with_history', {
+      p_session_id: selectedSession.id,
+    });
+    setFinalizing(false);
+
+    if (error) {
+      toast(`Erro ao finalizar mesa: ${error.message}`, 'error');
+      return;
+    }
+
+    setSelectedSessionId(null);
+    setDraftItems([]);
+    await fetchSessions();
+    toast('Mesa finalizada e encerrada.', 'success');
+  };
+
   const markOrdersPrinted = async (sessionId: string, orderIds: string[]) => {
     if (orderIds.length === 0) {
       toast('Nao ha pedidos para imprimir neste filtro.', 'info');
@@ -315,14 +369,23 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
           <h2 className="text-3xl font-black uppercase tracking-tighter text-gray-900">Garcom</h2>
           <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em] mt-2">Mesas abertas e lancamento de adicionais</p>
         </div>
-        <div className="w-full md:w-[340px]">
-          <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Buscar mesa/codigo</label>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Ex: mesa 01 ou codigo"
-            className="mt-2 w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary"
-          />
+        <div className="w-full md:w-auto flex flex-col md:flex-row md:items-end gap-3 md:gap-4">
+          <div className="w-full md:w-[340px]">
+            <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Buscar mesa/codigo</label>
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Ex: mesa 01 ou codigo"
+              className="mt-2 w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary"
+            />
+          </div>
+          <button
+            onClick={handleCreateVirtualSession}
+            disabled={creatingVirtual}
+            className="px-4 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {creatingVirtual ? 'Criando...' : 'Criar Mesa Virtual'}
+          </button>
         </div>
       </div>
 
@@ -336,8 +399,13 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
               <div>
                 <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">{session.table?.name || 'Mesa'}</h3>
                 <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mt-1">
-                  Sessao #{session.id.slice(0, 6)} • {new Date(session.created_at).toLocaleTimeString('pt-BR')}
+                  Sessao #{session.id.slice(0, 6)} - {new Date(session.created_at).toLocaleTimeString('pt-BR')}
                 </p>
+                {isVirtualSession(session) && (
+                  <span className="inline-flex mt-2 px-2 py-1 rounded-full border border-indigo-100 bg-indigo-50 text-indigo-700 text-[8px] font-black uppercase tracking-widest">
+                    Mesa virtual
+                  </span>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="rounded-xl bg-gray-50 border border-gray-100 p-3">
@@ -376,8 +444,13 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
               <div>
                 <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900">{selectedSession.table?.name || 'Mesa'}</h3>
                 <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                  Sessao #{selectedSession.id.slice(0, 6)} • Aberta em {new Date(selectedSession.created_at).toLocaleTimeString('pt-BR')}
+                  Sessao #{selectedSession.id.slice(0, 6)} - Aberta em {new Date(selectedSession.created_at).toLocaleTimeString('pt-BR')}
                 </p>
+                {isVirtualSession(selectedSession) && (
+                  <span className="inline-flex mt-2 px-2 py-1 rounded-full border border-indigo-100 bg-indigo-50 text-indigo-700 text-[8px] font-black uppercase tracking-widest">
+                    Mesa virtual criada pelo garcom
+                  </span>
+                )}
               </div>
               <button onClick={() => setSelectedSessionId(null)} className="text-gray-400 font-black">Fechar</button>
             </div>
@@ -393,7 +466,7 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
                     <div key={order.id} className="border border-gray-100 rounded-xl p-3 space-y-2">
                       <div className="flex items-center justify-between gap-2">
                         <p className="text-sm font-black text-gray-800">
-                          Pedido #{order.id.slice(0, 6)} • {new Date(order.created_at).toLocaleTimeString('pt-BR')}
+                          Pedido #{order.id.slice(0, 6)} - {new Date(order.created_at).toLocaleTimeString('pt-BR')}
                         </p>
                         <span className="px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest bg-gray-50 border-gray-200 text-gray-600">
                           {order.origin || 'CUSTOMER'}
@@ -489,6 +562,15 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
             </div>
 
             <div className="border-t border-gray-100 pt-4 flex flex-wrap justify-end gap-2">
+              {isVirtualSession(selectedSession) && (
+                <button
+                  onClick={handleFinalizeSession}
+                  disabled={finalizing}
+                  className="px-4 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {finalizing ? 'Finalizando...' : 'Finalizar mesa'}
+                </button>
+              )}
               <button
                 onClick={() => printOrders(waiterUnprintedOrders, 'Somente itens novos do garcom')}
                 disabled={waiterUnprintedOrders.length === 0}
