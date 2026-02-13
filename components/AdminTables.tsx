@@ -18,6 +18,14 @@ const isDiningQrTable = (table: Table) => {
   return true;
 };
 
+const chunkTables = (items: Table[], chunkSize: number) => {
+  const pages: Table[][] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    pages.push(items.slice(i, i + chunkSize));
+  }
+  return pages;
+};
+
 const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
   const [tables, setTables] = useState<Table[]>([]);
   const [selectedTable, setSelectedTable] = useState<Table | null>(null);
@@ -105,6 +113,8 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
     muted: settings?.sticker_muted_text_color || '#9ca3af',
     qrFrame: settings?.sticker_qr_frame_color || '#111111',
   };
+  const tablesToPrint = selectedTable ? [selectedTable] : tables;
+  const printPages = chunkTables(tablesToPrint, 4);
 
   return (
     <div className="space-y-8">

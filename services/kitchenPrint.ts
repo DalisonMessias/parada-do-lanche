@@ -88,7 +88,6 @@ const renderKitchenTicketHtml = (payload: KitchenPrintPayload) => {
         <span class="label-col">${escapeHtml(itemName)}</span>
         <span class="value-col">${itemTotal}</span>
       </div>
-      <div class="small muted">${escapeHtml(`Por: ${item.added_by_name || 'Operador'}`)}</div>
       ${item.note ? `<div class="small note-title">Observacao:</div>${formatTicketNoteHtml(item.note)}` : ''}`;
         })
         .join('');

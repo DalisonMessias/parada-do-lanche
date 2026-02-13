@@ -430,7 +430,7 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
           ticketTitle:
             serviceType === 'ENTREGA'
               ? (customerName.trim() || order.customer_name || 'Cliente')
-              : `COMANDA BALCAO ${profile.name || 'Operador'}`,
+              : 'COMANDA BALCAO',
           orderTypeLabel: serviceType === 'ENTREGA' ? 'ENTREGA' : 'RETIRADA',
           deliveryDetails: deliveryLines,
           openedAt: new Date().toISOString(),
