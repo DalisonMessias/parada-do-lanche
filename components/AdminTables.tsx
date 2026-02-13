@@ -26,6 +26,14 @@ const chunkTables = (items: Table[], chunkSize: number) => {
   return pages;
 };
 
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
 const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
   const [tables, setTables] = useState<Table[]>([]);
   const [selectedTable, setSelectedTable] = useState<Table | null>(null);
@@ -115,6 +123,277 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
   };
   const tablesToPrint = selectedTable ? [selectedTable] : tables;
   const printPages = chunkTables(tablesToPrint, 4);
+
+  const handlePrintLabels = () => {
+    if (tablesToPrint.length === 0) return;
+
+    const pagesHtml = printPages
+      .map((pageTables, pageIndex) => {
+        const padded = [...pageTables, ...Array.from({ length: Math.max(0, 4 - pageTables.length) }, () => null)];
+        const cards = padded
+          .map((table, index) => {
+            if (!table) return `<div class="qr-card-container qr-card-placeholder"></div>`;
+
+            const menuQr = getQrUrl(generateMenuUrl(table.token));
+            const wifiQr = getQrUrl(generateWifiString());
+            const hasWifi = wifiSsid && wifiPass;
+            const logoHtml = settings?.logo_url
+              ? `<img src="${escapeHtml(settings.logo_url)}" class="logo-img" />`
+              : `<div class="logo-fallback">PL</div>`;
+
+            return `
+              <div class="qr-card-container">
+                <div class="qr-card" style="background-color:${escapeHtml(stickerTheme.bg)};border-color:${escapeHtml(stickerTheme.border)};">
+                  <div class="brand-block">
+                    ${logoHtml}
+                    <span class="store-name" style="color:${escapeHtml(stickerTheme.text)};">${escapeHtml(settings?.store_name || 'Loja')}</span>
+                  </div>
+
+                  <div class="table-name-wrap" style="border-color:${escapeHtml(stickerTheme.border)};">
+                    <span class="table-name" style="color:${escapeHtml(stickerTheme.text)};">${escapeHtml(table.name)}</span>
+                  </div>
+
+                  <div class="qr-row">
+                    <div class="qr-col">
+                      <div class="qr-frame" style="border-color:${escapeHtml(stickerTheme.qrFrame)};">
+                        <img src="${escapeHtml(menuQr)}" class="menu-qr" />
+                      </div>
+                      <span class="qr-caption" style="color:${escapeHtml(stickerTheme.text)};">CARDAPIO</span>
+                    </div>
+                    ${
+                      hasWifi
+                        ? `<div class="qr-col">
+                            <div class="wifi-frame">
+                              <img src="${escapeHtml(wifiQr)}" class="wifi-qr" />
+                            </div>
+                            <span class="wifi-caption" style="color:${escapeHtml(stickerTheme.muted)};">WI-FI</span>
+                          </div>`
+                        : `<div class="wifi-empty">
+                            <span style="color:${escapeHtml(stickerTheme.muted)};">Preencha SSID + senha para QR Wi-Fi</span>
+                          </div>`
+                    }
+                  </div>
+
+                  <div class="bottom-note">
+                    <p style="color:${escapeHtml(stickerTheme.muted)};">SCANEIE PARA PEDIR</p>
+                  </div>
+                </div>
+              </div>
+            `;
+          })
+          .join('');
+
+        return `<section class="print-sheet" data-page="${pageIndex + 1}">${cards}</section>`;
+      })
+      .join('');
+
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Etiquetas - ${escapeHtml(settings?.store_name || 'Loja')}</title>
+  <style>
+    * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    html, body { margin: 0; padding: 0; background: #fff; color: #111827; }
+    body { font-family: Arial, Helvetica, sans-serif; }
+    .print-root {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+      padding: 0;
+    }
+    .print-sheet {
+      width: 200mm;
+      min-height: 200mm;
+      display: grid;
+      grid-template-columns: 100mm 100mm;
+      grid-template-rows: 100mm 100mm;
+      page-break-after: always;
+      break-after: page;
+    }
+    .print-sheet:last-child {
+      page-break-after: auto;
+      break-after: auto;
+    }
+    .qr-card-container {
+      width: 100mm;
+      height: 100mm;
+      padding: 6mm;
+      border: 0.1mm solid #e5e7eb;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #fff;
+    }
+    .qr-card-placeholder {
+      border-style: dashed;
+      border-color: #e5e7eb;
+      background: #fff;
+    }
+    .qr-card {
+      width: 100%;
+      height: 100%;
+      border: 1mm solid #000;
+      border-radius: 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 13px;
+      position: relative;
+    }
+    .brand-block {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 2px;
+      margin-bottom: 10px;
+    }
+    .logo-img {
+      width: 48px;
+      height: 48px;
+      object-fit: contain;
+      border-radius: 6px;
+    }
+    .logo-fallback {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      background: #111827;
+      color: #fff;
+      font-weight: 900;
+      font-style: italic;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 16px;
+    }
+    .store-name {
+      font-size: 10px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.01em;
+      max-width: 140px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-align: center;
+    }
+    .table-name-wrap {
+      width: 100%;
+      border-top: 0.6mm solid;
+      border-bottom: 0.6mm solid;
+      padding: 4px 0;
+      margin-bottom: 12px;
+      text-align: center;
+    }
+    .table-name {
+      font-size: 24px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: -0.02em;
+      font-style: italic;
+      line-height: 1;
+    }
+    .qr-row {
+      width: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    .qr-col {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    .qr-frame {
+      padding: 8px;
+      border: 2px solid #111827;
+      border-radius: 12px;
+      background: #fff;
+    }
+    .menu-qr {
+      width: 80px;
+      height: 80px;
+    }
+    .wifi-frame {
+      padding: 8px;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      background: #fff;
+    }
+    .wifi-qr {
+      width: 64px;
+      height: 64px;
+      opacity: 0.6;
+    }
+    .qr-caption, .wifi-caption {
+      font-size: 8px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-style: italic;
+    }
+    .wifi-empty {
+      width: 84px;
+      height: 104px;
+      border: 1px dashed #e5e7eb;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 8px;
+      text-align: center;
+      font-size: 7px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      line-height: 1.35;
+    }
+    .bottom-note {
+      text-align: center;
+    }
+    .bottom-note p {
+      margin: 0;
+      font-size: 7px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.35em;
+      font-style: italic;
+      line-height: 1;
+      opacity: 0.8;
+    }
+    @page { size: A4; margin: 5mm; }
+  </style>
+</head>
+<body>
+  <div class="print-root">${pagesHtml}</div>
+</body>
+</html>`;
+
+    const printWindow = window.open('', '_blank', 'width=1200,height=900');
+    if (!printWindow) {
+      alert('Nao foi possivel abrir a janela de impressao. Libere pop-up e tente novamente.');
+      return;
+    }
+
+    printWindow.document.open();
+    printWindow.document.write(html);
+    printWindow.document.close();
+
+    window.setTimeout(() => {
+      try {
+        printWindow.focus();
+        printWindow.print();
+      } catch (error: any) {
+        alert(`Falha ao imprimir etiquetas: ${String(error?.message || error || 'erro desconhecido')}`);
+      }
+    }, 220);
+  };
 
   return (
     <div className="space-y-8">
@@ -221,59 +500,70 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
                     </button>
                   </div>
                 </div>
-                <button onClick={() => window.print()} className="w-full bg-primary text-white py-4 rounded-xl font-black uppercase tracking-widest text-base active:scale-95 italic">
+                <button onClick={handlePrintLabels} className="w-full bg-primary text-white py-4 rounded-xl font-black uppercase tracking-widest text-base active:scale-95 italic">
                   IMPRIMIR AGORA
                 </button>
+                <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest text-center">
+                  {tablesToPrint.length} etiqueta(s) - {printPages.length} pagina(s)
+                </p>
               </div>
 
               <div className="xl:col-span-8 flex flex-col items-center">
                 <div className="w-full overflow-auto">
-                <div id="print-area" className="grid grid-cols-2 gap-0 border border-dashed border-gray-200 bg-white shadow-inner min-w-max">
-                  {(selectedTable ? [selectedTable] : tables.slice(0, 4)).map(table => (
-                    <div key={table.id} className="qr-card-container">
-                      <div className="qr-card" style={{ backgroundColor: stickerTheme.bg, borderColor: stickerTheme.border }}>
-                        <div className="flex flex-col items-center gap-2 mb-4">
-                          {settings?.logo_url ? (
-                            <img src={settings.logo_url} className="w-12 h-12 object-contain rounded-md" />
-                          ) : (
-                            <div className="w-10 h-10 bg-gray-900 rounded-lg flex items-center justify-center text-white font-black text-base italic">PL</div>
-                          )}
-                          <span className="text-[10px] font-black uppercase tracking-tighter truncate max-w-[140px] text-center" style={{ color: stickerTheme.text }}>{settings?.store_name}</span>
-                        </div>
+                  <div id="print-area" className="print-area-stack min-w-max">
+                    {printPages.map((pageTables, pageIndex) => (
+                      <div key={`page-${pageIndex}`} className="print-sheet border border-dashed border-gray-200 bg-white shadow-inner">
+                        {[...pageTables, ...Array.from({ length: Math.max(0, 4 - pageTables.length) }, () => null)].map((table, index) => (
+                          table ? (
+                            <div key={table.id} className="qr-card-container">
+                              <div className="qr-card" style={{ backgroundColor: stickerTheme.bg, borderColor: stickerTheme.border }}>
+                                <div className="flex flex-col items-center gap-2 mb-4">
+                                  {settings?.logo_url ? (
+                                    <img src={settings.logo_url} className="w-12 h-12 object-contain rounded-md" />
+                                  ) : (
+                                    <div className="w-10 h-10 bg-gray-900 rounded-lg flex items-center justify-center text-white font-black text-base italic">PL</div>
+                                  )}
+                                  <span className="text-[10px] font-black uppercase tracking-tighter truncate max-w-[140px] text-center" style={{ color: stickerTheme.text }}>{settings?.store_name}</span>
+                                </div>
 
-                        <div className="w-full border-t border-b py-2 mb-5 text-center" style={{ borderColor: stickerTheme.border }}>
-                           <span className="text-[24px] font-black uppercase tracking-tighter italic leading-none" style={{ color: stickerTheme.text }}>{table.name}</span>
-                        </div>
+                                <div className="w-full border-t border-b py-2 mb-5 text-center" style={{ borderColor: stickerTheme.border }}>
+                                   <span className="text-[24px] font-black uppercase tracking-tighter italic leading-none" style={{ color: stickerTheme.text }}>{table.name}</span>
+                                </div>
 
-                        <div className="flex flex-row items-start justify-center gap-5 w-full mb-5">
-                          <div className="flex flex-col items-center gap-2">
-                            <div className="p-2 bg-white border-2 rounded-xl" style={{ borderColor: stickerTheme.qrFrame }}>
-                              <img src={getQrUrl(generateMenuUrl(table.token))} className="w-20 h-20" />
-                            </div>
-                            <span className="text-[8px] font-black uppercase tracking-widest italic" style={{ color: stickerTheme.text }}>CARDAPIO</span>
-                          </div>
+                                <div className="flex flex-row items-start justify-center gap-5 w-full mb-5">
+                                  <div className="flex flex-col items-center gap-2">
+                                    <div className="p-2 bg-white border-2 rounded-xl" style={{ borderColor: stickerTheme.qrFrame }}>
+                                      <img src={getQrUrl(generateMenuUrl(table.token))} className="w-20 h-20" />
+                                    </div>
+                                    <span className="text-[8px] font-black uppercase tracking-widest italic" style={{ color: stickerTheme.text }}>CARDAPIO</span>
+                                  </div>
 
-                          {wifiSsid && wifiPass ? (
-                            <div className="flex flex-col items-center gap-2">
-                              <div className="p-2 bg-white border border-gray-200 rounded-xl">
-                                <img src={getQrUrl(generateWifiString())} className="w-16 h-16 opacity-60" />
+                                  {wifiSsid && wifiPass ? (
+                                    <div className="flex flex-col items-center gap-2">
+                                      <div className="p-2 bg-white border border-gray-200 rounded-xl">
+                                        <img src={getQrUrl(generateWifiString())} className="w-16 h-16 opacity-60" />
+                                      </div>
+                                      <span className="text-[7px] font-black uppercase tracking-widest italic" style={{ color: stickerTheme.muted }}>WI-FI</span>
+                                    </div>
+                                  ) : (
+                                    <div className="w-[84px] h-[104px] rounded-xl border border-dashed border-gray-200 flex items-center justify-center px-2">
+                                      <span className="text-[7px] font-black uppercase tracking-widest text-center leading-relaxed" style={{ color: stickerTheme.muted }}>Preencha SSID + senha para QR Wi-Fi</span>
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="text-center">
+                                  <p className="text-[7px] font-black uppercase tracking-[0.35em] italic leading-none opacity-80" style={{ color: stickerTheme.muted }}>SCANEIE PARA PEDIR</p>
+                                </div>
                               </div>
-                              <span className="text-[7px] font-black uppercase tracking-widest italic" style={{ color: stickerTheme.muted }}>WI-FI</span>
                             </div>
                           ) : (
-                            <div className="w-[84px] h-[104px] rounded-xl border border-dashed border-gray-200 flex items-center justify-center px-2">
-                              <span className="text-[7px] font-black uppercase tracking-widest text-center leading-relaxed" style={{ color: stickerTheme.muted }}>Preencha SSID + senha para QR Wi-Fi</span>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="text-center">
-                          <p className="text-[7px] font-black uppercase tracking-[0.35em] italic leading-none opacity-80" style={{ color: stickerTheme.muted }}>SCANEIE PARA PEDIR</p>
-                        </div>
+                            <div key={`blank-${pageIndex}-${index}`} className="qr-card-container qr-card-placeholder" />
+                          )
+                        ))}
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
@@ -293,6 +583,24 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
           box-sizing: border-box;
           border: 0.1mm solid #f0f0f0;
         }
+        .print-area-stack {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          align-items: center;
+        }
+        .print-sheet {
+          width: 200mm;
+          min-height: 200mm;
+          display: grid;
+          grid-template-columns: 100mm 100mm;
+          grid-template-rows: 100mm 100mm;
+          gap: 0;
+        }
+        .qr-card-placeholder {
+          background: white;
+          border: 0.1mm dashed #e5e7eb;
+        }
         .qr-card {
           width: 100%;
           height: 100%;
@@ -309,24 +617,31 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
           body * { visibility: hidden; }
           #print-area, #print-area * { visibility: visible; }
           #print-area {
-            position: fixed;
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
-            width: 200mm;
-            height: 200mm;
+            position: static;
+            transform: none;
+            width: auto;
             padding: 0;
-            display: grid !important;
-            grid-template-columns: 100mm 100mm !important;
-            grid-template-rows: 100mm 100mm !important;
+            margin: 0 auto;
+            display: block !important;
+          }
+          .print-area-stack {
             gap: 0 !important;
-            background: white !important;
-            z-index: 99999;
-            overflow: hidden !important;
+          }
+          .print-sheet {
+            margin: 0 auto !important;
+            break-after: page;
+            page-break-after: always;
+            box-shadow: none !important;
+            border: 0 !important;
+          }
+          .print-sheet:last-child {
+            break-after: auto;
+            page-break-after: auto;
           }
           .qr-card-container { border: 0.1mm dashed #ddd !important; }
           .qr-card { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          @page { size: A4; margin: 0; }
+          .qr-card-placeholder { border: 0 !important; }
+          @page { size: A4; margin: 5mm; }
         }
       `}</style>
     </div>
