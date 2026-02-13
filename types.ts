@@ -94,6 +94,7 @@ export interface CartItem {
   addon_ids?: string[];
   addon_names?: string[];
   addon_total_cents?: number;
+  observation?: string;
 }
 
 export interface Order {

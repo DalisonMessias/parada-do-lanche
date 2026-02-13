@@ -36,17 +36,25 @@ const escapeHtml = (value: string) =>
     .replace(/'/g, '&#39;');
 
 const formatTicketNoteHtml = (note: string) => {
-  const trimmed = note.trim();
-  if (!trimmed) return '';
+  const lines = note
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
 
-  const labelMatch = trimmed.match(/^([^:\n]{1,40}):\s*(.*)$/);
-  if (!labelMatch) {
-    return `<div class="small note-value">${escapeHtml(trimmed)}</div>`;
-  }
+  if (lines.length === 0) return '';
 
-  const label = escapeHtml(labelMatch[1]);
-  const text = escapeHtml(labelMatch[2]);
-  return `<div class="small note-value"><span class="note-key">${label}:</span> ${text}</div>`;
+  return lines
+    .map((line) => {
+      const labelMatch = line.match(/^([^:\n]{1,40}):\s*(.*)$/);
+      if (!labelMatch) {
+        return `<div class="small note-value">${escapeHtml(line)}</div>`;
+      }
+
+      const label = escapeHtml(labelMatch[1]);
+      const text = escapeHtml(labelMatch[2]);
+      return `<div class="small note-value"><span class="note-key">${label}:</span>${text ? ` ${text}` : ''}</div>`;
+    })
+    .join('');
 };
 
 const buildThermalLayout = (paperWidthMm: ReceiptPaperWidth) => {

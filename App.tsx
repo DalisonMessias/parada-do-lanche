@@ -51,6 +51,7 @@ const App: React.FC = () => {
   const [showAddonSelector, setShowAddonSelector] = useState(false);
   const [pendingProduct, setPendingProduct] = useState<Product | null>(null);
   const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>([]);
+  const [productObservation, setProductObservation] = useState('');
   const [sessionOrders, setSessionOrders] = useState<Order[]>([]);
   const [tempRegisterStatus, setTempRegisterStatus] = useState('');
   const [adminTab, setAdminTab] = useState<'ACTIVE_TABLES' | 'FINISHED_ORDERS' | 'TABLES' | 'MENU' | 'SETTINGS' | 'STAFF'>('ACTIVE_TABLES');
@@ -185,15 +186,25 @@ const App: React.FC = () => {
       if (data) {
         setCart(data.map(item => {
           let parsed: any = {};
+          let rawObservation = '';
           if (item.note) {
-            try { parsed = JSON.parse(item.note); } catch { parsed = {}; }
+            try {
+              parsed = JSON.parse(item.note);
+            } catch {
+              parsed = {};
+              rawObservation = item.note;
+            }
           }
+          const observation = typeof parsed?.observation === 'string'
+            ? parsed.observation
+            : rawObservation;
           return {
             ...item,
             guest_name: (item as any).guest?.name,
             addon_ids: Array.isArray(parsed?.addon_ids) ? parsed.addon_ids : [],
             addon_names: Array.isArray(parsed?.addon_names) ? parsed.addon_names : [],
             addon_total_cents: Number(parsed?.addon_total_cents || 0),
+            observation,
           } as CartItem;
         }));
       }
@@ -349,6 +360,7 @@ const App: React.FC = () => {
     if (hasOwnPendingApproval) return;
     setPendingProduct(product);
     setSelectedAddonIds([]);
+    setProductObservation('');
     setShowAddonSelector(true);
   };
 
@@ -464,7 +476,17 @@ const App: React.FC = () => {
       name_snapshot: item.product?.name || 'Item',
       unit_price_cents: getCartItemUnitPrice(item),
       qty: item.qty,
-      note: (item.addon_names?.length || 0) > 0 ? `Adicionais: ${item.addon_names?.join(', ')}` : null,
+      note: (() => {
+        const lines: string[] = [];
+        if ((item.addon_names?.length || 0) > 0) {
+          lines.push(`Adicionais: ${item.addon_names?.join(', ')}`);
+        }
+        const observation = (item.observation || '').trim();
+        if (observation) {
+          lines.push(`Observacao: ${observation}`);
+        }
+        return lines.length > 0 ? lines.join('\n') : null;
+      })(),
       added_by_name: item.guest_name || guest.name,
       status: 'PENDING',
     }));
@@ -491,23 +513,25 @@ const App: React.FC = () => {
     }
   };
 
-  const handleAddProductWithAddons = async (product: Product, addonIdsRaw: string[]) => {
+  const handleAddProductWithAddons = async (product: Product, addonIdsRaw: string[], observationRaw = '') => {
     if (!session || !guest) return;
     if (hasOwnPendingApproval) return;
     const addonIds = [...addonIdsRaw].sort();
     const selectedAddons = getProductAddons(product.id).filter(a => addonIds.includes(a.id));
     const addonTotal = selectedAddons.reduce((acc, a) => acc + a.price_cents, 0);
+    const observation = observationRaw.trim();
     const payload = {
       addon_ids: addonIds,
       addon_names: selectedAddons.map(a => a.name),
       addon_total_cents: addonTotal,
+      observation,
     };
-    const note = JSON.stringify(payload);
+    const note = addonIds.length > 0 || observation.length > 0 ? JSON.stringify(payload) : null;
 
     const existing = cart.find(i =>
       i.product_id === product.id &&
       i.guest_id === guest.id &&
-      (i.note || '') === note
+      (i.note || null) === note
     );
 
     if (existing) {
@@ -518,7 +542,7 @@ const App: React.FC = () => {
         guest_id: guest.id,
         product_id: product.id,
         qty: 1,
-        note,
+        note: note || null,
       });
     }
   };
@@ -984,31 +1008,49 @@ const App: React.FC = () => {
                                     {inCartQty > 0 && <span className="text-[10px] font-black text-primary">{inCartQty} no carrinho</span>}
                                   </div>
                                 ) : inCartQty > 0 ? (
-                                  <div className="inline-flex items-center gap-3 bg-gray-50 border border-gray-100 rounded-lg p-1 px-2.5">
+                                  <div className="flex flex-col items-start gap-1.5">
+                                    <div className="inline-flex items-center gap-3 bg-gray-50 border border-gray-100 rounded-lg p-1 px-2.5">
+                                      <button
+                                        onClick={() => handleUpdateCart(p.id, -1)}
+                                        disabled={hasOwnPendingApproval}
+                                        className="text-lg font-black text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                                      >
+                                        -
+                                      </button>
+                                      <span className="text-xs font-black w-3 text-center text-gray-900">{inCartQty}</span>
+                                      <button
+                                        onClick={() => handleUpdateCart(p.id, 1)}
+                                        disabled={hasOwnPendingApproval}
+                                        className="text-lg font-black text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+                                      >
+                                        +
+                                      </button>
+                                    </div>
                                     <button
-                                      onClick={() => handleUpdateCart(p.id, -1)}
+                                      onClick={() => openAddonSelector(p)}
                                       disabled={hasOwnPendingApproval}
-                                      className="text-lg font-black text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                                      className="text-[8px] font-black uppercase tracking-widest text-gray-500 underline disabled:opacity-40 disabled:cursor-not-allowed"
                                     >
-                                      -
-                                    </button>
-                                    <span className="text-xs font-black w-3 text-center text-gray-900">{inCartQty}</span>
-                                    <button
-                                      onClick={() => handleUpdateCart(p.id, 1)}
-                                      disabled={hasOwnPendingApproval}
-                                      className="text-lg font-black text-primary disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                      +
+                                      Adicionar com observacao
                                     </button>
                                   </div>
                                 ) : (
-                                  <button
-                                    onClick={() => handleUpdateCart(p.id, 1)}
-                                    disabled={hasOwnPendingApproval}
-                                    className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-                                  >
-                                    Adicionar
-                                  </button>
+                                  <div className="flex flex-col items-start gap-1.5">
+                                    <button
+                                      onClick={() => handleUpdateCart(p.id, 1)}
+                                      disabled={hasOwnPendingApproval}
+                                      className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      Adicionar
+                                    </button>
+                                    <button
+                                      onClick={() => openAddonSelector(p)}
+                                      disabled={hasOwnPendingApproval}
+                                      className="text-[8px] font-black uppercase tracking-widest text-gray-500 underline disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      Adicionar com observacao
+                                    </button>
+                                  </div>
                                 )}
                               </div>
                             )}
@@ -1048,12 +1090,24 @@ const App: React.FC = () => {
                   <div>
                     <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">{pendingProduct.name}</h3>
                     <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                      {pendingProduct.addon_selection_mode === 'SINGLE'
-                        ? 'Adicionais opcionais: escolha 1 ou nenhum'
-                        : 'Adicionais opcionais: escolha quantos quiser ou nenhum'}
+                      {getProductAddons(pendingProduct.id).length === 0
+                        ? 'Observacao opcional para este item'
+                        : pendingProduct.addon_selection_mode === 'SINGLE'
+                          ? 'Adicionais opcionais: escolha 1 ou nenhum'
+                          : 'Adicionais opcionais: escolha quantos quiser ou nenhum'}
                     </p>
                   </div>
-                  <button onClick={() => { setShowAddonSelector(false); setPendingProduct(null); setSelectedAddonIds([]); }} className="text-gray-400 font-black">Fechar</button>
+                  <button
+                    onClick={() => {
+                      setShowAddonSelector(false);
+                      setPendingProduct(null);
+                      setSelectedAddonIds([]);
+                      setProductObservation('');
+                    }}
+                    className="text-gray-400 font-black"
+                  >
+                    Fechar
+                  </button>
                 </div>
 
                 <div className="flex flex-col gap-2">
@@ -1076,13 +1130,29 @@ const App: React.FC = () => {
                   })}
                 </div>
 
+                <div className="flex flex-col gap-2">
+                  <label htmlFor="product-observation" className="text-[10px] text-gray-500 font-black uppercase tracking-widest">
+                    Observacao (opcional)
+                  </label>
+                  <textarea
+                    id="product-observation"
+                    rows={3}
+                    value={productObservation}
+                    onChange={(e) => setProductObservation(e.target.value)}
+                    placeholder="Ex.: sem cebola, molho separado..."
+                    maxLength={180}
+                    className="w-full rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-700 outline-none focus:border-primary"
+                  />
+                </div>
+
                 <button
                   type="button"
                   onClick={async () => {
-                    await handleAddProductWithAddons(pendingProduct, selectedAddonIds);
+                    await handleAddProductWithAddons(pendingProduct, selectedAddonIds, productObservation);
                     setShowAddonSelector(false);
                     setPendingProduct(null);
                     setSelectedAddonIds([]);
+                    setProductObservation('');
                   }}
                   className="w-full bg-gray-900 text-white py-4 rounded-xl font-black uppercase tracking-widest text-[11px]"
                 >
@@ -1117,6 +1187,11 @@ const App: React.FC = () => {
                           {(item.addon_names?.length || 0) > 0 && (
                             <p className="text-[8px] text-primary uppercase font-black tracking-widest mt-1">
                               + {item.addon_names?.join(', ')}
+                            </p>
+                          )}
+                          {!!(item.observation || '').trim() && (
+                            <p className="text-[8px] text-gray-500 font-black tracking-wide mt-1">
+                              Obs: {item.observation}
                             </p>
                           )}
                         </div>
