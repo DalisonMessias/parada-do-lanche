@@ -67,6 +67,9 @@ export interface Session {
   host_guest_id: string;
   created_at: string;
   closed_at?: string | null;
+  total_final?: number | null;
+  items_total_final?: number | null;
+  last_print_at?: string | null;
   table?: { name: string } | null;
   guests?: Guest[];
   orders?: Order[];
@@ -102,6 +105,9 @@ export interface Order {
   created_by_guest_id?: string | null;
   approved_by_guest_id?: string | null;
   approved_at?: string | null;
+  round_number?: number;
+  printed_at?: string | null;
+  printed_count?: number;
   total_cents: number;
   created_at: string;
   table_name?: string;
@@ -116,6 +122,7 @@ export interface OrderItem {
   unit_price_cents: number;
   qty: number;
   status?: 'PENDING' | 'READY';
+  printed_at?: string | null;
   note?: string;
   added_by_name: string;
 }

@@ -9,10 +9,10 @@ const INITIAL_CATEGORIES: Category[] = [
 ];
 
 const INITIAL_PRODUCTS: Product[] = [
-  { id: 'p1', category_id: 'cat1', name: 'X-Tudo Mega', description: 'HambÃºrguer 200g, bacon, ovo, queijo, presunto, alface e tomate.', price_cents: 2890, image_url: 'https://picsum.photos/seed/burger1/400/300', active: true, out_of_stock: false },
-  { id: 'p2', category_id: 'cat1', name: 'Hot Dog Especial', description: '2 salsichas, purÃª, batata palha e milho.', price_cents: 1500, image_url: 'https://picsum.photos/seed/hotdog/400/300', active: true, out_of_stock: false },
-  { id: 'p3', category_id: 'cat2', name: 'Coca-Cola 350ml', description: 'Geladinha.', price_cents: 600, image_url: 'https://picsum.photos/seed/coke/400/300', active: true, out_of_stock: false },
-  { id: 'p4', category_id: 'cat2', name: 'Suco de Laranja', description: 'Natural 500ml.', price_cents: 1200, image_url: 'https://picsum.photos/seed/juice/400/300', active: true, out_of_stock: false },
+  { id: 'p1', category_id: 'cat1', name: 'X-Tudo Mega', description: 'Hambúrguer 200g, bacon, ovo, queijo, presunto, alface e tomate.', price_cents: 2890, image_url: 'https://picsum.photos/seed/burger1/400/300', addon_selection_mode: 'MULTIPLE', active: true, out_of_stock: false },
+  { id: 'p2', category_id: 'cat1', name: 'Hot Dog Especial', description: '2 salsichas, purê, batata palha e milho.', price_cents: 1500, image_url: 'https://picsum.photos/seed/hotdog/400/300', addon_selection_mode: 'MULTIPLE', active: true, out_of_stock: false },
+  { id: 'p3', category_id: 'cat2', name: 'Coca-Cola 350ml', description: 'Geladinha.', price_cents: 600, image_url: 'https://picsum.photos/seed/coke/400/300', addon_selection_mode: 'MULTIPLE', active: true, out_of_stock: false },
+  { id: 'p4', category_id: 'cat2', name: 'Suco de Laranja', description: 'Natural 500ml.', price_cents: 1200, image_url: 'https://picsum.photos/seed/juice/400/300', addon_selection_mode: 'MULTIPLE', active: true, out_of_stock: false },
 ];
 
 const INITIAL_TABLES: Table[] = [
@@ -219,3 +219,4 @@ class MockDatabase {
 }
 
 export const db = new MockDatabase();
+

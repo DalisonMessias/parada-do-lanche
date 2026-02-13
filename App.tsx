@@ -1,7 +1,7 @@
 
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { supabase, formatCurrency } from './services/supabase';
-import { AppView, Table, Session, Guest, CartItem, Category, Product, ProductAddon, StoreSettings, Profile, UserRole, Order, OrderStatus } from './types';
+import { AppView, Table, Session, Guest, CartItem, Category, Product, ProductAddon, StoreSettings, Profile, UserRole, Order } from './types';
 import Layout from './components/Layout';
 import AdminOrders from './components/AdminOrders';
 import AdminTables from './components/AdminTables';
@@ -214,17 +214,12 @@ const App: React.FC = () => {
     const fetchSessionOrders = async () => {
       const { data } = await supabase
         .from('orders')
-        .select('*, items:order_items(*)')
+        .select('*')
         .eq('session_id', session.id)
         .order('created_at', { ascending: false });
 
       if (data) {
-        setSessionOrders(
-          data.map((order) => ({
-            ...order,
-            items: (order as any).items || [],
-          }))
-        );
+        setSessionOrders(data as Order[]);
       }
     };
 
@@ -337,6 +332,7 @@ const App: React.FC = () => {
 
   const handleUpdateCart = async (productId: string, delta: number) => {
     if (!session || !guest) return;
+    if (hasOwnPendingApproval) return;
     const existing = cart.find(i => i.product_id === productId && i.guest_id === guest.id && !i.note);
     if (existing) {
       const newQty = existing.qty + delta;
@@ -350,6 +346,7 @@ const App: React.FC = () => {
   const getProductAddons = (productId: string) => addons.filter(a => a.product_id === productId);
 
   const openAddonSelector = (product: Product) => {
+    if (hasOwnPendingApproval) return;
     setPendingProduct(product);
     setSelectedAddonIds([]);
     setShowAddonSelector(true);
@@ -366,22 +363,6 @@ const App: React.FC = () => {
 
   const getCartItemUnitPrice = (item: CartItem) => (item.product?.price_cents || 0) + (item.addon_total_cents || 0);
 
-  const orderStatusLabel: Record<OrderStatus, string> = {
-    PENDING: 'Pendente',
-    PREPARING: 'Em preparo',
-    READY: 'Pronto',
-    FINISHED: 'Finalizado',
-    CANCELLED: 'Cancelado',
-  };
-
-  const orderStatusClass: Record<OrderStatus, string> = {
-    PENDING: 'bg-amber-50 text-amber-700 border-amber-100',
-    PREPARING: 'bg-blue-50 text-blue-700 border-blue-100',
-    READY: 'bg-green-50 text-green-700 border-green-100',
-    FINISHED: 'bg-gray-100 text-gray-600 border-gray-200',
-    CANCELLED: 'bg-red-50 text-red-600 border-red-100',
-  };
-
   const myCartItems = useMemo(
     () => cart.filter((item) => item.guest_id === guest?.id),
     [cart, guest?.id]
@@ -392,33 +373,22 @@ const App: React.FC = () => {
     [sessionOrders]
   );
 
-  const sessionConfirmedOrders = useMemo(
-    () => sessionOrders.filter((order) => order.approval_status === 'APPROVED' && order.status !== 'CANCELLED'),
-    [sessionOrders]
+  const hasOwnPendingApproval = useMemo(
+    () =>
+      sessionOrders.some(
+        (order) =>
+          order.approval_status === 'PENDING_APPROVAL' &&
+          order.created_by_guest_id === guest?.id
+      ),
+    [sessionOrders, guest?.id]
   );
-
-  const sessionFinalTotal = useMemo(
-    () => sessionConfirmedOrders.reduce((acc, order) => acc + order.total_cents, 0),
-    [sessionConfirmedOrders]
-  );
-
-  const sessionTotalsByGuest = useMemo(() => {
-    const map = new Map<string, number>();
-    sessionConfirmedOrders.forEach((order) => {
-      (order.items || []).forEach((item) => {
-        const current = map.get(item.added_by_name) || 0;
-        map.set(item.added_by_name, current + item.qty * item.unit_price_cents);
-      });
-    });
-    return Array.from(map.entries()).map(([name, total]) => ({ name, total }));
-  }, [sessionConfirmedOrders]);
 
   const myCartTotal = useMemo(
     () => myCartItems.reduce((acc, item) => acc + getCartItemUnitPrice(item) * item.qty, 0),
     [myCartItems]
   );
 
-  const handleApprovePendingOrder = async (orderId: string, approve: boolean) => {
+  const handleApprovePendingOrder = async (order: Order, approve: boolean) => {
     if (!guest?.is_host) return;
 
     const accepted = approve ? 'aceitar' : 'rejeitar';
@@ -429,10 +399,22 @@ const App: React.FC = () => {
       ? { approval_status: 'APPROVED', status: 'PENDING', approved_by_guest_id: guest.id, approved_at: new Date().toISOString() }
       : { approval_status: 'REJECTED', status: 'CANCELLED' };
 
-    const { error } = await supabase.from('orders').update(payload).eq('id', orderId);
+    const { error } = await supabase.from('orders').update(payload).eq('id', order.id);
     if (error) {
       toast(`Erro ao atualizar aceite: ${error.message}`, 'error');
       return;
+    }
+
+    if (approve && order.created_by_guest_id) {
+      const { error: cartError } = await supabase
+        .from('cart_items')
+        .delete()
+        .eq('session_id', order.session_id)
+        .eq('guest_id', order.created_by_guest_id);
+
+      if (cartError) {
+        toast(`Pedido aceito, mas houve erro ao limpar carrinho: ${cartError.message}`, 'error');
+      }
     }
 
     toast(approve ? 'Pedido aceito e enviado para preparo.' : 'Pedido rejeitado.', approve ? 'success' : 'info');
@@ -440,6 +422,10 @@ const App: React.FC = () => {
 
   const handleSendMyCart = async () => {
     if (!session || !guest) return;
+    if (hasOwnPendingApproval) {
+      toast('Voce ja possui um pedido aguardando aceite.', 'info');
+      return;
+    }
     if (myCartItems.length === 0) {
       toast('Seu carrinho esta vazio.', 'info');
       return;
@@ -490,7 +476,9 @@ const App: React.FC = () => {
       return;
     }
 
-    await supabase.from('cart_items').delete().eq('session_id', session.id).eq('guest_id', guest.id);
+    if (!requiresHostApproval) {
+      await supabase.from('cart_items').delete().eq('session_id', session.id).eq('guest_id', guest.id);
+    }
     setShowCart(false);
     setIsLoading(false);
 
@@ -505,6 +493,7 @@ const App: React.FC = () => {
 
   const handleAddProductWithAddons = async (product: Product, addonIdsRaw: string[]) => {
     if (!session || !guest) return;
+    if (hasOwnPendingApproval) return;
     const addonIds = [...addonIdsRaw].sort();
     const selectedAddons = getProductAddons(product.id).filter(a => addonIds.includes(a.id));
     const addonTotal = selectedAddons.reduce((acc, a) => acc + a.price_cents, 0);
@@ -548,7 +537,7 @@ const App: React.FC = () => {
     setIsLoading(false);
     
     if (error) alert(error.message);
-    else alert("E-mail de redefiniÃ§Ã£o de senha enviado! Verifique sua caixa de entrada.");
+    else alert("E-mail de redefinição de senha enviado! Verifique sua caixa de entrada.");
   };
 
   if (view === 'LANDING') {
@@ -783,7 +772,7 @@ const App: React.FC = () => {
             </form>
 
             <div className="text-center">
-               <button onClick={() => window.location.hash = '/'} className="text-[9px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Voltar para o CardÃ¡pio</button>
+               <button onClick={() => window.location.hash = '/'} className="text-[9px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Voltar para o Cardápio</button>
                {tempRegisterEnabled && (
                  <div className="mt-3">
                    <button onClick={() => window.location.hash = '/cadastro-temp'} className="text-[9px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Cadastro Temporario</button>
@@ -802,10 +791,10 @@ const App: React.FC = () => {
       <Layout isAdmin settings={settings}>
         <div className="flex min-h-[92vh]">
           {/* Sidebar Lateral (Desktop Only) */}
-          <aside className="w-64 bg-white border-r border-gray-200 p-6 space-y-10 flex flex-col shrink-0">
+          <aside className="w-72 bg-white border-r border-gray-200 p-6 space-y-10 flex flex-col shrink-0">
             <div className="space-y-10 flex-1">
               <div className="px-2">
-                <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">OperaÃ§Ã£o</h3>
+                <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Operação</h3>
                 <nav className="space-y-1">
                   <button onClick={() => setAdminTab('ACTIVE_TABLES')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border ${adminTab === 'ACTIVE_TABLES' ? 'bg-primary text-white border-primary font-black' : 'text-gray-500 font-bold hover:bg-gray-50 border-transparent'}`}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
@@ -823,11 +812,11 @@ const App: React.FC = () => {
               </div>
 
               <div className="px-2">
-                <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">ConteÃºdo</h3>
+                <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Conteúdo</h3>
                 <nav className="space-y-1">
                   <button onClick={() => setAdminTab('MENU')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border ${adminTab === 'MENU' ? 'bg-primary text-white border-primary font-black' : 'text-gray-500 font-bold hover:bg-gray-50 border-transparent'}`}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="2" y1="14" x2="6" y2="14"/><line x1="10" y1="8" x2="14" y2="8"/><line x1="18" y1="16" x2="22" y2="16"/></svg>
-                    CardÃ¡pio
+                    Cardápio
                   </button>
                   {isAdmin && (
                     <>
@@ -857,7 +846,7 @@ const App: React.FC = () => {
             </div>
           </aside>
 
-          {/* ConteÃºdo Principal */}
+          {/* Conteúdo Principal */}
           <main className="flex-1 overflow-y-auto">
             <div className="p-8">
               {adminTab === 'ACTIVE_TABLES' && <AdminOrders mode="ACTIVE" />}
@@ -873,7 +862,7 @@ const App: React.FC = () => {
     );
   }
 
-  // VisualizaÃ§Ã£o Cliente (Mobile View)
+  // Visualização Cliente (Mobile View)
   return (
     <Layout 
       settings={settings}
@@ -886,7 +875,7 @@ const App: React.FC = () => {
              <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
           </div>
           <div className="text-center space-y-3">
-            <h2 className="text-3xl font-black text-gray-900 uppercase tracking-tighter leading-none italic">Sua Mesa EstÃ¡ Pronta</h2>
+            <h2 className="text-3xl font-black text-gray-900 uppercase tracking-tighter leading-none italic">Sua Mesa Está Pronta</h2>
             <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest leading-loose">Como deseja ser identificado(a) na {activeTable?.name}?</p>
           </div>
           <form onSubmit={(e) => {
@@ -895,7 +884,7 @@ const App: React.FC = () => {
             handleOpenTable(n);
           }} className="w-full space-y-5">
             <input name="un" type="text" placeholder="Seu Nome" required className="w-full p-4.5 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary text-center font-black text-lg placeholder:text-gray-200" />
-            <button className="w-full bg-primary text-white p-5 rounded-xl font-black uppercase tracking-widest text-base transition-transform active:scale-95">Abrir CardÃ¡pio</button>
+            <button className="w-full bg-primary text-white p-5 rounded-xl font-black uppercase tracking-widest text-base transition-transform active:scale-95">Abrir Cardápio</button>
           </form>
         </div>
       ) : (
@@ -927,13 +916,13 @@ const App: React.FC = () => {
                     {guest.is_host ? (
                       <div className="flex gap-2">
                         <button
-                          onClick={() => handleApprovePendingOrder(order.id, true)}
+                          onClick={() => handleApprovePendingOrder(order, true)}
                           className="px-3 py-2 rounded-lg bg-green-600 text-white text-[9px] font-black uppercase tracking-widest"
                         >
                           Aceitar
                         </button>
                         <button
-                          onClick={() => handleApprovePendingOrder(order.id, false)}
+                          onClick={() => handleApprovePendingOrder(order, false)}
                           className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600 text-[9px] font-black uppercase tracking-widest"
                         >
                           Rejeitar
@@ -947,59 +936,11 @@ const App: React.FC = () => {
               </section>
             )}
 
-            {sessionConfirmedOrders.length > 0 && (
-              <section className="bg-white border border-gray-100 rounded-2xl p-4 space-y-4">
-                <div>
-                  <h3 className="text-base font-black text-gray-900 uppercase tracking-tighter">Acompanhamento da Mesa</h3>
-                  <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                    Pedidos confirmados e totais por pessoa
-                  </p>
-                </div>
-
-                <div className="space-y-3">
-                  {sessionConfirmedOrders.map((order) => (
-                    <div key={order.id} className="border border-gray-100 rounded-xl p-3 space-y-2">
-                      <div className="flex justify-between items-center">
-                        <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">
-                          Pedido #{order.id.slice(0, 6)}
-                        </span>
-                        <span className={`px-2.5 py-1 rounded-full text-[8px] font-black uppercase tracking-widest border ${orderStatusClass[order.status]}`}>
-                          {orderStatusLabel[order.status]}
-                        </span>
-                      </div>
-                      <div className="space-y-1">
-                        {(order.items || []).map((item, idx) => (
-                          <div key={`${order.id}-${idx}`} className="flex justify-between items-start text-sm">
-                            <div>
-                              <p className="font-black text-gray-800">{item.qty}x {item.name_snapshot}</p>
-                              <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest">
-                                {item.added_by_name}
-                              </p>
-                            </div>
-                            <span className="font-black text-gray-700">{formatCurrency(item.qty * item.unit_price_cents)}</span>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="flex justify-between items-center border-t border-gray-50 pt-2">
-                        <span className="text-[8px] uppercase tracking-widest text-gray-400 font-black">Subtotal</span>
-                        <span className="text-sm font-black text-gray-900">{formatCurrency(order.total_cents)}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="border-t border-gray-100 pt-3 space-y-2">
-                  <div className="flex justify-between items-center">
-                    <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">Resumo final da mesa</span>
-                    <span className="text-lg font-black text-primary tracking-tighter">{formatCurrency(sessionFinalTotal)}</span>
-                  </div>
-                  {sessionTotalsByGuest.map((row) => (
-                    <div key={row.name} className="flex justify-between items-center text-sm">
-                      <span className="font-black text-gray-600">{row.name}</span>
-                      <span className="font-black text-gray-800">{formatCurrency(row.total)}</span>
-                    </div>
-                  ))}
-                </div>
+            {hasOwnPendingApproval && (
+              <section className="bg-amber-50 border border-amber-100 rounded-2xl p-4">
+                <p className="text-[10px] text-amber-700 font-black uppercase tracking-widest">
+                  Pedido pendente de aceite. Aguarde para editar ou enviar novamente.
+                </p>
               </section>
             )}
             
@@ -1027,25 +968,47 @@ const App: React.FC = () => {
                             <h4 className="font-black text-gray-900 text-base leading-none tracking-tighter">{p.name}</h4>
                             <p className="text-[8px] text-gray-400 mt-2 line-clamp-2 leading-relaxed font-black uppercase tracking-tight">{p.description}</p>
                           </div>
-                          <div className="flex justify-between items-center mt-2">
-                            <span className="font-black text-primary text-lg tracking-tighter">{formatCurrency(p.price_cents)}</span>
+                          <div className="mt-2 space-y-2">
+                            <span className="block font-black text-primary text-lg tracking-tighter">{formatCurrency(p.price_cents)}</span>
                             {session?.status === 'OPEN' && (
-                              <div className="flex items-center gap-2">
+                              <div className="w-full">
                                 {hasAddons ? (
-                                  <>
-                                    <button onClick={() => openAddonSelector(p)} className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest transition-transform active:scale-95">
+                                  <div className="flex flex-col items-start gap-1.5">
+                                    <button
+                                      onClick={() => openAddonSelector(p)}
+                                      disabled={hasOwnPendingApproval}
+                                      className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
                                       Adicionar
                                     </button>
                                     {inCartQty > 0 && <span className="text-[10px] font-black text-primary">{inCartQty} no carrinho</span>}
-                                  </>
+                                  </div>
                                 ) : inCartQty > 0 ? (
-                                  <div className="flex items-center gap-3 bg-gray-50 border border-gray-100 rounded-lg p-1 px-2.5">
-                                    <button onClick={() => handleUpdateCart(p.id, -1)} className="text-lg font-black text-gray-300">-</button>
+                                  <div className="inline-flex items-center gap-3 bg-gray-50 border border-gray-100 rounded-lg p-1 px-2.5">
+                                    <button
+                                      onClick={() => handleUpdateCart(p.id, -1)}
+                                      disabled={hasOwnPendingApproval}
+                                      className="text-lg font-black text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      -
+                                    </button>
                                     <span className="text-xs font-black w-3 text-center text-gray-900">{inCartQty}</span>
-                                    <button onClick={() => handleUpdateCart(p.id, 1)} className="text-lg font-black text-primary">+</button>
+                                    <button
+                                      onClick={() => handleUpdateCart(p.id, 1)}
+                                      disabled={hasOwnPendingApproval}
+                                      className="text-lg font-black text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      +
+                                    </button>
                                   </div>
                                 ) : (
-                                  <button onClick={() => handleUpdateCart(p.id, 1)} className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest transition-transform active:scale-95">Adicionar</button>
+                                  <button
+                                    onClick={() => handleUpdateCart(p.id, 1)}
+                                    disabled={hasOwnPendingApproval}
+                                    className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    Adicionar
+                                  </button>
                                 )}
                               </div>
                             )}
@@ -1169,10 +1132,10 @@ const App: React.FC = () => {
                   </div>
                   <button
                     onClick={handleSendMyCart}
-                    disabled={isLoading || myCartItems.length === 0}
+                    disabled={isLoading || myCartItems.length === 0 || hasOwnPendingApproval}
                     className="w-full bg-primary text-white py-5 rounded-xl font-black text-base uppercase tracking-widest transition-transform active:scale-95 italic disabled:opacity-60"
                   >
-                    {isLoading ? 'Enviando...' : 'Finalizar e Enviar'}
+                    {isLoading ? 'Enviando...' : hasOwnPendingApproval ? 'Aguardando Aceite' : 'Finalizar e Enviar'}
                   </button>
                 </div>
               </div>

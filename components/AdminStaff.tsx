@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { supabase } from '../services/supabase';
+import { createClient } from '@supabase/supabase-js';
+import { supabase, supabaseKey, supabaseUrl } from '../services/supabase';
 import { Profile, UserRole } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
 
@@ -8,12 +9,14 @@ type StaffForm = {
   name: string;
   email: string;
   role: UserRole;
+  password: string;
 };
 
 const emptyForm: StaffForm = {
   name: '',
   email: '',
   role: 'WAITER',
+  password: '',
 };
 
 const AdminStaff: React.FC = () => {
@@ -50,8 +53,14 @@ const AdminStaff: React.FC = () => {
       name: user.name,
       email: user.email,
       role: user.role,
+      password: '',
     });
     setShowModal(true);
+  };
+
+  const getResetRedirectTo = () => {
+    const redirectHash = window.location.hash.startsWith('#/admin') ? window.location.hash : '#/admin';
+    return `${window.location.origin}/${redirectHash}`;
   };
 
   const handleCreateOrUpdate = async (e: React.FormEvent) => {
@@ -72,12 +81,46 @@ const AdminStaff: React.FC = () => {
         if (error) throw error;
         toast('Perfil atualizado com sucesso.', 'success');
       } else {
-        const { error } = await supabase.from('profiles').insert({
-          name: formData.name.trim(),
-          email: formData.email.trim().toLowerCase(),
-          role: formData.role,
+        const normalizedName = formData.name.trim();
+        const normalizedEmail = formData.email.trim().toLowerCase();
+        const normalizedPassword = formData.password;
+        if (normalizedPassword.length < 6) {
+          throw new Error('A senha deve ter no minimo 6 caracteres.');
+        }
+        const signupClient = createClient(supabaseUrl, supabaseKey, {
+          auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
         });
-        if (error) throw error;
+        const { data: signupData, error: signupError } = await signupClient.auth.signUp({
+          email: normalizedEmail,
+          password: normalizedPassword,
+          options: { data: { name: normalizedName } },
+        });
+
+        if (signupError) {
+          const msg = (signupError.message || '').toLowerCase();
+          if (msg.includes('already') || msg.includes('registered')) {
+            throw new Error('Este e-mail ja esta cadastrado no Auth. Use o botao Senha para redefinir acesso.');
+          }
+          throw signupError;
+        }
+
+        const authUserId = signupData.user?.id;
+        const hasIdentity = (((signupData.user as any)?.identities || []) as any[]).length > 0;
+        if (!authUserId || !hasIdentity) {
+          throw new Error('Nao foi possivel criar usuario no Auth para este e-mail.');
+        }
+
+        const { error: profileError } = await supabase.from('profiles').upsert(
+          {
+            id: authUserId,
+            name: normalizedName,
+            email: normalizedEmail,
+            role: formData.role,
+          },
+          { onConflict: 'id' }
+        );
+        if (profileError) throw profileError;
+
         toast('Perfil criado com sucesso.', 'success');
       }
 
@@ -110,8 +153,7 @@ const AdminStaff: React.FC = () => {
     if (!normalizedEmail) return;
 
     setLoading(true);
-    const redirectHash = window.location.hash.startsWith('#/admin') ? window.location.hash : '#/admin';
-    const redirectTo = `${window.location.origin}/${redirectHash}`;
+    const redirectTo = getResetRedirectTo();
 
     const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, { redirectTo });
     setLoading(false);
@@ -240,6 +282,20 @@ const AdminStaff: React.FC = () => {
                   <option value="WAITER">GARCOM</option>
                 </select>
               </div>
+              {!isEditing && (
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Senha inicial</label>
+                  <input
+                    required
+                    type="password"
+                    minLength={6}
+                    value={formData.password}
+                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                    className="w-full p-4 border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
+                    placeholder="Minimo 6 caracteres"
+                  />
+                </div>
+              )}
               {isEditing && (
                 <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest leading-relaxed">
                   Troca de senha e feita pelo botao &quot;Senha&quot; na lista de usuarios.

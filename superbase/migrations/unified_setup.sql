@@ -116,10 +116,19 @@ create table if not exists public.sessions (
   status text default 'OPEN' check (status in ('OPEN', 'LOCKED', 'EXPIRED')),
   host_guest_id uuid,
   closed_at timestamp with time zone,
+  total_final integer,
+  items_total_final integer,
+  last_print_at timestamp with time zone,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 alter table if exists public.sessions
   add column if not exists closed_at timestamp with time zone;
+alter table if exists public.sessions
+  add column if not exists total_final integer;
+alter table if exists public.sessions
+  add column if not exists items_total_final integer;
+alter table if exists public.sessions
+  add column if not exists last_print_at timestamp with time zone;
 
 -- Corrige legado: se existir mais de uma sessao OPEN na mesma mesa, mantem apenas a mais recente.
 do $$
@@ -175,6 +184,9 @@ create table if not exists public.orders (
   approval_status text not null default 'PENDING_APPROVAL' check (approval_status in ('PENDING_APPROVAL', 'APPROVED', 'REJECTED')),
   approved_by_guest_id uuid references public.session_guests(id) on delete set null,
   approved_at timestamp with time zone,
+  round_number integer not null default 1,
+  printed_at timestamp with time zone,
+  printed_count integer not null default 0,
   -- Valores internos do banco (nao alterar sem migracao completa do app):
   -- PENDING, PREPARING, READY, FINISHED, CANCELLED
   -- Rotulos PT-BR na interface:
@@ -191,6 +203,12 @@ alter table if exists public.orders
   add column if not exists approved_by_guest_id uuid references public.session_guests(id) on delete set null;
 alter table if exists public.orders
   add column if not exists approved_at timestamp with time zone;
+alter table if exists public.orders
+  add column if not exists round_number integer not null default 1;
+alter table if exists public.orders
+  add column if not exists printed_at timestamp with time zone;
+alter table if exists public.orders
+  add column if not exists printed_count integer not null default 0;
 
 do $$
 begin
@@ -213,11 +231,14 @@ create table if not exists public.order_items (
   unit_price_cents integer not null,
   qty integer not null,
   status text not null default 'PENDING' check (status in ('PENDING', 'READY')),
+  printed_at timestamp with time zone,
   note text,
   added_by_name text not null
 );
 alter table if exists public.order_items
   add column if not exists status text not null default 'PENDING';
+alter table if exists public.order_items
+  add column if not exists printed_at timestamp with time zone;
 do $$
 begin
   if not exists (
@@ -230,6 +251,20 @@ begin
       check (status in ('PENDING', 'READY'));
   end if;
 end $$;
+
+create index if not exists idx_orders_session_printed on public.orders(session_id, printed_at);
+create index if not exists idx_orders_session_round on public.orders(session_id, round_number desc);
+create index if not exists idx_order_items_order_printed on public.order_items(order_id, printed_at);
+
+create table if not exists public.session_events (
+  id uuid default uuid_generate_v4() primary key,
+  session_id uuid not null references public.sessions(id) on delete cascade,
+  table_id uuid references public.tables(id) on delete set null,
+  event_type text not null,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+create index if not exists idx_session_events_session_created_at on public.session_events(session_id, created_at desc);
 
 insert into public.settings (id, store_name, primary_color)
 values (1, 'Parada do Lanche', '#f97316')
@@ -294,6 +329,262 @@ begin
   where id = p_table_id;
 
   return v_session_id;
+end;
+$$;
+
+create or replace function public.register_session_event(
+  p_session_id uuid,
+  p_table_id uuid,
+  p_event_type text,
+  p_payload jsonb default '{}'::jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.session_events (session_id, table_id, event_type, payload)
+  values (p_session_id, p_table_id, p_event_type, coalesce(p_payload, '{}'::jsonb));
+end;
+$$;
+
+create or replace function public.create_individual_order(
+  p_session_id uuid,
+  p_table_id uuid,
+  p_guest_id uuid,
+  p_guest_name text,
+  p_approval_status text,
+  p_items jsonb
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order_id uuid;
+  v_total integer;
+  v_round integer;
+  v_approval text;
+begin
+  if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
+    raise exception 'p_items precisa ser um array jsonb com itens';
+  end if;
+
+  v_approval := case when p_approval_status in ('PENDING_APPROVAL', 'APPROVED', 'REJECTED')
+    then p_approval_status
+    else 'PENDING_APPROVAL'
+  end;
+
+  perform 1
+  from public.sessions
+  where id = p_session_id
+  for update;
+
+  select coalesce(max(round_number), 0) + 1
+    into v_round
+  from public.orders
+  where session_id = p_session_id;
+
+  select coalesce(sum((i.qty * i.unit_price_cents)::integer), 0)
+    into v_total
+  from jsonb_to_recordset(p_items) as i(
+    product_id uuid,
+    name_snapshot text,
+    unit_price_cents integer,
+    qty integer,
+    note text,
+    added_by_name text,
+    status text
+  );
+
+  insert into public.orders (
+    table_id,
+    session_id,
+    created_by_guest_id,
+    approval_status,
+    approved_by_guest_id,
+    approved_at,
+    round_number,
+    total_cents,
+    status
+  )
+  values (
+    p_table_id,
+    p_session_id,
+    p_guest_id,
+    v_approval,
+    case when v_approval = 'APPROVED' then p_guest_id else null end,
+    case when v_approval = 'APPROVED' then timezone('utc'::text, now()) else null end,
+    v_round,
+    v_total,
+    'PENDING'
+  )
+  returning id into v_order_id;
+
+  insert into public.order_items (
+    order_id,
+    product_id,
+    name_snapshot,
+    unit_price_cents,
+    qty,
+    note,
+    added_by_name,
+    status
+  )
+  select
+    v_order_id,
+    i.product_id,
+    coalesce(i.name_snapshot, 'Item'),
+    i.unit_price_cents,
+    i.qty,
+    i.note,
+    coalesce(i.added_by_name, p_guest_name),
+    coalesce(i.status, 'PENDING')
+  from jsonb_to_recordset(p_items) as i(
+    product_id uuid,
+    name_snapshot text,
+    unit_price_cents integer,
+    qty integer,
+    note text,
+    added_by_name text,
+    status text
+  );
+
+  delete from public.cart_items
+  where session_id = p_session_id
+    and guest_id = p_guest_id;
+
+  perform public.register_session_event(
+    p_session_id,
+    p_table_id,
+    'ORDER_CREATED',
+    jsonb_build_object(
+      'order_id', v_order_id,
+      'guest_id', p_guest_id,
+      'guest_name', p_guest_name,
+      'approval_status', v_approval,
+      'round_number', v_round,
+      'total_cents', v_total
+    )
+  );
+
+  return v_order_id;
+end;
+$$;
+
+create or replace function public.mark_orders_printed(
+  p_session_id uuid,
+  p_order_ids uuid[]
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_count integer := 0;
+begin
+  if p_order_ids is null or array_length(p_order_ids, 1) is null then
+    return 0;
+  end if;
+
+  with updated_orders as (
+    update public.orders
+      set printed_at = coalesce(printed_at, timezone('utc'::text, now())),
+          printed_count = coalesce(printed_count, 0) + 1
+    where session_id = p_session_id
+      and id = any(p_order_ids)
+    returning id
+  )
+  select count(*) into v_count from updated_orders;
+
+  update public.order_items
+    set printed_at = coalesce(printed_at, timezone('utc'::text, now()))
+  where order_id = any(p_order_ids);
+
+  update public.sessions
+    set last_print_at = timezone('utc'::text, now())
+  where id = p_session_id;
+
+  perform public.register_session_event(
+    p_session_id,
+    (select table_id from public.sessions where id = p_session_id),
+    'KITCHEN_PRINT',
+    jsonb_build_object('order_ids', p_order_ids, 'printed_count', v_count)
+  );
+
+  return v_count;
+end;
+$$;
+
+create or replace function public.finalize_session_with_history(
+  p_session_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_table_id uuid;
+  v_total integer := 0;
+  v_items integer := 0;
+begin
+  select table_id into v_table_id
+  from public.sessions
+  where id = p_session_id
+  for update;
+
+  if v_table_id is null then
+    return;
+  end if;
+
+  select coalesce(sum(o.total_cents), 0)
+    into v_total
+  from public.orders o
+  where o.session_id = p_session_id
+    and o.approval_status = 'APPROVED'
+    and o.status <> 'CANCELLED';
+
+  select coalesce(sum(oi.qty), 0)
+    into v_items
+  from public.order_items oi
+  join public.orders o on o.id = oi.order_id
+  where o.session_id = p_session_id
+    and o.approval_status = 'APPROVED'
+    and o.status <> 'CANCELLED';
+
+  update public.sessions
+    set status = 'EXPIRED',
+        closed_at = coalesce(closed_at, timezone('utc'::text, now())),
+        total_final = v_total,
+        items_total_final = v_items
+  where id = p_session_id;
+
+  update public.tables
+    set status = 'FREE'
+  where id = v_table_id;
+
+  update public.orders
+    set status = 'FINISHED'
+  where session_id = p_session_id
+    and approval_status = 'APPROVED'
+    and status <> 'CANCELLED';
+
+  update public.orders
+    set status = 'CANCELLED',
+        approval_status = 'REJECTED'
+  where session_id = p_session_id
+    and approval_status = 'PENDING_APPROVAL';
+
+  perform public.register_session_event(
+    p_session_id,
+    v_table_id,
+    'SESSION_FINALIZED',
+    jsonb_build_object('total_final', v_total, 'items_total_final', v_items)
+  );
 end;
 $$;
 

@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, formatCurrency } from '../services/supabase';
 import { Guest, Order, OrderItem, OrderStatus, Session } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
@@ -15,12 +16,46 @@ interface AdminOrdersProps {
   mode: AdminOrdersMode;
 }
 
+type ReceiptPaperWidth = 58 | 80 | 'AUTO';
+type ReceiptHeightOption = 'AUTO' | '220' | '300' | '500';
+
 const getTodayInputDate = () => {
   const now = new Date();
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+};
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const buildThermalLayout = (paperWidthMm: ReceiptPaperWidth) => {
+  const isAutoWidth = paperWidthMm === 'AUTO';
+  const compact = paperWidthMm === 58;
+  const pageWidthMm = typeof paperWidthMm === 'number' ? paperWidthMm : null;
+  return {
+    compact,
+    isAutoWidth,
+    pageWidthMm,
+    windowWidthPx: compact ? 420 : 540,
+    windowHeightPx: compact ? 820 : 920,
+    paddingTopMm: compact ? 3.2 : 4.4,
+    paddingXmm: compact ? 2.6 : 3.8,
+    paddingBottomMm: compact ? 4.2 : 5.6,
+    lineHeight: compact ? 1.38 : 1.46,
+    storeFontPx: compact ? 13 : 14,
+    titleFontPx: compact ? 16 : 18,
+    metaFontPx: compact ? 11 : 12,
+    rowFontPx: compact ? 12 : 13,
+    sectionFontPx: compact ? 11 : 12,
+    totalFontPx: compact ? 16 : 18,
+  };
 };
 
 const orderStatusClass: Record<OrderStatus, string> = {
@@ -98,8 +133,32 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
   const [selectedDate, setSelectedDate] = useState<string>(getTodayInputDate());
   const [splitMode, setSplitMode] = useState<'EQUAL' | 'CONSUMPTION'>('CONSUMPTION');
   const [splitPeople, setSplitPeople] = useState(2);
+  const receiptPaperWidth: ReceiptPaperWidth = 'AUTO';
+  const receiptHeight: ReceiptHeightOption = 'AUTO';
+  const [storePrintMeta, setStorePrintMeta] = useState<{ store_name?: string } | null>(null);
+  const lastNotificationRef = useRef<string>('');
 
   const { toast, confirm } = useFeedback();
+
+  const notifyAdmin = async (title: string, body: string, tag: string) => {
+    const key = `${title}:${body}:${tag}`;
+    if (lastNotificationRef.current === key) return;
+    lastNotificationRef.current = key;
+    setTimeout(() => {
+      if (lastNotificationRef.current === key) lastNotificationRef.current = '';
+    }, 1500);
+
+    try {
+      if (!('Notification' in window)) return;
+      if (Notification.permission === 'default') {
+        await Notification.requestPermission();
+      }
+      if (Notification.permission !== 'granted') return;
+      new Notification(title, { body, tag });
+    } catch {
+      // noop
+    }
+  };
 
   const fetchSessions = async () => {
     const statusFilter = mode === 'ACTIVE' ? 'OPEN' : 'EXPIRED';
@@ -119,23 +178,39 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
   };
 
   useEffect(() => {
+    const fetchPrintMeta = async () => {
+      const { data } = await supabase.from('settings').select('store_name').eq('id', 1).maybeSingle();
+      if (data) {
+        setStorePrintMeta(data as { store_name?: string });
+      }
+    };
+    fetchPrintMeta();
+  }, []);
+
+  useEffect(() => {
     fetchSessions();
 
     const channel = supabase
       .channel(`admin_tables_${mode}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions' }, fetchSessions)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, (payload) => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, async (payload) => {
         fetchSessions();
         if (mode !== 'ACTIVE') return;
         const row = (payload.new || payload.old || {}) as any;
         if (payload.eventType === 'INSERT') {
           beep();
-          if (row.approval_status === 'PENDING_APPROVAL') toast('Novo pedido aguardando aceite.', 'info');
-          else toast('Novo pedido entrou em uma mesa ativa.', 'info');
+          if (row.approval_status === 'PENDING_APPROVAL') {
+            toast('Novo pedido aguardando aceite.', 'info');
+            await notifyAdmin('Novo pedido', 'Pedido aguardando aceite na mesa.', `order-pending-${row.id}`);
+          } else {
+            toast('Novo pedido entrou em uma mesa ativa.', 'info');
+            await notifyAdmin('Novo pedido', 'Pedido confirmado na mesa ativa.', `order-insert-${row.id}`);
+          }
         }
         if (payload.eventType === 'UPDATE' && row.status === 'READY') {
           beep();
           toast('Pedido marcado como pronto.', 'success');
+          await notifyAdmin('Pedido pronto', 'Um pedido foi marcado como pronto.', `order-ready-${row.id}`);
         }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, fetchSessions)
@@ -163,7 +238,6 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     () => filteredSessions.find((session) => session.id === selectedSessionId) || null,
     [filteredSessions, selectedSessionId]
   );
-
   const getVisibleOrders = (session: SessionAggregate) => {
     return (session.orders || []).filter((order) => order.approval_status !== 'REJECTED');
   };
@@ -245,6 +319,18 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
       return;
     }
 
+    if (order.created_by_guest_id) {
+      const { error: cartError } = await supabase
+        .from('cart_items')
+        .delete()
+        .eq('session_id', order.session_id)
+        .eq('guest_id', order.created_by_guest_id);
+
+      if (cartError) {
+        toast(`Pedido aprovado, mas nao foi possivel limpar carrinho: ${cartError.message}`, 'error');
+      }
+    }
+
     toast('Pedido aprovado na mesa.', 'success');
     fetchSessions();
   };
@@ -264,27 +350,6 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     }
 
     toast('Pedido rejeitado.', 'info');
-    fetchSessions();
-  };
-
-  const handleMarkItemReady = async (orderId: string, itemId: string) => {
-    const { error } = await supabase.from('order_items').update({ status: 'READY' }).eq('id', itemId);
-
-    if (error) {
-      toast(`Erro ao marcar item: ${error.message}`, 'error');
-      return;
-    }
-
-    const { count } = await supabase
-      .from('order_items')
-      .select('*', { head: true, count: 'exact' })
-      .eq('order_id', orderId)
-      .eq('status', 'PENDING');
-
-    const nextStatus: OrderStatus = (count || 0) === 0 ? 'READY' : 'PENDING';
-    await supabase.from('orders').update({ status: nextStatus }).eq('id', orderId);
-
-    toast('Item marcado como pronto.', 'success');
     fetchSessions();
   };
 
@@ -334,76 +399,161 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     fetchSessions();
   };
 
-  const printSession = (session: SessionAggregate) => {
+  const printSession = async (session: SessionAggregate) => {
     const tableName = session.table?.name || 'Mesa';
-    const createdAt = new Date(session.created_at).toLocaleString();
-    const closedAt = session.closed_at ? new Date(session.closed_at).toLocaleString() : '-';
+    const createdAt = new Date(session.created_at).toLocaleString('pt-BR');
+    const closedAt = session.closed_at ? new Date(session.closed_at).toLocaleString('pt-BR') : '-';
     const visibleOrders = getVisibleOrders(session);
-    const consolidated = getConsolidatedItems(visibleOrders);
     const byGuest = getTotalsByGuest(session);
     const total = getSessionTotal(session);
+
+    const layout = buildThermalLayout(receiptPaperWidth);
+    const pageHeightCss = receiptHeight === 'AUTO' ? 'auto' : `${receiptHeight}mm`;
+    const pageSizeCss = layout.isAutoWidth ? 'auto' : `${layout.pageWidthMm}mm ${pageHeightCss}`;
+    const ticketWidthCss = layout.isAutoWidth ? '100%' : `${layout.pageWidthMm}mm`;
+    const popupHeightPx =
+      receiptHeight === 'AUTO'
+        ? layout.windowHeightPx
+        : Math.max(layout.windowHeightPx, Math.round(Number(receiptHeight) * 3.78) + 120);
+
+    const storeName = escapeHtml((storePrintMeta?.store_name || 'Parada do Lanche').trim());
+
+    const ordersHtml = visibleOrders
+      .map((order) => {
+        const orderTime = new Date(order.created_at).toLocaleTimeString('pt-BR', {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        const itemsHtml = (order.items || [])
+          .map(
+            (item) => `
+      <div class="item-line">
+        <span class="label-col">${escapeHtml(`${item.qty}x ${item.name_snapshot}`)}</span>
+        <span class="value-col">${formatCurrency(item.qty * item.unit_price_cents)}</span>
+      </div>
+      <div class="small muted">${escapeHtml(`Por: ${item.added_by_name}`)}</div>
+      ${
+        item.note
+          ? `<div class="small note-label">Obs:</div>
+      <div class="small note-value">${escapeHtml(item.note)}</div>`
+          : ''
+      }`
+          )
+          .join('');
+
+        return `
+      <div class="row">
+        <strong class="label-col">Pedido #${escapeHtml(order.id.slice(0, 6))}</strong>
+        <span class="value-col">${formatCurrency(order.total_cents)}</span>
+      </div>
+      <div class="small muted">${escapeHtml(
+        `${approvalLabel[order.approval_status || 'APPROVED'] || 'Confirmado'} • ${orderTime}`
+      )}</div>
+      ${itemsHtml}
+      <div class="sep"></div>`;
+      })
+      .join('');
+
+    const byGuestHtml = byGuest
+      .map(
+        (row) => `
+      <div class="row">
+        <span class="label-col">${escapeHtml(row.name)}</span>
+        <span class="value-col">${formatCurrency(row.total)}</span>
+      </div>`
+      )
+      .join('');
 
     const html = `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8" />
-<title>Comanda ${tableName}</title>
+<title>Comanda ${escapeHtml(tableName)}</title>
 <style>
-  body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
-  .ticket { width: 80mm; margin: 0 auto; padding: 4mm; box-sizing: border-box; }
-  h1 { font-size: 14px; margin: 0 0 6px 0; text-transform: uppercase; }
-  .meta { font-size: 10px; margin-bottom: 8px; }
-  .sep { border-top: 1px dashed #999; margin: 8px 0; }
-  .row { display: flex; justify-content: space-between; font-size: 11px; gap: 8px; }
-  .small { font-size: 10px; color: #555; }
-  .total { font-weight: bold; font-size: 13px; }
+  @page { size: ${pageSizeCss}; margin: 0; }
+  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  html, body { margin: 0; padding: 0; color: #000; background: #fff; }
+  body { font-family: "Arial", "Helvetica", sans-serif; line-height: ${layout.lineHeight}; font-size: ${layout.rowFontPx}px; }
+  .ticket {
+    width: ${ticketWidthCss};
+    min-height: ${pageHeightCss};
+    margin: 0 auto;
+    padding: ${layout.paddingTopMm}mm ${layout.paddingXmm}mm ${layout.paddingBottomMm}mm;
+  }
+  .store { margin: 0 0 1.8mm; text-align: center; font-size: ${layout.storeFontPx}px; font-weight: 800; letter-spacing: 0.02em; word-break: break-word; }
+  h1 {
+    margin: 0 0 1.8mm;
+    font-size: ${layout.titleFontPx}px;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    word-break: break-word;
+  }
+  .meta { font-size: ${layout.metaFontPx}px; margin-bottom: 1.2mm; }
+  .meta-line { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
+  .meta-line span:first-child { color: #333; }
+  .meta-line span:last-child { text-align: right; white-space: nowrap; font-weight: 700; }
+  .sep { border-top: 1px dashed #777; margin: 2.2mm 0; }
+  .section-title {
+    margin: 0 0 1mm;
+    font-size: ${layout.sectionFontPx}px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .row, .item-line {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 7px;
+    font-size: ${layout.rowFontPx}px;
+    margin-bottom: 0.6mm;
+  }
+  .label-col { flex: 1; min-width: 0; word-break: break-word; overflow-wrap: anywhere; }
+  .value-col { white-space: nowrap; margin-left: 4px; font-weight: 700; }
+  .small { font-size: ${layout.metaFontPx}px; margin: 0.3mm 0 0.7mm; word-break: break-word; overflow-wrap: anywhere; }
+  .small.muted { color: #444; }
+  .small.note-label { color: #111; margin-bottom: 0.1mm; font-weight: 700; }
+  .small.note-value { color: #111; margin-top: 0; padding-left: 1.6mm; }
+  .total { font-size: ${layout.totalFontPx}px; font-weight: 800; margin-top: 0.8mm; }
+  .footer {
+    margin-top: 3.4mm;
+    text-align: center;
+    font-size: ${layout.metaFontPx + 1}px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+  }
+  .footer-sep {
+    border-top: 1px solid #000;
+    margin: 3.1mm 0 1.8mm;
+  }
 </style>
 </head>
 <body>
   <div class="ticket">
-    <h1>Comanda ${tableName}</h1>
-    <div class="meta">Abertura: ${createdAt}</div>
-    <div class="meta">Fechamento: ${closedAt}</div>
+    <p class="store">${storeName}</p>
+    <h1>Comanda ${escapeHtml(tableName)}</h1>
+    <div class="meta meta-line"><span>Abertura</span><span>${escapeHtml(createdAt)}</span></div>
+    <div class="meta meta-line"><span>Fechamento</span><span>${escapeHtml(closedAt)}</span></div>
     <div class="sep"></div>
-    ${visibleOrders
-      .map(
-        (order) => `
-      <div class="row"><span>Pedido #${order.id.slice(0, 6)} - ${approvalLabel[order.approval_status || 'APPROVED'] || 'Confirmado'}</span><span>${formatCurrency(order.total_cents)}</span></div>
-      ${(order.items || [])
-        .map(
-          (item) =>
-            `<div class="small">${item.qty}x ${item.name_snapshot} (${item.added_by_name})</div>${
-              item.note ? `<div class="small">Obs: ${item.note}</div>` : ''
-            }`
-        )
-        .join('')}
-      <div class="sep"></div>
-      `
-      )
-      .join('')}
-    ${consolidated
-      .map(
-        (item) => `
-      <div class="row"><span>${item.qty}x ${item.name}</span><span>${formatCurrency(item.total)}</span></div>
-      ${item.notes.length ? `<div class="small">Obs: ${item.notes.join(' | ')}</div>` : ''}
-      <div class="small">Pronto: ${item.ready} | Pendente: ${item.pending}</div>
-      `
-      )
-      .join('')}
+    ${ordersHtml}
+    <div class="total row"><span class="label-col">Total Geral</span><span class="value-col">${formatCurrency(total)}</span></div>
     <div class="sep"></div>
-    <div class="total row"><span>Total Geral</span><span>${formatCurrency(total)}</span></div>
-    <div class="sep"></div>
-    ${byGuest
-      .map((row) => `<div class="row"><span>${row.name}</span><span>${formatCurrency(row.total)}</span></div>`)
-      .join('')}
+    <div class="section-title">Por pessoa</div>
+    ${byGuestHtml}
+    <div class="footer-sep"></div>
+    <div class="footer">UaiTech</div>
   </div>
   <script>
-    window.onload = () => { window.print(); window.onafterprint = () => window.close(); };
+    window.onload = () => {
+      window.print();
+      window.onafterprint = () => window.close();
+    };
   <\/script>
 </body>
 </html>`;
 
-    const win = window.open('', '_blank', 'width=440,height=800');
+    const win = window.open('', '_blank', `width=${layout.windowWidthPx},height=${popupHeightPx}`);
     if (!win) {
       toast('Nao foi possivel abrir a janela de impressao.', 'error');
       return;
@@ -413,7 +563,6 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     win.document.write(html);
     win.document.close();
   };
-
   const renderCards = () => {
     if (filteredSessions.length === 0) {
       return (
@@ -649,14 +798,6 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
                             </div>
                             <div className="mt-2 flex items-center justify-between gap-2">
                               <span className="text-[10px] text-gray-400 font-black uppercase tracking-widest">{formatCurrency(item.qty * item.unit_price_cents)}</span>
-                              {mode === 'ACTIVE' && item.status !== 'READY' && (
-                                <button
-                                  onClick={() => handleMarkItemReady(item.orderId, item.id)}
-                                  className="px-2.5 py-1 rounded-lg bg-green-600 text-white text-[9px] font-black uppercase tracking-widest"
-                                >
-                                  Marcar pronto
-                                </button>
-                              )}
                             </div>
                           </div>
                         ))}

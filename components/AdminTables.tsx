@@ -56,17 +56,17 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
   };
 
   const handleDeleteMesa = async (id: string) => {
-    if (!confirm('Deseja excluir esta mesa? ATENÃ‡ÃƒO: Se o script SQL atualizado nÃ£o foi aplicado no Supabase, a exclusÃ£o falharÃ¡ caso haja pedidos antigos.')) return;
+    if (!confirm('Deseja excluir esta mesa? ATENÇÃO: Se o script SQL atualizado não foi aplicado no Supabase, a exclusão falhará caso haja pedidos antigos.')) return;
     
     // Tenta excluir a mesa (o cascade no SQL cuida do resto)
     const { error } = await supabase.from('tables').delete().eq('id', id);
     
     if (error) {
       console.error('Erro ao excluir mesa:', error);
-      alert(`NÃ£o foi possÃ­vel excluir: ${error.message}. Aplique o novo script SQL para habilitar a exclusÃ£o em cascata.`);
+      alert(`Não foi possível excluir: ${error.message}. Aplique o novo script SQL para habilitar a exclusão em cascata.`);
     } else {
       setTables(prev => prev.filter(t => t.id !== id));
-      alert('Mesa excluÃ­da com sucesso!');
+      alert('Mesa excluída com sucesso!');
     }
   };
 
@@ -101,7 +101,7 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
       <div className="flex justify-between items-center bg-white p-6 rounded-2xl border border-gray-200">
         <div>
           <h2 className="text-2xl font-black text-gray-900 uppercase tracking-tighter">Mesas & QR Codes</h2>
-          <p className="text-[9px] text-gray-400 font-black uppercase tracking-[0.2em] mt-1.5 italic">GeraÃ§Ã£o de identificadores profissionais</p>
+          <p className="text-[9px] text-gray-400 font-black uppercase tracking-[0.2em] mt-1.5 italic">Geração de identificadores profissionais</p>
         </div>
         <div className="flex gap-2">
           <button 
