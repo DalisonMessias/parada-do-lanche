@@ -1,6 +1,7 @@
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, formatCurrency } from '../services/supabase';
+import { printKitchenTicket } from '../services/kitchenPrint';
 import { Guest, Order, OrderItem, OrderStatus, Session } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
 
@@ -16,8 +17,7 @@ interface AdminOrdersProps {
   mode: AdminOrdersMode;
 }
 
-type ReceiptPaperWidth = 58 | 80 | 'AUTO';
-type ReceiptHeightOption = 'AUTO' | '220' | '300' | '500';
+type PrintScope = 'ALL' | 'UNPRINTED' | 'ORDER';
 
 const getTodayInputDate = () => {
   const now = new Date();
@@ -25,59 +25,6 @@ const getTodayInputDate = () => {
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
-};
-
-const escapeHtml = (value: string) =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
-const formatTicketNoteHtml = (note: string) => {
-  const lines = note
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (lines.length === 0) return '';
-
-  return lines
-    .map((line) => {
-      const labelMatch = line.match(/^([^:\n]{1,40}):\s*(.*)$/);
-      if (!labelMatch) {
-        return `<div class="small note-value">${escapeHtml(line)}</div>`;
-      }
-
-      const label = escapeHtml(labelMatch[1]);
-      const text = escapeHtml(labelMatch[2]);
-      return `<div class="small note-value"><span class="note-key">${label}:</span>${text ? ` ${text}` : ''}</div>`;
-    })
-    .join('');
-};
-
-const buildThermalLayout = (paperWidthMm: ReceiptPaperWidth) => {
-  const isAutoWidth = paperWidthMm === 'AUTO';
-  const compact = paperWidthMm === 58;
-  const pageWidthMm = typeof paperWidthMm === 'number' ? paperWidthMm : null;
-  return {
-    compact,
-    isAutoWidth,
-    pageWidthMm,
-    windowWidthPx: compact ? 420 : 540,
-    windowHeightPx: compact ? 820 : 920,
-    paddingTopMm: compact ? 3.2 : 4.4,
-    paddingXmm: compact ? 2.6 : 3.8,
-    paddingBottomMm: compact ? 4.2 : 5.6,
-    lineHeight: compact ? 1.38 : 1.46,
-    storeFontPx: compact ? 13 : 14,
-    titleFontPx: compact ? 16 : 18,
-    metaFontPx: compact ? 11 : 12,
-    rowFontPx: compact ? 12 : 13,
-    sectionFontPx: compact ? 11 : 12,
-    totalFontPx: compact ? 16 : 18,
-  };
 };
 
 const orderStatusClass: Record<OrderStatus, string> = {
@@ -96,11 +43,6 @@ const orderStatusLabel: Record<OrderStatus, string> = {
   CANCELLED: 'Cancelado',
 };
 
-const itemStatusLabel = {
-  PENDING: 'Pendente',
-  READY: 'Pronto',
-} as const;
-
 const normalizeSession = (row: any): SessionAggregate => {
   const orders = ((row.orders || []) as any[]).map((order) => ({
     ...order,
@@ -116,6 +58,34 @@ const normalizeSession = (row: any): SessionAggregate => {
 };
 
 const sumOrderItems = (items: OrderItem[] = []) => items.reduce((acc, item) => acc + (item.qty || 0), 0);
+
+type OrderGroup = {
+  groupId: string;
+  rootOrder: Order & { items?: OrderItem[] };
+  orders: (Order & { items?: OrderItem[] })[];
+};
+
+const groupOrdersByRoot = (orders: (Order & { items?: OrderItem[] })[]): OrderGroup[] => {
+  const grouped = new Map<string, (Order & { items?: OrderItem[] })[]>();
+
+  for (const order of orders) {
+    const key = order.parent_order_id || order.id;
+    const bucket = grouped.get(key) || [];
+    bucket.push(order);
+    grouped.set(key, bucket);
+  }
+
+  const groups: OrderGroup[] = [];
+  for (const [groupId, bucket] of grouped.entries()) {
+    const sorted = [...bucket].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    const rootOrder = sorted.find((order) => order.id === groupId) || sorted[0];
+    groups.push({ groupId, rootOrder, orders: sorted });
+  }
+
+  return groups.sort(
+    (a, b) => new Date(b.rootOrder.created_at).getTime() - new Date(a.rootOrder.created_at).getTime()
+  );
+};
 
 const approvalLabel: Record<string, string> = {
   PENDING_APPROVAL: 'Aguardando aceite',
@@ -152,15 +122,32 @@ const beep = () => {
 const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
   const [sessions, setSessions] = useState<SessionAggregate[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [seenOrderIdsBySession, setSeenOrderIdsBySession] = useState<Record<string, string[]>>({});
   const [selectedDate, setSelectedDate] = useState<string>(getTodayInputDate());
   const [splitMode, setSplitMode] = useState<'EQUAL' | 'CONSUMPTION'>('CONSUMPTION');
   const [splitPeople, setSplitPeople] = useState(2);
-  const receiptPaperWidth: ReceiptPaperWidth = 'AUTO';
-  const receiptHeight: ReceiptHeightOption = 'AUTO';
   const [storePrintMeta, setStorePrintMeta] = useState<{ store_name?: string } | null>(null);
   const lastNotificationRef = useRef<string>('');
+  const initializedSeenRef = useRef(false);
 
   const { toast, confirm } = useFeedback();
+
+  const markOrdersAsSeen = useCallback((sessionId: string, orderIds: string[]) => {
+    if (!sessionId || orderIds.length === 0) return;
+    setSeenOrderIdsBySession((prev) => {
+      const current = prev[sessionId] || [];
+      const set = new Set(current);
+      let changed = false;
+      orderIds.forEach((id) => {
+        if (!set.has(id)) {
+          set.add(id);
+          changed = true;
+        }
+      });
+      if (!changed) return prev;
+      return { ...prev, [sessionId]: Array.from(set) };
+    });
+  }, []);
 
   const notifyAdmin = async (title: string, body: string, tag: string) => {
     const key = `${title}:${body}:${tag}`;
@@ -196,7 +183,19 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
       return;
     }
 
-    setSessions((data || []).map(normalizeSession));
+    const normalized = (data || []).map(normalizeSession);
+    setSessions(normalized);
+
+    if (!initializedSeenRef.current) {
+      const baseline: Record<string, string[]> = {};
+      normalized.forEach((session) => {
+        baseline[session.id] = (session.orders || [])
+          .filter((order) => order.approval_status !== 'REJECTED')
+          .map((order) => order.id);
+      });
+      setSeenOrderIdsBySession(baseline);
+      initializedSeenRef.current = true;
+    }
   };
 
   useEffect(() => {
@@ -210,6 +209,8 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
   }, []);
 
   useEffect(() => {
+    initializedSeenRef.current = false;
+    setSeenOrderIdsBySession({});
     fetchSessions();
 
     const channel = supabase
@@ -264,14 +265,16 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     return (session.orders || []).filter((order) => order.approval_status !== 'REJECTED');
   };
 
-  const getConfirmedOrders = (session: SessionAggregate) => {
-    return getVisibleOrders(session).filter((order) => order.approval_status === 'APPROVED');
+  const getConfirmedOrdersFrom = (orders: (Order & { items?: OrderItem[] })[]) => {
+    return orders.filter((order) => order.approval_status === 'APPROVED' && order.status !== 'CANCELLED');
+  };
+
+  const getOrdersTotal = (orders: (Order & { items?: OrderItem[] })[]) => {
+    return getConfirmedOrdersFrom(orders).reduce((acc, order) => acc + order.total_cents, 0);
   };
 
   const getSessionTotal = (session: SessionAggregate) => {
-    return getConfirmedOrders(session)
-      .filter((order) => order.status !== 'CANCELLED')
-      .reduce((acc, order) => acc + order.total_cents, 0);
+    return getOrdersTotal(getVisibleOrders(session));
   };
 
   const getSessionItemsCount = (session: SessionAggregate) => {
@@ -284,47 +287,33 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     return (session.orders || []).filter((order) => order.approval_status === 'PENDING_APPROVAL');
   };
 
-  const getTotalsByGuest = (session: SessionAggregate) => {
+  const getUnprintedOrders = (session: SessionAggregate) => {
+    return getVisibleOrders(session).filter((order) => !order.printed_at);
+  };
+
+  const getNewOrders = (session: SessionAggregate) => {
+    const seen = new Set(seenOrderIdsBySession[session.id] || []);
+    return getVisibleOrders(session).filter((order) => !seen.has(order.id));
+  };
+
+  const getTotalsByGuestFromOrders = (orders: (Order & { items?: OrderItem[] })[]) => {
     const map = new Map<string, { total: number; items: number }>();
 
-    getConfirmedOrders(session)
-      .filter((order) => order.status !== 'CANCELLED')
-      .forEach((order) => {
-        (order.items || []).forEach((item) => {
-          const key = item.added_by_name || 'Sem nome';
-          const row = map.get(key) || { total: 0, items: 0 };
-          row.total += item.qty * item.unit_price_cents;
-          row.items += item.qty;
-          map.set(key, row);
-        });
+    getConfirmedOrdersFrom(orders).forEach((order) => {
+      (order.items || []).forEach((item) => {
+        const key = item.added_by_name || 'Sem nome';
+        const row = map.get(key) || { total: 0, items: 0 };
+        row.total += item.qty * item.unit_price_cents;
+        row.items += item.qty;
+        map.set(key, row);
       });
+    });
 
     return Array.from(map.entries()).map(([name, row]) => ({ name, total: row.total, items: row.items }));
   };
 
-  const getConsolidatedItems = (orders: (Order & { items?: OrderItem[] })[]) => {
-    const map = new Map<string, { qty: number; total: number; notes: string[]; ready: number; pending: number }>();
-
-    orders
-      .filter((order) => order.status !== 'CANCELLED')
-      .forEach((order) => {
-        (order.items || []).forEach((item) => {
-          const key = `${item.name_snapshot}__${item.note || ''}`;
-          const row = map.get(key) || { qty: 0, total: 0, notes: [], ready: 0, pending: 0 };
-          row.qty += item.qty;
-          row.total += item.qty * item.unit_price_cents;
-          if (item.note && !row.notes.includes(item.note)) row.notes.push(item.note);
-          if (item.status === 'READY') row.ready += item.qty;
-          else row.pending += item.qty;
-          map.set(key, row);
-        });
-      });
-
-    return Array.from(map.entries()).map(([key, row]) => ({
-      key,
-      name: key.split('__')[0],
-      ...row,
-    }));
+  const getTotalsByGuest = (session: SessionAggregate) => {
+    return getTotalsByGuestFromOrders(getVisibleOrders(session));
   };
 
   const handleApproveOrder = async (order: Order) => {
@@ -421,165 +410,76 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     fetchSessions();
   };
 
-  const printSession = async (session: SessionAggregate) => {
-    const tableName = session.table?.name || 'Mesa';
-    const createdAt = new Date(session.created_at).toLocaleString('pt-BR');
-    const closedAt = session.closed_at ? new Date(session.closed_at).toLocaleString('pt-BR') : '-';
+  const printSession = async (
+    session: SessionAggregate,
+    options: { scope?: PrintScope; orderId?: string } = {}
+  ) => {
+    const scope = options.scope || 'ALL';
     const visibleOrders = getVisibleOrders(session);
-    const byGuest = getTotalsByGuest(session);
-    const total = getSessionTotal(session);
+    const printableOrders =
+      scope === 'ORDER' && options.orderId
+        ? visibleOrders.filter((order) => order.id === options.orderId)
+        : scope === 'UNPRINTED'
+          ? visibleOrders.filter((order) => !order.printed_at)
+          : visibleOrders;
 
-    const layout = buildThermalLayout(receiptPaperWidth);
-    const pageHeightCss = receiptHeight === 'AUTO' ? 'auto' : `${receiptHeight}mm`;
-    const pageSizeCss = layout.isAutoWidth ? 'auto' : `${layout.pageWidthMm}mm ${pageHeightCss}`;
-    const ticketWidthCss = layout.isAutoWidth ? '100%' : `${layout.pageWidthMm}mm`;
-    const popupHeightPx =
-      receiptHeight === 'AUTO'
-        ? layout.windowHeightPx
-        : Math.max(layout.windowHeightPx, Math.round(Number(receiptHeight) * 3.78) + 120);
-
-    const storeName = escapeHtml((storePrintMeta?.store_name || 'Parada do Lanche').trim());
-
-    const ordersHtml = visibleOrders
-      .map((order) => {
-        const orderTime = new Date(order.created_at).toLocaleTimeString('pt-BR', {
-          hour: '2-digit',
-          minute: '2-digit',
-        });
-        const itemsHtml = (order.items || [])
-          .map(
-            (item) => `
-      <div class="item-line">
-        <span class="label-col">${escapeHtml(`${item.qty}x ${item.name_snapshot}`)}</span>
-        <span class="value-col">${formatCurrency(item.qty * item.unit_price_cents)}</span>
-      </div>
-      <div class="small muted">${escapeHtml(`Por: ${item.added_by_name}`)}</div>
-      ${item.note ? `<div class="small note-title">Observacao:</div>${formatTicketNoteHtml(item.note)}` : ''}`
-          )
-          .join('');
-
-        return `
-      <div class="row">
-        <strong class="label-col">Pedido #${escapeHtml(order.id.slice(0, 6))}</strong>
-        <span class="value-col">${formatCurrency(order.total_cents)}</span>
-      </div>
-      <div class="small muted">${escapeHtml(
-        `${approvalLabel[order.approval_status || 'APPROVED'] || 'Confirmado'} • ${orderTime}`
-      )}</div>
-      ${itemsHtml}
-      <div class="sep"></div>`;
-      })
-      .join('');
-
-    const byGuestHtml = byGuest
-      .map(
-        (row) => `
-      <div class="row">
-        <span class="label-col">${escapeHtml(row.name)}</span>
-        <span class="value-col">${formatCurrency(row.total)}</span>
-      </div>`
-      )
-      .join('');
-
-    const html = `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<title>Comanda ${escapeHtml(tableName)}</title>
-<style>
-  @page { size: ${pageSizeCss}; margin: 0; }
-  * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  html, body { margin: 0; padding: 0; color: #000; background: #fff; }
-  body { font-family: "Arial", "Helvetica", sans-serif; line-height: ${layout.lineHeight}; font-size: ${layout.rowFontPx}px; }
-  .ticket {
-    width: ${ticketWidthCss};
-    min-height: ${pageHeightCss};
-    margin: 0 auto;
-    padding: ${layout.paddingTopMm}mm ${layout.paddingXmm}mm ${layout.paddingBottomMm}mm;
-  }
-  .store { margin: 0 0 1.8mm; text-align: center; font-size: ${layout.storeFontPx}px; font-weight: 800; letter-spacing: 0.02em; word-break: break-word; }
-  h1 {
-    margin: 0 0 1.8mm;
-    font-size: ${layout.titleFontPx}px;
-    text-align: center;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    word-break: break-word;
-  }
-  .meta { font-size: ${layout.metaFontPx}px; margin-bottom: 1.2mm; }
-  .meta-line { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; }
-  .meta-line span:first-child { color: #333; }
-  .meta-line span:last-child { text-align: right; white-space: nowrap; font-weight: 700; }
-  .sep { border-top: 1px dashed #777; margin: 2.2mm 0; }
-  .section-title {
-    margin: 0 0 1mm;
-    font-size: ${layout.sectionFontPx}px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-  .row, .item-line {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 7px;
-    font-size: ${layout.rowFontPx}px;
-    margin-bottom: 0.6mm;
-  }
-  .label-col { flex: 1; min-width: 0; word-break: break-word; overflow-wrap: anywhere; }
-  .value-col { white-space: nowrap; margin-left: 4px; font-weight: 700; }
-  .small { font-size: ${layout.metaFontPx}px; margin: 0.3mm 0 0.7mm; word-break: break-word; overflow-wrap: anywhere; }
-  .small.muted { color: #444; }
-  .small.note-title { color: #111; margin-bottom: 0.1mm; font-weight: 400; }
-  .small.note-value { color: #111; margin-top: 0; padding-left: 0; }
-  .note-key { font-weight: 800; }
-  .total { font-size: ${layout.totalFontPx}px; font-weight: 800; margin-top: 0.8mm; }
-  .footer {
-    margin-top: 3.4mm;
-    text-align: center;
-    font-size: ${layout.metaFontPx + 1}px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-  }
-  .footer-sep {
-    border-top: 1px solid #000;
-    margin: 3.1mm 0 1.8mm;
-  }
-</style>
-</head>
-<body>
-  <div class="ticket">
-    <p class="store">${storeName}</p>
-    <h1>Comanda ${escapeHtml(tableName)}</h1>
-    <div class="meta meta-line"><span>Abertura</span><span>${escapeHtml(createdAt)}</span></div>
-    <div class="meta meta-line"><span>Fechamento</span><span>${escapeHtml(closedAt)}</span></div>
-    <div class="sep"></div>
-    ${ordersHtml}
-    <div class="total row"><span class="label-col">Total Geral</span><span class="value-col">${formatCurrency(total)}</span></div>
-    <div class="sep"></div>
-    <div class="section-title">Por pessoa</div>
-    ${byGuestHtml}
-    <div class="footer-sep"></div>
-    <div class="footer">UaiTech</div>
-  </div>
-  <script>
-    window.onload = () => {
-      window.print();
-      window.onafterprint = () => window.close();
-    };
-  <\/script>
-</body>
-</html>`;
-
-    const win = window.open('', '_blank', `width=${layout.windowWidthPx},height=${popupHeightPx}`);
-    if (!win) {
-      toast('Nao foi possivel abrir a janela de impressao.', 'error');
+    if (printableOrders.length === 0) {
+      toast('Nao ha pedidos para imprimir neste filtro.', 'info');
       return;
     }
 
-    win.document.open();
-    win.document.write(html);
-    win.document.close();
+    const byGuest = getTotalsByGuestFromOrders(printableOrders);
+    const total = getOrdersTotal(printableOrders);
+    const filterLabel =
+      scope === 'ORDER' && options.orderId
+        ? `Pedido #${options.orderId.slice(0, 6)}`
+        : scope === 'UNPRINTED'
+          ? 'Somente pedidos novos'
+          : 'Todos os pedidos';
+
+    const printResult = await printKitchenTicket({
+      storeName: (storePrintMeta?.store_name || 'Parada do Lanche').trim(),
+      tableName: session.table?.name || 'Mesa',
+      filterLabel,
+      openedAt: session.created_at,
+      closedAt: session.closed_at || null,
+      totalCents: total,
+      guestTotals: byGuest.map((row) => ({ name: row.name, total_cents: row.total })),
+      orders: printableOrders.map((order) => ({
+        id: order.id,
+        created_at: order.created_at,
+        total_cents: order.total_cents || 0,
+        approval_label: approvalLabel[order.approval_status || 'APPROVED'] || 'Confirmado',
+        items: (order.items || []).map((item) => ({
+          name_snapshot: item.name_snapshot,
+          qty: item.qty || 0,
+          unit_price_cents: item.unit_price_cents || 0,
+          note: item.note || '',
+          added_by_name: item.added_by_name || 'Operacao',
+        })),
+      })),
+    });
+
+    if (printResult.status === 'error') {
+      toast(`Nao foi possivel iniciar a impressao: ${printResult.message}`, 'error');
+      return;
+    }
+    if (printResult.status === 'cancelled') {
+      toast('Impressao cancelada. Nenhum cupom foi marcado como impresso.', 'info');
+      return;
+    }
+
+    const { error: markError } = await supabase.rpc('mark_orders_printed', {
+      p_session_id: session.id,
+      p_order_ids: printableOrders.map((order) => order.id),
+    });
+
+    if (markError) {
+      toast(`Impresso, mas falhou ao marcar como impresso: ${markError.message}`, 'error');
+      return;
+    }
+
+    fetchSessions();
   };
   const renderCards = () => {
     if (filteredSessions.length === 0) {
@@ -595,6 +495,8 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
       const itemCount = getSessionItemsCount(session);
       const total = getSessionTotal(session);
       const pendingApprovals = getPendingApprovals(session).length;
+      const newOrdersCount = getNewOrders(session).length;
+      const unprintedCount = getUnprintedOrders(session).length;
 
       return (
         <div key={session.id} className="bg-white border border-gray-200 rounded-[28px] overflow-hidden flex flex-col">
@@ -605,9 +507,16 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
                 Sessao #{session.id.slice(0, 6)} • {new Date(session.created_at).toLocaleTimeString()}
               </span>
             </div>
-            <span className={`px-3 py-1.5 rounded-full text-[8px] font-black tracking-widest border uppercase ${mode === 'ACTIVE' ? 'bg-green-50 text-green-600 border-green-100' : 'bg-gray-100 text-gray-500 border-gray-200'}`}>
-              {mode === 'ACTIVE' ? 'Ativa' : 'Finalizada'}
-            </span>
+            <div className="flex flex-col items-end gap-2">
+              <span className={`px-3 py-1.5 rounded-full text-[8px] font-black tracking-widest border uppercase ${mode === 'ACTIVE' ? 'bg-green-50 text-green-600 border-green-100' : 'bg-gray-100 text-gray-500 border-gray-200'}`}>
+                {mode === 'ACTIVE' ? 'Ativa' : 'Finalizada'}
+              </span>
+              {mode === 'ACTIVE' && newOrdersCount > 0 && (
+                <span className="px-2 py-1 rounded-full bg-red-600 text-white text-[8px] font-black uppercase tracking-widest">
+                  {newOrdersCount} novo(s)
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="p-5 flex-1 flex flex-col gap-3">
@@ -642,10 +551,11 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
               Visualizar
             </button>
             <button
-              onClick={() => printSession(session)}
-              className="flex-1 border border-gray-200 text-gray-600 py-3.5 rounded-xl text-[9px] font-black uppercase tracking-widest"
+              onClick={() => printSession(session, { scope: 'UNPRINTED' })}
+              disabled={unprintedCount === 0}
+              className="flex-1 border border-gray-200 text-gray-600 py-3.5 rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              Imprimir
+              Imprimir Novos
             </button>
             {mode === 'ACTIVE' && (
               <button
@@ -665,7 +575,19 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
   const selectedTotal = selectedSession ? getSessionTotal(selectedSession) : 0;
   const selectedPendingApprovals = selectedSession ? getPendingApprovals(selectedSession) : [];
   const selectedVisibleOrders = selectedSession ? getVisibleOrders(selectedSession) : [];
-  const selectedConsolidated = selectedSession ? getConsolidatedItems(selectedVisibleOrders) : [];
+  const selectedOrderGroups = useMemo(
+    () => groupOrdersByRoot(selectedVisibleOrders),
+    [selectedVisibleOrders]
+  );
+  const selectedUnprintedCount = selectedSession ? getUnprintedOrders(selectedSession).length : 0;
+
+  useEffect(() => {
+    if (!selectedSession) return;
+    markOrdersAsSeen(
+      selectedSession.id,
+      selectedVisibleOrders.map((order) => order.id)
+    );
+  }, [selectedSession, selectedVisibleOrders, markOrdersAsSeen]);
 
   const finishedRevenueTotal = useMemo(() => {
     if (mode !== 'FINISHED') return 0;
@@ -748,95 +670,61 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
                 {selectedVisibleOrders.length === 0 && (
                   <p className="text-sm text-gray-400 font-bold">Nenhum pedido enviado.</p>
                 )}
-                {selectedVisibleOrders.map((order) => (
-                  <div key={order.id} className="border border-gray-100 rounded-xl p-3 flex flex-col gap-2">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
+                {selectedOrderGroups.map((group) => (
+                  <div key={group.groupId} className="border border-gray-100 rounded-xl p-3 flex flex-col gap-3">
+                    <div className="flex items-center justify-between gap-2">
                       <p className="text-sm font-black text-gray-800">
-                        Pedido #{order.id.slice(0, 6)} • {new Date(order.created_at).toLocaleTimeString()}
+                        Pedido raiz #{group.rootOrder.id.slice(0, 6)} - {new Date(group.rootOrder.created_at).toLocaleTimeString()}
                       </p>
-                      <div className="flex gap-1.5">
-                        <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest ${approvalClass[order.approval_status || 'APPROVED'] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>
-                          {approvalLabel[order.approval_status || 'APPROVED'] || 'Confirmado'}
-                        </span>
-                        <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest ${orderStatusClass[order.status]}`}>
-                          {orderStatusLabel[order.status]}
-                        </span>
-                      </div>
+                      <button
+                        onClick={() => selectedSession && printSession(selectedSession, { scope: 'ORDER', orderId: group.rootOrder.id })}
+                        className="px-2 py-0.5 rounded-full border border-gray-200 text-[9px] font-black uppercase tracking-widest text-gray-600"
+                      >
+                        Imprimir raiz
+                      </button>
                     </div>
-                    {(order.items || []).map((item) => (
-                      <div key={item.id} className="flex items-start justify-between gap-2 border-t border-gray-50 pt-2">
-                        <div>
-                          <p className="font-black text-gray-700 text-sm">{item.qty}x {item.name_snapshot}</p>
-                          <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                            Pedido por {item.added_by_name}
+
+                    {group.orders.map((order) => (
+                      <div key={order.id} className="border border-gray-100 rounded-lg p-2.5 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="text-[11px] font-black text-gray-700">
+                            Pedido #{order.id.slice(0, 6)} - {new Date(order.created_at).toLocaleTimeString()}
                           </p>
-                          {item.note && <p className="text-[10px] text-gray-500 font-black mt-1">{item.note}</p>}
+                          <div className="flex gap-1.5">
+                            <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest ${approvalClass[order.approval_status || 'APPROVED'] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>
+                              {approvalLabel[order.approval_status || 'APPROVED'] || 'Confirmado'}
+                            </span>
+                            {order.status !== 'PENDING' && (
+                              <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest ${orderStatusClass[order.status]}`}>
+                                {orderStatusLabel[order.status]}
+                              </span>
+                            )}
+                            <button
+                              onClick={() => selectedSession && printSession(selectedSession, { scope: 'ORDER', orderId: order.id })}
+                              className="px-2 py-0.5 rounded-full border border-gray-200 text-[9px] font-black uppercase tracking-widest text-gray-600"
+                            >
+                              Imprimir
+                            </button>
+                          </div>
                         </div>
-                        <span className="font-black text-gray-800 text-sm">{formatCurrency(item.qty * item.unit_price_cents)}</span>
+                        {(order.items || []).map((item) => (
+                          <div key={item.id} className="flex items-start justify-between gap-2 border-t border-gray-50 pt-2">
+                            <div>
+                              <p className="font-black text-gray-700 text-sm">{item.qty}x {item.name_snapshot}</p>
+                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
+                                Pedido por {item.added_by_name}
+                              </p>
+                              {item.note && <p className="text-[10px] text-gray-500 font-black mt-1 whitespace-pre-line">{item.note}</p>}
+                            </div>
+                            <span className="font-black text-gray-800 text-sm">{formatCurrency(item.qty * item.unit_price_cents)}</span>
+                          </div>
+                        ))}
                       </div>
                     ))}
                   </div>
                 ))}
               </div>
             </section>
-
-            <div className="grid lg:grid-cols-2 gap-6">
-              <section className="border border-gray-100 rounded-2xl p-4 flex flex-col gap-3">
-                <h4 className="text-xs font-black uppercase tracking-widest text-gray-500">Consolidado de itens</h4>
-                <div className="flex flex-col gap-2 max-h-[42vh] overflow-auto pr-1">
-                  {selectedConsolidated.length === 0 && (
-                    <p className="text-sm text-gray-400 font-bold">Sem itens confirmados.</p>
-                  )}
-                  {selectedConsolidated.map((row) => (
-                    <div key={row.key} className="rounded-xl border border-gray-100 p-3">
-                      <div className="flex justify-between items-center">
-                        <p className="font-black text-gray-800">{row.qty}x {row.name}</p>
-                        <span className="font-black text-gray-900">{formatCurrency(row.total)}</span>
-                      </div>
-                      {row.notes.length > 0 && (
-                        <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest mt-1">Obs: {row.notes.join(' | ')}</p>
-                      )}
-                      <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                        Pronto: {row.ready} • Pendente: {row.pending}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </section>
-
-              <section className="border border-gray-100 rounded-2xl p-4 flex flex-col gap-3">
-                <h4 className="text-xs font-black uppercase tracking-widest text-gray-500">Mosaico por pessoa</h4>
-                <div className="grid md:grid-cols-2 gap-3 max-h-[42vh] overflow-auto pr-1">
-                  {selectedTotalsByGuest.map((guestRow) => {
-                    const guestItems = getConfirmedOrders(selectedSession)
-                      .flatMap((order) => (order.items || []).map((item) => ({ ...item, orderId: order.id, orderStatus: order.status })))
-                      .filter((item) => item.added_by_name === guestRow.name);
-
-                    return (
-                      <div key={guestRow.name} className="border border-gray-100 rounded-xl p-3 flex flex-col gap-2">
-                        <div className="flex items-center justify-between">
-                          <p className="font-black text-gray-800 uppercase tracking-widest text-[11px]">{guestRow.name}</p>
-                          <span className="font-black text-gray-900">{formatCurrency(guestRow.total)}</span>
-                        </div>
-                        {guestItems.map((item, idx) => (
-                          <div key={`${guestRow.name}-${idx}`} className="border border-gray-50 rounded-lg p-2">
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-sm font-black text-gray-700">{item.qty}x {item.name_snapshot}</span>
-                              <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest ${item.status === 'READY' ? 'bg-green-50 text-green-600 border-green-100' : 'bg-amber-50 text-amber-600 border-amber-100'}`}>
-                                {itemStatusLabel[(item.status || 'PENDING') as 'PENDING' | 'READY']}
-                              </span>
-                            </div>
-                            <div className="mt-2 flex items-center justify-between gap-2">
-                              <span className="text-[10px] text-gray-400 font-black uppercase tracking-widest">{formatCurrency(item.qty * item.unit_price_cents)}</span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            </div>
 
             <div className="border border-gray-100 rounded-2xl p-4 flex flex-col gap-3">
               <div className="flex flex-wrap gap-3 items-end justify-between">
@@ -881,7 +769,31 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
               ) : (
                 <div className="flex flex-col gap-2">
                   {selectedTotalsByGuest.map((row) => (
-                    <div key={row.name} className="flex justify-between items-center text-sm">
+                    <div key={row.name} className="flex justify-between items-start text-sm">
+                      <div className="flex flex-col">
+                        <span className="font-black text-gray-600">{row.name}</span>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">
+                          {row.items} item(ns)
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="font-black text-gray-900">{formatCurrency(row.total)}</span>
+                        <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mt-1">
+                          {selectedTotal > 0 ? `${Math.round((row.total / selectedTotal) * 100)}% da mesa` : '0% da mesa'}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {splitMode === 'EQUAL' && selectedTotalsByGuest.length > 0 && (
+                <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-3 space-y-2">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">
+                    Consumo individual (referencia)
+                  </p>
+                  {selectedTotalsByGuest.map((row) => (
+                    <div key={`equal-${row.name}`} className="flex justify-between items-center text-sm">
                       <span className="font-black text-gray-600">{row.name}</span>
                       <span className="font-black text-gray-900">{formatCurrency(row.total)}</span>
                     </div>
@@ -894,13 +806,29 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
               <div>
                 <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Total geral da mesa</p>
                 <p className="text-2xl font-black text-gray-900 tracking-tighter italic">{formatCurrency(selectedTotal)}</p>
+                {selectedTotalsByGuest.length > 0 && (
+                  <div className="mt-2 flex flex-col gap-1">
+                    {selectedTotalsByGuest.map((row) => (
+                      <p key={`total-${row.name}`} className="text-[10px] font-black uppercase tracking-widest text-gray-500">
+                        {row.name}: {formatCurrency(row.total)}
+                      </p>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={() => printSession(selectedSession)}
+                  onClick={() => printSession(selectedSession, { scope: 'UNPRINTED' })}
+                  disabled={selectedUnprintedCount === 0}
+                  className="px-4 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Imprimir Novos
+                </button>
+                <button
+                  onClick={() => printSession(selectedSession, { scope: 'ALL' })}
                   className="px-4 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest"
                 >
-                  Imprimir Comanda
+                  Imprimir Todos
                 </button>
                 {mode === 'ACTIVE' && (
                   <button

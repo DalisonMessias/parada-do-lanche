@@ -2,6 +2,32 @@
   "name": "Parada do Lanche - Cardápio Digital",
   "description": "Sistema de cardápio digital colaborativo para a Parada do Lanche com QR Codes por mesa, carrinhos multiusuário e monitor de pedidos em tempo real.",
   "requestFramePermissions": [
-    "camera"
+    "camera",
+    "microphone",
+    "geolocation",
+    "notifications",
+    "clipboard-read",
+    "clipboard-write",
+    "midi",
+    "speaker",
+    "device-info",
+    "background-sync",
+    "ambient-light-sensor",
+    "accelerometer",
+    "gyroscope",
+    "magnetometer",
+    "accessibility-events",
+    "clipboard",
+    "payment-handler",
+    "idle-detection",
+    "storage-access",
+    "clipboard-sanitized-write",
+    "display-capture",
+    "nfc",
+    "wake-lock",
+    "window-placement",
+    "web-share",
+    "xr-spatial-tracking",
+    "clipboard-read-write"
   ]
 }

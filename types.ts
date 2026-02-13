@@ -3,6 +3,9 @@ export type OrderStatus = 'PENDING' | 'PREPARING' | 'READY' | 'FINISHED' | 'CANC
 export type UserRole = 'ADMIN' | 'MANAGER' | 'WAITER';
 export type OrderApprovalStatus = 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
 export type OrderApprovalMode = 'HOST' | 'SELF';
+export type OrderOrigin = 'CUSTOMER' | 'WAITER' | 'BALCAO';
+export type DiscountMode = 'NONE' | 'AMOUNT' | 'PERCENT';
+export type TableType = 'DINING' | 'COUNTER';
 
 export interface StoreSettings {
   id: string;
@@ -17,6 +20,7 @@ export interface StoreSettings {
   sticker_muted_text_color: string;
   sticker_qr_frame_color: string;
   order_approval_mode?: OrderApprovalMode;
+  enable_counter_module?: boolean;
 }
 
 export interface Profile {
@@ -58,6 +62,7 @@ export interface Table {
   name: string;
   token: string;
   status: 'FREE' | 'OCCUPIED';
+  table_type?: TableType;
 }
 
 export interface Session {
@@ -102,6 +107,12 @@ export interface Order {
   table_id: string;
   session_id: string;
   status: OrderStatus;
+  origin?: OrderOrigin;
+  parent_order_id?: string | null;
+  created_by_profile_id?: string | null;
+  customer_name?: string | null;
+  customer_phone?: string | null;
+  general_note?: string | null;
   approval_status?: OrderApprovalStatus;
   created_by_guest_id?: string | null;
   approved_by_guest_id?: string | null;
@@ -109,6 +120,10 @@ export interface Order {
   round_number?: number;
   printed_at?: string | null;
   printed_count?: number;
+  subtotal_cents?: number;
+  discount_mode?: DiscountMode;
+  discount_value?: number;
+  discount_cents?: number;
   total_cents: number;
   created_at: string;
   table_name?: string;

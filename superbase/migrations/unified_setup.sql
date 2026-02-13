@@ -12,6 +12,7 @@ create table if not exists public.settings (
   wifi_ssid text not null default '',
   wifi_password text not null default '',
   order_approval_mode text not null default 'HOST' check (order_approval_mode in ('HOST', 'SELF')),
+  enable_counter_module boolean not null default true,
   sticker_bg_color text not null default '#ffffff',
   sticker_text_color text not null default '#111827',
   sticker_border_color text not null default '#111111',
@@ -25,6 +26,8 @@ alter table if exists public.settings
   add column if not exists wifi_password text not null default '';
 alter table if exists public.settings
   add column if not exists order_approval_mode text not null default 'HOST';
+alter table if exists public.settings
+  add column if not exists enable_counter_module boolean not null default true;
 alter table if exists public.settings
   add column if not exists sticker_bg_color text not null default '#ffffff';
 alter table if exists public.settings
@@ -106,9 +109,24 @@ create table if not exists public.tables (
   id uuid default uuid_generate_v4() primary key,
   name text not null,
   token text unique not null,
+  table_type text not null default 'DINING' check (table_type in ('DINING', 'COUNTER')),
   status text default 'FREE' check (status in ('FREE', 'OCCUPIED')),
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+alter table if exists public.tables
+  add column if not exists table_type text not null default 'DINING';
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'tables_table_type_check'
+      and conrelid = 'public.tables'::regclass
+  ) then
+    alter table public.tables
+      add constraint tables_table_type_check
+      check (table_type in ('DINING', 'COUNTER'));
+  end if;
+end $$;
 
 create table if not exists public.sessions (
   id uuid default uuid_generate_v4() primary key,
@@ -180,6 +198,12 @@ create table if not exists public.orders (
   id uuid default uuid_generate_v4() primary key,
   table_id uuid references public.tables(id) on delete cascade,
   session_id uuid references public.sessions(id) on delete cascade,
+  origin text not null default 'CUSTOMER' check (origin in ('CUSTOMER', 'WAITER', 'BALCAO')),
+  parent_order_id uuid references public.orders(id) on delete set null,
+  created_by_profile_id uuid references public.profiles(id) on delete set null,
+  customer_name text,
+  customer_phone text,
+  general_note text,
   created_by_guest_id uuid references public.session_guests(id) on delete set null,
   approval_status text not null default 'PENDING_APPROVAL' check (approval_status in ('PENDING_APPROVAL', 'APPROVED', 'REJECTED')),
   approved_by_guest_id uuid references public.session_guests(id) on delete set null,
@@ -187,6 +211,10 @@ create table if not exists public.orders (
   round_number integer not null default 1,
   printed_at timestamp with time zone,
   printed_count integer not null default 0,
+  subtotal_cents integer not null default 0,
+  discount_mode text not null default 'NONE' check (discount_mode in ('NONE', 'AMOUNT', 'PERCENT')),
+  discount_value integer not null default 0,
+  discount_cents integer not null default 0,
   -- Valores internos do banco (nao alterar sem migracao completa do app):
   -- PENDING, PREPARING, READY, FINISHED, CANCELLED
   -- Rotulos PT-BR na interface:
@@ -195,6 +223,18 @@ create table if not exists public.orders (
   total_cents integer not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+alter table if exists public.orders
+  add column if not exists origin text not null default 'CUSTOMER';
+alter table if exists public.orders
+  add column if not exists parent_order_id uuid references public.orders(id) on delete set null;
+alter table if exists public.orders
+  add column if not exists created_by_profile_id uuid references public.profiles(id) on delete set null;
+alter table if exists public.orders
+  add column if not exists customer_name text;
+alter table if exists public.orders
+  add column if not exists customer_phone text;
+alter table if exists public.orders
+  add column if not exists general_note text;
 alter table if exists public.orders
   add column if not exists created_by_guest_id uuid references public.session_guests(id) on delete set null;
 alter table if exists public.orders
@@ -209,6 +249,14 @@ alter table if exists public.orders
   add column if not exists printed_at timestamp with time zone;
 alter table if exists public.orders
   add column if not exists printed_count integer not null default 0;
+alter table if exists public.orders
+  add column if not exists subtotal_cents integer not null default 0;
+alter table if exists public.orders
+  add column if not exists discount_mode text not null default 'NONE';
+alter table if exists public.orders
+  add column if not exists discount_value integer not null default 0;
+alter table if exists public.orders
+  add column if not exists discount_cents integer not null default 0;
 
 do $$
 begin
@@ -220,6 +268,32 @@ begin
     alter table public.orders
       add constraint orders_approval_status_check
       check (approval_status in ('PENDING_APPROVAL', 'APPROVED', 'REJECTED'));
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'orders_origin_check'
+      and conrelid = 'public.orders'::regclass
+  ) then
+    alter table public.orders
+      add constraint orders_origin_check
+      check (origin in ('CUSTOMER', 'WAITER', 'BALCAO'));
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'orders_discount_mode_check'
+      and conrelid = 'public.orders'::regclass
+  ) then
+    alter table public.orders
+      add constraint orders_discount_mode_check
+      check (discount_mode in ('NONE', 'AMOUNT', 'PERCENT'));
   end if;
 end $$;
 
@@ -254,6 +328,8 @@ end $$;
 
 create index if not exists idx_orders_session_printed on public.orders(session_id, printed_at);
 create index if not exists idx_orders_session_round on public.orders(session_id, round_number desc);
+create index if not exists idx_orders_session_origin_printed on public.orders(session_id, origin, printed_at);
+create index if not exists idx_orders_parent_order_id on public.orders(parent_order_id);
 create index if not exists idx_order_items_order_printed on public.order_items(order_id, printed_at);
 
 create table if not exists public.session_events (
@@ -275,12 +351,21 @@ set
   wifi_ssid = coalesce(wifi_ssid, ''),
   wifi_password = coalesce(wifi_password, ''),
   order_approval_mode = coalesce(order_approval_mode, 'HOST'),
+  enable_counter_module = coalesce(enable_counter_module, true),
   sticker_bg_color = coalesce(sticker_bg_color, '#ffffff'),
   sticker_text_color = coalesce(sticker_text_color, '#111827'),
   sticker_border_color = coalesce(sticker_border_color, '#111111'),
   sticker_muted_text_color = coalesce(sticker_muted_text_color, '#9ca3af'),
   sticker_qr_frame_color = coalesce(sticker_qr_frame_color, '#111111')
 where id = 1;
+
+update public.orders
+set
+  origin = coalesce(origin, 'CUSTOMER'),
+  subtotal_cents = case when coalesce(subtotal_cents, 0) <= 0 then coalesce(total_cents, 0) else subtotal_cents end,
+  discount_mode = coalesce(discount_mode, 'NONE'),
+  discount_value = coalesce(discount_value, 0),
+  discount_cents = coalesce(discount_cents, 0);
 
 -- Mantem o app funcionando com RLS habilitado, sem bloquear o fluxo atual.
 -- As policies abaixo sao abertas (to public) e devem ser endurecidas depois.
@@ -327,6 +412,51 @@ begin
   update public.tables
     set status = 'OCCUPIED'
   where id = p_table_id;
+
+  return v_session_id;
+end;
+$$;
+
+create or replace function public.get_or_create_counter_session(
+  p_profile_id uuid,
+  p_profile_name text
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_table_id uuid;
+  v_session_id uuid;
+  v_token text;
+  v_table_name text;
+begin
+  if p_profile_id is null then
+    raise exception 'p_profile_id e obrigatorio';
+  end if;
+
+  v_token := 'counter-' || p_profile_id::text;
+  v_table_name := 'BALCAO ' || coalesce(nullif(trim(p_profile_name), ''), substring(p_profile_id::text, 1, 8));
+
+  insert into public.tables (name, token, table_type, status)
+  values (v_table_name, v_token, 'COUNTER', 'OCCUPIED')
+  on conflict (token)
+  do update
+    set name = excluded.name,
+        table_type = 'COUNTER',
+        status = 'OCCUPIED'
+  returning id into v_table_id;
+
+  insert into public.sessions (table_id, status)
+  values (v_table_id, 'OPEN')
+  on conflict (table_id) where (status = 'OPEN')
+  do update set table_id = excluded.table_id
+  returning id into v_session_id;
+
+  update public.tables
+    set status = 'OCCUPIED'
+  where id = v_table_id;
 
   return v_session_id;
 end;
@@ -402,22 +532,32 @@ begin
   insert into public.orders (
     table_id,
     session_id,
+    origin,
     created_by_guest_id,
     approval_status,
     approved_by_guest_id,
     approved_at,
     round_number,
+    subtotal_cents,
+    discount_mode,
+    discount_value,
+    discount_cents,
     total_cents,
     status
   )
   values (
     p_table_id,
     p_session_id,
+    'CUSTOMER',
     p_guest_id,
     v_approval,
     case when v_approval = 'APPROVED' then p_guest_id else null end,
     case when v_approval = 'APPROVED' then timezone('utc'::text, now()) else null end,
     v_round,
+    v_total,
+    'NONE',
+    0,
+    0,
     v_total,
     'PENDING'
   )
@@ -466,6 +606,190 @@ begin
       'guest_name', p_guest_name,
       'approval_status', v_approval,
       'round_number', v_round,
+      'total_cents', v_total
+    )
+  );
+
+  return v_order_id;
+end;
+$$;
+
+create or replace function public.create_staff_order(
+  p_session_id uuid,
+  p_table_id uuid,
+  p_origin text,
+  p_created_by_profile_id uuid,
+  p_added_by_name text,
+  p_parent_order_id uuid default null,
+  p_customer_name text default null,
+  p_customer_phone text default null,
+  p_general_note text default null,
+  p_discount_mode text default 'NONE',
+  p_discount_value integer default 0,
+  p_items jsonb default '[]'::jsonb
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order_id uuid;
+  v_round integer;
+  v_origin text;
+  v_discount_mode text;
+  v_discount_value integer;
+  v_subtotal integer;
+  v_discount integer;
+  v_total integer;
+  v_parent_order_id uuid;
+begin
+  if p_session_id is null then
+    raise exception 'p_session_id e obrigatorio';
+  end if;
+  if p_table_id is null then
+    raise exception 'p_table_id e obrigatorio';
+  end if;
+  if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
+    raise exception 'p_items precisa ser um array jsonb com itens';
+  end if;
+
+  v_origin := case
+    when p_origin in ('CUSTOMER', 'WAITER', 'BALCAO') then p_origin
+    else 'CUSTOMER'
+  end;
+
+  v_discount_mode := case
+    when p_discount_mode in ('NONE', 'AMOUNT', 'PERCENT') then p_discount_mode
+    else 'NONE'
+  end;
+
+  v_discount_value := greatest(coalesce(p_discount_value, 0), 0);
+
+  if p_parent_order_id is not null then
+    select id
+      into v_parent_order_id
+    from public.orders
+    where id = p_parent_order_id
+      and session_id = p_session_id
+    limit 1;
+  end if;
+
+  perform 1
+  from public.sessions
+  where id = p_session_id
+  for update;
+
+  select coalesce(max(round_number), 0) + 1
+    into v_round
+  from public.orders
+  where session_id = p_session_id;
+
+  select coalesce(sum((greatest(coalesce(i.qty, 1), 1) * greatest(coalesce(i.unit_price_cents, 0), 0))::integer), 0)
+    into v_subtotal
+  from jsonb_to_recordset(p_items) as i(
+    product_id uuid,
+    name_snapshot text,
+    unit_price_cents integer,
+    qty integer,
+    note text,
+    added_by_name text,
+    status text
+  );
+
+  if v_discount_mode = 'AMOUNT' then
+    v_discount := least(v_discount_value, v_subtotal);
+  elsif v_discount_mode = 'PERCENT' then
+    v_discount_value := least(v_discount_value, 100);
+    v_discount := round(v_subtotal * (v_discount_value::numeric / 100.0))::integer;
+  else
+    v_discount := 0;
+    v_discount_value := 0;
+  end if;
+
+  v_total := greatest(v_subtotal - v_discount, 0);
+
+  insert into public.orders (
+    table_id,
+    session_id,
+    origin,
+    parent_order_id,
+    created_by_profile_id,
+    customer_name,
+    customer_phone,
+    general_note,
+    approval_status,
+    round_number,
+    status,
+    subtotal_cents,
+    discount_mode,
+    discount_value,
+    discount_cents,
+    total_cents
+  )
+  values (
+    p_table_id,
+    p_session_id,
+    v_origin,
+    v_parent_order_id,
+    p_created_by_profile_id,
+    nullif(trim(coalesce(p_customer_name, '')), ''),
+    nullif(trim(coalesce(p_customer_phone, '')), ''),
+    nullif(trim(coalesce(p_general_note, '')), ''),
+    'APPROVED',
+    v_round,
+    'PENDING',
+    v_subtotal,
+    v_discount_mode,
+    v_discount_value,
+    v_discount,
+    v_total
+  )
+  returning id into v_order_id;
+
+  insert into public.order_items (
+    order_id,
+    product_id,
+    name_snapshot,
+    unit_price_cents,
+    qty,
+    note,
+    added_by_name,
+    status
+  )
+  select
+    v_order_id,
+    i.product_id,
+    coalesce(nullif(i.name_snapshot, ''), 'Item'),
+    greatest(coalesce(i.unit_price_cents, 0), 0),
+    greatest(coalesce(i.qty, 1), 1),
+    i.note,
+    coalesce(nullif(i.added_by_name, ''), nullif(trim(coalesce(p_added_by_name, '')), ''), 'Operador'),
+    coalesce(nullif(i.status, ''), 'PENDING')
+  from jsonb_to_recordset(p_items) as i(
+    product_id uuid,
+    name_snapshot text,
+    unit_price_cents integer,
+    qty integer,
+    note text,
+    added_by_name text,
+    status text
+  );
+
+  perform public.register_session_event(
+    p_session_id,
+    p_table_id,
+    'ORDER_CREATED',
+    jsonb_build_object(
+      'order_id', v_order_id,
+      'origin', v_origin,
+      'parent_order_id', v_parent_order_id,
+      'created_by_profile_id', p_created_by_profile_id,
+      'round_number', v_round,
+      'subtotal_cents', v_subtotal,
+      'discount_mode', v_discount_mode,
+      'discount_value', v_discount_value,
+      'discount_cents', v_discount,
       'total_cents', v_total
     )
   );

@@ -8,6 +8,8 @@ import AdminTables from './components/AdminTables';
 import AdminMenu from './components/AdminMenu';
 import AdminSettings from './components/AdminSettings';
 import AdminStaff from './components/AdminStaff';
+import AdminWaiter from './components/AdminWaiter';
+import AdminCounter from './components/AdminCounter';
 import { useFeedback } from './components/feedback/FeedbackProvider';
 
 const playLocalBeep = () => {
@@ -54,7 +56,9 @@ const App: React.FC = () => {
   const [productObservation, setProductObservation] = useState('');
   const [sessionOrders, setSessionOrders] = useState<Order[]>([]);
   const [tempRegisterStatus, setTempRegisterStatus] = useState('');
-  const [adminTab, setAdminTab] = useState<'ACTIVE_TABLES' | 'FINISHED_ORDERS' | 'TABLES' | 'MENU' | 'SETTINGS' | 'STAFF'>('ACTIVE_TABLES');
+  const [adminTab, setAdminTab] = useState<
+    'ACTIVE_TABLES' | 'FINISHED_ORDERS' | 'TABLES' | 'MENU' | 'SETTINGS' | 'STAFF' | 'WAITER_MODULE' | 'COUNTER_MODULE'
+  >('ACTIVE_TABLES');
   const [isLoading, setIsLoading] = useState(false);
   const [adminEmail, setAdminEmail] = useState('');
   const [user, setUser] = useState<any>(null);
@@ -119,6 +123,39 @@ const App: React.FC = () => {
   useEffect(() => {
     fetchSettings();
   }, []);
+
+  useEffect(() => {
+    if (view !== 'ADMIN_DASHBOARD' || !user) return;
+
+    const role = profile?.role || 'WAITER';
+    const isAdmin = role === 'ADMIN';
+    const isWaiter = role === 'WAITER';
+    const canAccessCounter = settings?.enable_counter_module !== false;
+
+    const canUseTab = (tab: typeof adminTab) => {
+      if (tab === 'SETTINGS' || tab === 'STAFF') return isAdmin;
+      if (tab === 'WAITER_MODULE') return isWaiter;
+      if (tab === 'COUNTER_MODULE') return canAccessCounter;
+      return true;
+    };
+
+    if (canUseTab(adminTab)) return;
+
+    const fallbackOrder: (typeof adminTab)[] = [
+      'ACTIVE_TABLES',
+      'COUNTER_MODULE',
+      'WAITER_MODULE',
+      'FINISHED_ORDERS',
+      'TABLES',
+      'MENU',
+      'SETTINGS',
+      'STAFF',
+    ];
+    const fallback = fallbackOrder.find((tab) => canUseTab(tab)) || 'ACTIVE_TABLES';
+    if (fallback !== adminTab) {
+      setAdminTab(fallback);
+    }
+  }, [view, user, profile?.role, settings?.enable_counter_module, adminTab]);
 
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
@@ -244,9 +281,28 @@ const App: React.FC = () => {
         async (payload) => {
           fetchSessionOrders();
           const row = (payload.new || payload.old || {}) as any;
+          const oldRow = (payload.old || {}) as any;
 
           if (payload.eventType === 'INSERT' && row.created_by_guest_id !== guest?.id) {
             await pushLocalNotification('Mesa atualizada', 'Novo pedido enviado para esta mesa.', `order-insert-${session.id}`);
+          }
+
+          if (
+            payload.eventType === 'UPDATE' &&
+            row.approval_status === 'APPROVED' &&
+            oldRow.approval_status !== 'APPROVED' &&
+            row.created_by_guest_id === guest?.id &&
+            guest?.id
+          ) {
+            const { error: cartError } = await supabase
+              .from('cart_items')
+              .delete()
+              .eq('session_id', session.id)
+              .eq('guest_id', guest.id);
+
+            if (!cartError) {
+              setShowCart(false);
+            }
           }
 
           if (payload.eventType === 'UPDATE' && row.status === 'READY') {
@@ -454,11 +510,16 @@ const App: React.FC = () => {
       .insert({
         table_id: session.table_id,
         session_id: session.id,
+        origin: 'CUSTOMER',
         status: 'PENDING',
         approval_status: requiresHostApproval ? 'PENDING_APPROVAL' : 'APPROVED',
         created_by_guest_id: guest.id,
         approved_by_guest_id: requiresHostApproval ? null : guest.id,
         approved_at: requiresHostApproval ? null : new Date().toISOString(),
+        subtotal_cents: total,
+        discount_mode: 'NONE',
+        discount_value: 0,
+        discount_cents: 0,
         total_cents: total,
       })
       .select()
@@ -567,60 +628,41 @@ const App: React.FC = () => {
   if (view === 'LANDING') {
     return (
       <Layout settings={settings} wide>
-        <div className="min-h-[85vh] p-6 lg:p-10 space-y-8">
-          <section className="text-center space-y-4 py-4">
-            <h2 className="text-3xl lg:text-5xl font-black text-gray-900 uppercase tracking-tighter leading-none">
-              Cardapio
-            </h2>
-            <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em]">
-              Escaneie o QR Code da mesa para fazer o pedido
+        <div className="min-h-[85vh] p-6 lg:p-10 flex items-center justify-center">
+          <section className="w-full max-w-2xl bg-white border border-gray-200 rounded-[28px] p-8 lg:p-12 text-center space-y-8 shadow-[0_12px_35px_rgba(15,23,42,0.06)]">
+            <div className="w-20 h-20 mx-auto bg-gray-50 border border-gray-200 rounded-2xl flex items-center justify-center text-primary">
+              <svg xmlns="http://www.w3.org/2000/svg" width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+                <path d="M21 7V5a2 2 0 0 0-2-2h-2" />
+                <path d="M3 17v2a2 2 0 0 0 2 2h2" />
+                <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+                <path d="M8 8h3v3H8z" />
+                <path d="M13 13h3v3h-3z" />
+                <path d="M8 13h2" />
+                <path d="M14 8h2" />
+              </svg>
+            </div>
+
+            <div className="space-y-4">
+              <h2 className="text-3xl lg:text-5xl font-black text-gray-900 uppercase tracking-tighter leading-none">
+                Escaneie o QR Code
+              </h2>
+              <p className="text-sm lg:text-base text-gray-500 font-bold leading-relaxed max-w-xl mx-auto">
+                Para acessar o cardapio e fazer pedidos, escaneie o QR Code impresso na mesa com a camera do seu celular.
+              </p>
+            </div>
+
+            <div className="bg-gray-50 border border-gray-200 rounded-2xl p-5 lg:p-6 text-left space-y-2">
+              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Como acessar</p>
+              <p className="text-sm text-gray-700 font-semibold">1. Abra a camera do celular.</p>
+              <p className="text-sm text-gray-700 font-semibold">2. Aponte para o QR Code da mesa.</p>
+              <p className="text-sm text-gray-700 font-semibold">3. Toque no link para abrir o cardapio da mesa.</p>
+            </div>
+
+            <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.18em]">
+              O cardapio de pedidos e liberado somente apos o escaneamento.
             </p>
           </section>
-
-          <div className="sticky top-[69px] z-40 bg-white border-y border-gray-100 flex gap-2 overflow-x-auto p-3 no-scrollbar">
-            <button onClick={() => setSelectedCategory(null)} className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${!selectedCategory ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'}`}>Todos</button>
-            {categories.map(c => (
-              <button key={c.id} onClick={() => setSelectedCategory(c.id)} className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest whitespace-nowrap transition-all shrink-0 border ${selectedCategory === c.id ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'}`}>{c.name}</button>
-            ))}
-          </div>
-
-          <div className="space-y-8 pb-8">
-            {categories.filter(c => !selectedCategory || c.id === selectedCategory).map(cat => (
-              <div key={cat.id} className="space-y-5">
-                <div className="flex items-center gap-3">
-                  <h3 className="text-lg lg:text-xl font-black uppercase text-gray-800 tracking-tighter shrink-0 italic">{cat.name}</h3>
-                  <div className="h-[1px] w-full bg-gray-100"></div>
-                </div>
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {products.filter(p => p.category_id === cat.id).map(p => (
-                    <div key={p.id} className="flex bg-white rounded-2xl p-3 gap-4 border border-gray-100">
-                      {(p.image_url || '').trim() ? (
-                        <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover bg-gray-50 border border-gray-50" />
-                      ) : (
-                        <div className="w-20 h-20 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0">
-                          <span className="text-[7px] font-black uppercase tracking-widest text-gray-300">Sem foto</span>
-                        </div>
-                      )}
-                      <div className="flex-1 flex flex-col justify-between py-1">
-                        <div>
-                          <h4 className="font-black text-gray-900 text-base leading-none tracking-tighter">{p.name}</h4>
-                          <p className="text-[8px] text-gray-400 mt-2 line-clamp-2 leading-relaxed font-black uppercase tracking-tight">{p.description}</p>
-                        </div>
-                        <div className="flex justify-between items-center mt-2">
-                          <span className="font-black text-primary text-lg tracking-tighter">{formatCurrency(p.price_cents)}</span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-            {categories.length === 0 && (
-              <div className="text-center py-12">
-                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Cardapio indisponivel no momento</p>
-              </div>
-            )}
-          </div>
         </div>
       </Layout>
     );
@@ -785,7 +827,7 @@ const App: React.FC = () => {
                     <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">SENHA DE ACESSO</label>
                     <button type="button" onClick={handleResetPassword} className="text-[9px] font-black text-primary uppercase tracking-widest hover:underline decoration-2">Esqueci a senha</button>
                  </div>
-                 <input name="password" type="password" placeholder="â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢" required className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary transition-all font-bold placeholder:text-gray-200" />
+                 <input name="password" type="password" placeholder="********" required className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary transition-all font-bold placeholder:text-gray-200" />
               </div>
               <button
                 disabled={isLoading}
@@ -810,6 +852,8 @@ const App: React.FC = () => {
 
     const role = profile?.role || 'WAITER';
     const isAdmin = role === 'ADMIN';
+    const isWaiter = role === 'WAITER';
+    const canAccessCounter = settings?.enable_counter_module !== false;
 
     return (
       <Layout isAdmin settings={settings}>
@@ -832,6 +876,18 @@ const App: React.FC = () => {
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
                     Mesas & QR
                   </button>
+                  {canAccessCounter && (
+                    <button onClick={() => setAdminTab('COUNTER_MODULE')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border ${adminTab === 'COUNTER_MODULE' ? 'bg-primary text-white border-primary font-black' : 'text-gray-500 font-bold hover:bg-gray-50 border-transparent'}`}>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 20h8"/><path d="M12 18v2"/></svg>
+                      Balcao
+                    </button>
+                  )}
+                  {isWaiter && (
+                    <button onClick={() => setAdminTab('WAITER_MODULE')} className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border ${adminTab === 'WAITER_MODULE' ? 'bg-primary text-white border-primary font-black' : 'text-gray-500 font-bold hover:bg-gray-50 border-transparent'}`}>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7h18"/><path d="M6 7V4"/><path d="M18 7V4"/><path d="M8 11h8"/><path d="M12 11v9"/></svg>
+                      Garcom
+                    </button>
+                  )}
                 </nav>
               </div>
 
@@ -877,6 +933,8 @@ const App: React.FC = () => {
               {adminTab === 'FINISHED_ORDERS' && <AdminOrders mode="FINISHED" />}
               {adminTab === 'MENU' && <AdminMenu />}
               {adminTab === 'TABLES' && <AdminTables settings={settings} />}
+              {adminTab === 'WAITER_MODULE' && <AdminWaiter profile={profile} settings={settings} />}
+              {adminTab === 'COUNTER_MODULE' && <AdminCounter profile={profile} settings={settings} />}
               {adminTab === 'SETTINGS' && <AdminSettings settings={settings} onUpdate={fetchSettings} profile={profile} />}
               {adminTab === 'STAFF' && <AdminStaff />}
             </div>
@@ -934,7 +992,7 @@ const App: React.FC = () => {
                     <div>
                       <p className="font-black text-gray-800">Pedido #{order.id.slice(0, 6)}</p>
                       <p className="text-[9px] text-gray-500 font-black uppercase tracking-widest mt-1">
-                        {new Date(order.created_at).toLocaleTimeString()} â€¢ {formatCurrency(order.total_cents)}
+                        {new Date(order.created_at).toLocaleTimeString()} | {formatCurrency(order.total_cents)}
                       </p>
                     </div>
                     {guest.is_host ? (

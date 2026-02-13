@@ -17,6 +17,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
     primary_color: '#f97316',
     logo_url: '',
     order_approval_mode: 'HOST' as 'HOST' | 'SELF',
+    enable_counter_module: true,
     sticker_bg_color: '#ffffff',
     sticker_text_color: '#111827',
     sticker_border_color: '#111111',
@@ -33,6 +34,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
         primary_color: settings.primary_color,
         logo_url: settings.logo_url || '',
         order_approval_mode: (settings.order_approval_mode || 'HOST') as 'HOST' | 'SELF',
+        enable_counter_module: settings.enable_counter_module !== false,
         sticker_bg_color: settings.sticker_bg_color || '#ffffff',
         sticker_text_color: settings.sticker_text_color || '#111827',
         sticker_border_color: settings.sticker_border_color || '#111111',
@@ -120,6 +122,21 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
                 <option value="HOST">Responsavel da mesa aprova tudo (recomendado)</option>
                 <option value="SELF">Cada pessoa aprova o proprio pedido</option>
               </select>
+            </div>
+            <div className="space-y-3 md:col-span-2 rounded-2xl border border-gray-100 p-4 bg-gray-50">
+              <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Modulo Balcao</p>
+              <label className="flex items-center justify-between gap-4 bg-white border border-gray-200 rounded-xl px-4 py-3 cursor-pointer">
+                <div>
+                  <p className="text-sm font-black text-gray-800">Habilitar modulo Balcao</p>
+                  <p className="text-[10px] text-gray-500 font-bold">Permite pedidos de balcao para qualquer usuario logado.</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={formData.enable_counter_module}
+                  onChange={(e) => setFormData({ ...formData, enable_counter_module: e.target.checked })}
+                  className="w-5 h-5 accent-primary"
+                />
+              </label>
             </div>
           </div>
 
