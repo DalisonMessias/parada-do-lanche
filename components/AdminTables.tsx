@@ -8,6 +8,16 @@ interface AdminTablesProps {
   settings: StoreSettings | null;
 }
 
+const isDiningQrTable = (table: Table) => {
+  const type = (table.table_type || '').toUpperCase();
+  const name = (table.name || '').trim().toUpperCase();
+  const token = (table.token || '').trim().toLowerCase();
+  if (type === 'COUNTER') return false;
+  if (name.startsWith('BALCAO')) return false;
+  if (token.startsWith('counter-')) return false;
+  return true;
+};
+
 const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
   const [tables, setTables] = useState<Table[]>([]);
   const [selectedTable, setSelectedTable] = useState<Table | null>(null);
@@ -21,7 +31,7 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
     if (error) {
       console.error('Erro ao buscar mesas:', error);
     } else if (data) {
-      setTables(data);
+      setTables((data as Table[]).filter(isDiningQrTable));
     }
   };
 

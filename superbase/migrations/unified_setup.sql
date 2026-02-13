@@ -56,6 +56,19 @@ begin
   end if;
 end $$;
 
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'settings_default_delivery_fee_cents_check'
+      and conrelid = 'public.settings'::regclass
+  ) then
+    alter table public.settings
+      add constraint settings_default_delivery_fee_cents_check
+      check (default_delivery_fee_cents >= 0);
+  end if;
+end $$;
+
 create table if not exists public.profiles (
   id uuid references auth.users on delete cascade primary key,
   email text unique not null,
@@ -271,6 +284,35 @@ alter table if exists public.orders
 alter table if exists public.orders
   add column if not exists discount_cents integer not null default 0;
 
+-- Saneia dados legados antes de aplicar constraints para evitar quebra em bases antigas.
+update public.orders
+set
+  approval_status = case
+    when approval_status in ('PENDING_APPROVAL', 'APPROVED', 'REJECTED') then approval_status
+    else 'PENDING_APPROVAL'
+  end,
+  origin = case
+    when origin in ('CUSTOMER', 'WAITER', 'BALCAO') then origin
+    else 'CUSTOMER'
+  end,
+  subtotal_cents = case
+    when coalesce(subtotal_cents, 0) <= 0 then coalesce(total_cents, 0)
+    else subtotal_cents
+  end,
+  discount_mode = case
+    when discount_mode in ('NONE', 'AMOUNT', 'PERCENT') then discount_mode
+    else 'NONE'
+  end,
+  discount_value = greatest(coalesce(discount_value, 0), 0),
+  discount_cents = greatest(coalesce(discount_cents, 0), 0),
+  service_type = case
+    when service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA') then service_type
+    when (case when origin in ('CUSTOMER', 'WAITER', 'BALCAO') then origin else 'CUSTOMER' end) = 'BALCAO'
+      then 'RETIRADA'
+    else 'ON_TABLE'
+  end,
+  delivery_fee_cents = greatest(coalesce(delivery_fee_cents, 0), 0);
+
 do $$
 begin
   if not exists (
@@ -397,12 +439,25 @@ where id = 1;
 
 update public.orders
 set
-  origin = coalesce(origin, 'CUSTOMER'),
-  subtotal_cents = case when coalesce(subtotal_cents, 0) <= 0 then coalesce(total_cents, 0) else subtotal_cents end,
-  discount_mode = coalesce(discount_mode, 'NONE'),
-  discount_value = coalesce(discount_value, 0),
-  discount_cents = coalesce(discount_cents, 0),
-  service_type = coalesce(service_type, 'ON_TABLE'),
+  origin = case
+    when origin in ('CUSTOMER', 'WAITER', 'BALCAO') then origin
+    else 'CUSTOMER'
+  end,
+  subtotal_cents = case
+    when coalesce(subtotal_cents, 0) <= 0 then coalesce(total_cents, 0)
+    else subtotal_cents
+  end,
+  discount_mode = case
+    when discount_mode in ('NONE', 'AMOUNT', 'PERCENT') then discount_mode
+    else 'NONE'
+  end,
+  discount_value = greatest(coalesce(discount_value, 0), 0),
+  discount_cents = greatest(coalesce(discount_cents, 0), 0),
+  service_type = case
+    when service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA') then service_type
+    when origin = 'BALCAO' then 'RETIRADA'
+    else 'ON_TABLE'
+  end,
   delivery_fee_cents = greatest(coalesce(delivery_fee_cents, 0), 0);
 
 -- Mantem o app funcionando com RLS habilitado, sem bloquear o fluxo atual.
@@ -896,6 +951,14 @@ begin
     if v_service_type <> 'ENTREGA' then
       v_delivery_fee := 0;
       v_delivery_address := null;
+    elsif
+      nullif(trim(coalesce(p_customer_name, '')), '') is null or
+      v_delivery_address is null or
+      nullif(trim(coalesce(v_delivery_address->>'street', '')), '') is null or
+      nullif(trim(coalesce(v_delivery_address->>'number', '')), '') is null or
+      nullif(trim(coalesce(v_delivery_address->>'neighborhood', '')), '') is null
+    then
+      raise exception 'pedido de entrega requer customer_name e delivery_address com street, number e neighborhood';
     end if;
   end if;
 
