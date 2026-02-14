@@ -6,7 +6,6 @@ import { groupOrderItems } from '../services/orderItemGrouping';
 import { Guest, Order, OrderItem, OrderStatus, Session, StoreSettings } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
 import AppModal from './ui/AppModal';
-import { playOrderAlertSound } from '../services/notifications';
 
 type AdminOrdersMode = 'ACTIVE' | 'FINISHED';
 
@@ -210,36 +209,14 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
     const channel = supabase
       .channel(`admin_tables_${mode}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions' }, fetchSessions)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, async (payload) => {
-        fetchSessions();
-        if (mode !== 'ACTIVE') return;
-        const row = (payload.new || payload.old || {}) as any;
-        if (payload.eventType === 'INSERT') {
-          await playOrderAlertSound({
-            enabled: settings?.notification_sound_enabled,
-            mp3Url: settings?.notification_sound_url,
-          });
-          if (row.approval_status === 'PENDING_APPROVAL') {
-            toast('Novo pedido aguardando aceite.', 'info');
-          } else {
-            toast('Novo pedido entrou em uma mesa ativa.', 'info');
-          }
-        }
-        if (payload.eventType === 'UPDATE' && row.status === 'READY') {
-          await playOrderAlertSound({
-            enabled: settings?.notification_sound_enabled,
-            mp3Url: settings?.notification_sound_url,
-          });
-          toast('Pedido marcado como pronto.', 'success');
-        }
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, fetchSessions)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, fetchSessions)
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [mode, settings?.notification_sound_enabled, settings?.notification_sound_url]);
+  }, [mode]);
 
   const filteredSessions = useMemo(() => {
     if (!selectedDate) return sessions;

@@ -473,7 +473,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
               <div className="md:col-span-8 flex flex-col justify-center h-full space-y-6">
                 <div className="p-6 bg-gray-50/50 border border-gray-100 rounded-[24px]">
                   <p className="text-[10px] text-gray-500 font-black uppercase tracking-tight leading-loose italic">
-                    Utilize arquivos transparentes (PNG/SVG) para garantir que a marca se integre perfeitamente Ã  interface clara.
+                    Utilize arquivos transparentes (PNG/SVG) para garantir que a marca se integre perfeitamente a interface clara.
                   </p>
                 </div>
                 {formData.logo_url && (

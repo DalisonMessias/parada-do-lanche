@@ -41,9 +41,10 @@ const AdminPromotions: React.FC = () => {
   const [scope, setScope] = useState<PromotionScope>('GLOBAL');
   const [discountType, setDiscountType] = useState<PromotionDiscountType>('PERCENT');
   const [discountValue, setDiscountValue] = useState('');
-  const [weekdays, setWeekdays] = useState<number[]>([...allWeekdays]);
+  const [weekdays, setWeekdays] = useState<number[]>([]);
   const [active, setActive] = useState(true);
   const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
+  const [productSearch, setProductSearch] = useState('');
 
   const load = async () => {
     const [promoRes, productsRes] = await Promise.all([
@@ -73,9 +74,10 @@ const AdminPromotions: React.FC = () => {
     setScope('GLOBAL');
     setDiscountType('PERCENT');
     setDiscountValue('');
-    setWeekdays([...allWeekdays]);
+    setWeekdays([]);
     setActive(true);
     setSelectedProducts([]);
+    setProductSearch('');
   };
 
   const openCreate = () => {
@@ -96,6 +98,7 @@ const AdminPromotions: React.FC = () => {
     setWeekdays(Array.isArray(promotion.weekdays) && promotion.weekdays.length > 0 ? promotion.weekdays.map(Number) : [...allWeekdays]);
     setActive(promotion.active !== false);
     setSelectedProducts((promotion.promotion_products || []).map((row) => row.product_id));
+    setProductSearch('');
     setShowModal(true);
   };
 
@@ -233,6 +236,13 @@ const AdminPromotions: React.FC = () => {
   };
 
   const renderedPromotions = useMemo(() => promotions, [promotions]);
+  const filteredProducts = useMemo(() => {
+    const query = productSearch.trim().toLowerCase();
+    if (!query) return products;
+    return products.filter((product) =>
+      `${product.name} ${product.description || ''}`.toLowerCase().includes(query)
+    );
+  }, [productSearch, products]);
 
   return (
     <div className="space-y-6">
@@ -429,8 +439,20 @@ const AdminPromotions: React.FC = () => {
             {scope === 'PRODUCT' && (
               <div className="space-y-2">
                 <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Produtos da promocao</label>
+                <input
+                  type="text"
+                  value={productSearch}
+                  onChange={(event) => setProductSearch(event.target.value)}
+                  placeholder="Pesquisar produto..."
+                  className="w-full p-3 rounded-xl border border-gray-200 font-bold"
+                />
                 <div className="max-h-48 overflow-y-auto border border-gray-200 rounded-xl p-2 space-y-1">
-                  {products.map((product) => {
+                  {filteredProducts.length === 0 && (
+                    <p className="px-2 py-3 text-[10px] text-gray-400 font-black uppercase tracking-widest">
+                      Nenhum produto encontrado
+                    </p>
+                  )}
+                  {filteredProducts.map((product) => {
                     const checked = selectedProducts.includes(product.id);
                     return (
                       <label key={product.id} className="flex items-center justify-between gap-3 rounded-lg px-2 py-2 hover:bg-gray-50 cursor-pointer">
@@ -463,4 +485,3 @@ const AdminPromotions: React.FC = () => {
 };
 
 export default AdminPromotions;
-

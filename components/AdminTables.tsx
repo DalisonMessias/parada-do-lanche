@@ -17,6 +17,8 @@ const isDiningQrTable = (table: Table) => {
   if (type === 'COUNTER') return false;
   if (name.startsWith('BALCAO')) return false;
   if (token.startsWith('counter-')) return false;
+  if (token.startsWith('waiter-virtual-')) return false;
+  if (name.startsWith('MV-')) return false;
   return true;
 };
 

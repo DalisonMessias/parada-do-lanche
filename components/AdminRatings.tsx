@@ -2,9 +2,26 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../services/supabase';
 import { StoreFeedback } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
+import CustomSelect from './ui/CustomSelect';
 
 type PeriodFilter = 'TODAY' | '7D' | '30D' | 'CUSTOM';
 type RatingFilter = 'ALL' | '1' | '2' | '3' | '4' | '5';
+
+const periodOptions = [
+  { value: 'TODAY', label: 'Hoje' },
+  { value: '7D', label: 'Ultimos 7 dias' },
+  { value: '30D', label: 'Ultimos 30 dias' },
+  { value: 'CUSTOM', label: 'Personalizado' },
+];
+
+const ratingOptions = [
+  { value: 'ALL', label: 'Todas' },
+  { value: '5', label: '5 estrelas' },
+  { value: '4', label: '4 estrelas' },
+  { value: '3', label: '3 estrelas' },
+  { value: '2', label: '2 estrelas' },
+  { value: '1', label: '1 estrela' },
+];
 
 const AdminRatings: React.FC = () => {
   const { toast } = useFeedback();
@@ -94,39 +111,29 @@ const AdminRatings: React.FC = () => {
         </div>
         <div className="bg-white border border-gray-200 rounded-2xl p-4 space-y-1">
           <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Distribuicao</p>
-          <p className="text-[10px] font-black text-gray-700">5⭐ {distribution[5]} • 4⭐ {distribution[4]} • 3⭐ {distribution[3]}</p>
-          <p className="text-[10px] font-black text-gray-700">2⭐ {distribution[2]} • 1⭐ {distribution[1]}</p>
+          <p className="text-[10px] font-black text-gray-700">5 estrelas: {distribution[5]} | 4 estrelas: {distribution[4]} | 3 estrelas: {distribution[3]}</p>
+          <p className="text-[10px] font-black text-gray-700">2 estrelas: {distribution[2]} | 1 estrela: {distribution[1]}</p>
         </div>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-2xl p-4 grid md:grid-cols-4 gap-3">
         <div className="space-y-1">
           <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Periodo</label>
-          <select
+          <CustomSelect
             value={period}
-            onChange={(e) => setPeriod(e.target.value as PeriodFilter)}
-            className="w-full p-3 rounded-xl border border-gray-200 font-bold bg-white"
-          >
-            <option value="TODAY">Hoje</option>
-            <option value="7D">Ultimos 7 dias</option>
-            <option value="30D">Ultimos 30 dias</option>
-            <option value="CUSTOM">Personalizado</option>
-          </select>
+            onChange={(nextValue) => setPeriod((nextValue as PeriodFilter) || '7D')}
+            options={periodOptions}
+            buttonClassName="p-3 text-sm"
+          />
         </div>
         <div className="space-y-1">
           <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Nota</label>
-          <select
+          <CustomSelect
             value={rating}
-            onChange={(e) => setRating(e.target.value as RatingFilter)}
-            className="w-full p-3 rounded-xl border border-gray-200 font-bold bg-white"
-          >
-            <option value="ALL">Todas</option>
-            <option value="5">5 estrelas</option>
-            <option value="4">4 estrelas</option>
-            <option value="3">3 estrelas</option>
-            <option value="2">2 estrelas</option>
-            <option value="1">1 estrela</option>
-          </select>
+            onChange={(nextValue) => setRating((nextValue as RatingFilter) || 'ALL')}
+            options={ratingOptions}
+            buttonClassName="p-3 text-sm"
+          />
         </div>
         {period === 'CUSTOM' && (
           <>
@@ -186,4 +193,3 @@ const AdminRatings: React.FC = () => {
 };
 
 export default AdminRatings;
-

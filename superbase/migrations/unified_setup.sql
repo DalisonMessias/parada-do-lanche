@@ -896,7 +896,6 @@ declare
   v_role text;
   v_table_id uuid;
   v_session_id uuid;
-  v_code text;
   v_table_name text;
   v_token text;
 begin
@@ -914,8 +913,7 @@ begin
     raise exception 'apenas garcom pode criar mesa virtual';
   end if;
 
-  v_code := upper(substring(replace(gen_random_uuid()::text, '-', '') from 1 for 6));
-  v_table_name := 'MV-' || v_code;
+  v_table_name := 'Garcom';
   v_token := 'waiter-virtual-' || replace(gen_random_uuid()::text, '-', '');
 
   insert into public.tables (name, token, table_type, status)
@@ -946,6 +944,15 @@ begin
   return v_session_id;
 end;
 $$;
+
+-- Padroniza nome legado de mesa virtual (MV-...) para Garcom.
+update public.tables
+set name = 'Garcom'
+where token like 'waiter-virtual-%'
+  and (
+    upper(coalesce(name, '')) like 'MV-%'
+    or upper(coalesce(name, '')) like 'GARCOM%'
+  );
 
 create or replace function public.admin_set_user_password(
   p_actor_profile_id uuid,

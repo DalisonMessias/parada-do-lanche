@@ -16,12 +16,6 @@ const formatDisplay = (value: number) =>
     maximumFractionDigits: 2,
   }).format(Number.isFinite(value) ? value : 0);
 
-const normalizeNumberText = (value: string) => {
-  const clean = value.replace(',', '.');
-  const parsed = Number(clean);
-  return Number.isFinite(parsed) ? parsed : 0;
-};
-
 const evaluateSimple = (expr: string) => {
   const normalized = expr
     .replace(/\s+/g, '')
@@ -103,9 +97,7 @@ const CalculatorModal: React.FC<CalculatorModalProps> = ({ open, onClose, title 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key >= '0' && event.key <= '9') {
         append(event.key);
-      } else if (event.key === '.') {
-        append(',');
-      } else if (event.key === ',') {
+      } else if (event.key === '.' || event.key === ',') {
         append(',');
       } else if (event.key === '+' || event.key === '-') {
         applyOperator(event.key as Operator);
@@ -126,7 +118,7 @@ const CalculatorModal: React.FC<CalculatorModalProps> = ({ open, onClose, title 
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, expression]);
+  }, [open, expression, onClose]);
 
   const expressionPreview = useMemo(() => {
     if (!expression) return '0';
@@ -173,14 +165,14 @@ const CalculatorModal: React.FC<CalculatorModalProps> = ({ open, onClose, title 
             {digit}
           </button>
         ))}
-        <button onClick={() => applyOperator('/')} className="py-3 rounded-xl border border-gray-200 font-black text-gray-700">÷</button>
+        <button onClick={() => applyOperator('/')} className="py-3 rounded-xl border border-gray-200 font-black text-gray-700">/</button>
 
         {['4', '5', '6'].map((digit) => (
           <button key={digit} onClick={() => append(digit)} className="py-3 rounded-xl border border-gray-200 font-black text-gray-700">
             {digit}
           </button>
         ))}
-        <button onClick={() => applyOperator('x')} className="py-3 rounded-xl border border-gray-200 font-black text-gray-700">×</button>
+        <button onClick={() => applyOperator('x')} className="py-3 rounded-xl border border-gray-200 font-black text-gray-700">x</button>
 
         {['1', '2', '3'].map((digit) => (
           <button key={digit} onClick={() => append(digit)} className="py-3 rounded-xl border border-gray-200 font-black text-gray-700">
@@ -194,7 +186,7 @@ const CalculatorModal: React.FC<CalculatorModalProps> = ({ open, onClose, title 
         <button onClick={() => append(',')} className="py-3 rounded-xl border border-gray-200 font-black text-gray-700">,</button>
         <button onClick={() => applyOperator('+')} className="py-3 rounded-xl border border-gray-200 font-black text-gray-700">+</button>
 
-        <button onClick={backspace} className="py-3 rounded-xl border border-gray-200 font-black text-gray-700">⌫</button>
+        <button onClick={backspace} className="py-3 rounded-xl border border-gray-200 font-black text-gray-700">{'<-'}</button>
         <button onClick={() => append('00')} className="py-3 rounded-xl border border-gray-200 font-black text-gray-700">00</button>
         <button onClick={calculate} className="col-span-2 py-3 rounded-xl bg-primary text-white font-black">=</button>
       </div>
@@ -216,4 +208,3 @@ const CalculatorModal: React.FC<CalculatorModalProps> = ({ open, onClose, title 
 };
 
 export default CalculatorModal;
-

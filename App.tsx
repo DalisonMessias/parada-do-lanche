@@ -1270,7 +1270,7 @@ const App: React.FC = () => {
       </Layout>
     );
   }
-  // VisualizaÃ§Ã£o Cliente (Mobile View)
+  // Visualizacao Cliente (Mobile View)
   return (
     <Layout 
       settings={settings}
@@ -1300,7 +1300,7 @@ const App: React.FC = () => {
              <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
           </div>
           <div className="text-center space-y-3">
-            <h2 className="text-3xl font-black text-gray-900 uppercase tracking-tighter leading-none italic">Sua Mesa EstÃ¡ Pronta</h2>
+            <h2 className="text-3xl font-black text-gray-900 uppercase tracking-tighter leading-none italic">Sua Mesa Esta Pronta</h2>
             <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest leading-loose">Como deseja ser identificado(a) na {activeTable?.name}?</p>
           </div>
           <form onSubmit={(e) => {
@@ -1309,7 +1309,7 @@ const App: React.FC = () => {
             handleOpenTable(n);
           }} className="w-full space-y-5">
             <input name="un" type="text" placeholder="Seu Nome" required className="w-full p-4.5 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary text-center font-black text-lg placeholder:text-gray-200" />
-            <button className="w-full bg-primary text-white p-5 rounded-xl font-black uppercase tracking-widest text-base transition-transform active:scale-95">Abrir CardÃ¡pio</button>
+            <button className="w-full bg-primary text-white p-5 rounded-xl font-black uppercase tracking-widest text-base transition-transform active:scale-95">Abrir Cardapio</button>
           </form>
         </div>
       ) : (
@@ -1450,7 +1450,7 @@ const App: React.FC = () => {
                                     disabled={hasOwnPendingApproval}
                                     className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
-                                    Comprar
+                                    Adicionar
                                   </button>
                                   <button
                                     onClick={() => openAddonSelector(p)}
@@ -1507,7 +1507,7 @@ const App: React.FC = () => {
                   }}
                   className="w-full bg-gray-900 text-white py-4 rounded-xl font-black uppercase tracking-widest text-[11px]"
                 >
-                  {selectedAddonIds.length === 0 ? 'Comprar' : 'Comprar com adicionais'}
+                  {selectedAddonIds.length === 0 ? 'Adicionar' : 'Adicionar com adicionais'}
                 </button>
               }
             >
