@@ -194,11 +194,16 @@ create table if not exists public.products (
   image_url text,
   addon_selection_mode text not null default 'MULTIPLE' check (addon_selection_mode in ('SINGLE', 'MULTIPLE')),
   active boolean default true,
+  is_featured boolean not null default false,
   out_of_stock boolean default false,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 alter table if exists public.products
   add column if not exists addon_selection_mode text not null default 'MULTIPLE';
+alter table if exists public.products
+  add column if not exists is_featured boolean not null default false;
+update public.products
+set is_featured = coalesce(is_featured, false);
 do $$
 begin
   if not exists (

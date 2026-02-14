@@ -33,6 +33,8 @@ type AdminTab =
   | 'WAITER_MODULE'
   | 'COUNTER_MODULE';
 
+const PROMOTIONS_TAB_ID = '__PROMOTIONS__';
+
 const getAllowedAdminTabs = (
   role: UserRole,
   counterEnabled: boolean
@@ -90,9 +92,11 @@ const App: React.FC = () => {
   const [settings, setSettings] = useState<StoreSettings | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [customerSearchTerm, setCustomerSearchTerm] = useState('');
   const [showCart, setShowCart] = useState(false);
   const [showAddonSelector, setShowAddonSelector] = useState(false);
   const [showCalculator, setShowCalculator] = useState(false);
+  const [previewImage, setPreviewImage] = useState<{ url: string; name: string } | null>(null);
   const [showRatingModal, setShowRatingModal] = useState(false);
   const [ratingStars, setRatingStars] = useState(0);
   const [ratingComment, setRatingComment] = useState('');
@@ -542,6 +546,57 @@ const App: React.FC = () => {
     const promotion = resolvePromotionForProduct(product.id, promotions);
     return applyPromotionToPrice(product.price_cents || 0, promotion);
   };
+
+  const normalizedCustomerSearch = customerSearchTerm.trim().toLowerCase();
+  const selectedCategoryId =
+    selectedCategory && selectedCategory !== PROMOTIONS_TAB_ID ? selectedCategory : null;
+  const showPromotionsOnly = selectedCategory === PROMOTIONS_TAB_ID;
+
+  const filteredProductsBySearch = useMemo(() => {
+    if (!normalizedCustomerSearch) return products;
+    return products.filter((product) => {
+      const categoryName =
+        categories.find((category) => category.id === product.category_id)?.name || '';
+      const searchableText = `${product.name} ${product.description || ''} ${categoryName}`.toLowerCase();
+      return searchableText.includes(normalizedCustomerSearch);
+    });
+  }, [products, categories, normalizedCustomerSearch]);
+
+  const filteredProductIds = useMemo(
+    () => new Set(filteredProductsBySearch.map((product) => product.id)),
+    [filteredProductsBySearch]
+  );
+
+  const promotionProductIds = useMemo(() => {
+    const ids = new Set<string>();
+    products.forEach((product) => {
+      const pricing = getProductPricing(product);
+      if (pricing.hasPromotion) ids.add(product.id);
+    });
+    return ids;
+  }, [products, promotions]);
+
+  const featuredProducts = useMemo(() => {
+    if (showPromotionsOnly || selectedCategoryId) return [] as Product[];
+    return products
+      .filter((product) => Boolean(product.is_featured) && filteredProductIds.has(product.id))
+      .filter((product) => !showPromotionsOnly || promotionProductIds.has(product.id))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'pt-BR'));
+  }, [products, filteredProductIds, showPromotionsOnly, selectedCategoryId, promotionProductIds]);
+
+  const visibleMenuCategories = useMemo(() => {
+    return categories.filter((category) => {
+      if (selectedCategoryId && category.id !== selectedCategoryId) return false;
+      const categoryProducts = products.filter(
+        (product) => product.category_id === category.id && filteredProductIds.has(product.id)
+      );
+      if (categoryProducts.length === 0) return false;
+      if (showPromotionsOnly) {
+        return categoryProducts.some((product) => promotionProductIds.has(product.id));
+      }
+      return true;
+    });
+  }, [categories, products, filteredProductIds, selectedCategoryId, showPromotionsOnly, promotionProductIds]);
 
   const openAddonSelector = (product: Product) => {
     if (hasOwnPendingApproval) return;
@@ -1324,11 +1379,44 @@ const App: React.FC = () => {
         </div>
       ) : (
         <div className="pb-32">
-          <div className="sticky top-[69px] z-40 bg-white border-b border-gray-100 flex gap-2 overflow-x-auto p-3.5 no-scrollbar">
-            <button onClick={() => setSelectedCategory(null)} className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${!selectedCategory ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'}`}>Todos</button>
-            {categories.map(c => (
-              <button key={c.id} onClick={() => setSelectedCategory(c.id)} className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest whitespace-nowrap transition-all shrink-0 border ${selectedCategory === c.id ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'}`}>{c.name}</button>
-            ))}
+          <div className="sticky top-[69px] z-40 bg-white border-b border-gray-100">
+            <div className="p-3.5 space-y-3">
+              <input
+                value={customerSearchTerm}
+                onChange={(e) => setCustomerSearchTerm(e.target.value)}
+                placeholder="Buscar produtos..."
+                className="w-full p-3 rounded-xl border border-gray-200 bg-white text-sm font-bold outline-none focus:border-primary"
+              />
+              <div className="flex gap-2 overflow-x-auto no-scrollbar">
+                <button
+                  onClick={() => setSelectedCategory(null)}
+                  className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${
+                    !selectedCategory ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
+                  }`}
+                >
+                  Todos
+                </button>
+                <button
+                  onClick={() => setSelectedCategory(PROMOTIONS_TAB_ID)}
+                  className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${
+                    showPromotionsOnly ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
+                  }`}
+                >
+                  Promocoes
+                </button>
+                {categories.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => setSelectedCategory(c.id)}
+                    className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest whitespace-nowrap transition-all shrink-0 border ${
+                      selectedCategory === c.id ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
+                    }`}
+                  >
+                    {c.name}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           <div className="p-4 space-y-8">
@@ -1379,15 +1467,15 @@ const App: React.FC = () => {
               </section>
             )}
             
-            {categories.filter(c => !selectedCategory || c.id === selectedCategory).map(cat => (
-              <div key={cat.id} className="space-y-6">
+            {featuredProducts.length > 0 && (
+              <section className="space-y-4">
                 <div className="flex items-center gap-3">
-                  <h3 className="text-lg font-black uppercase text-gray-800 tracking-tighter shrink-0 italic">{cat.name}</h3>
+                  <h3 className="text-lg font-black uppercase text-gray-800 tracking-tighter shrink-0 italic">Produtos em Destaque</h3>
                   <div className="h-[1px] w-full bg-gray-100"></div>
                 </div>
                 <div className="space-y-3">
-                  {products.filter(p => p.category_id === cat.id).map(p => {
-                    const inCartQty = cart.filter(i => i.product_id === p.id && i.guest_id === guest.id).reduce((acc, i) => acc + i.qty, 0);
+                  {featuredProducts.map((p) => {
+                    const inCartQty = cart.filter((i) => i.product_id === p.id && i.guest_id === guest.id).reduce((acc, i) => acc + i.qty, 0);
                     const hasAddons = getProductAddons(p.id).length > 0;
                     const pricing = getProductPricing(p);
                     const unitPrice = pricing.finalUnitPriceCents;
@@ -1398,10 +1486,16 @@ const App: React.FC = () => {
                         : `- ${formatCurrency(pricing.discountCents)}`;
 
                     return (
-                      <div key={p.id} className="bg-white rounded-2xl p-3 border border-gray-100 transition-all">
+                      <div key={`featured-${p.id}`} className="bg-white rounded-2xl p-3 border border-primary/20 transition-all">
                         <div className="flex gap-3 items-start">
                           {(p.image_url || '').trim() ? (
-                            <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover bg-gray-50 border border-gray-50 shrink-0" />
+                            <button
+                              type="button"
+                              onClick={() => setPreviewImage({ url: p.image_url, name: p.name })}
+                              className="shrink-0 rounded-xl overflow-hidden border border-gray-50 bg-gray-50"
+                            >
+                              <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover shrink-0 cursor-zoom-in" />
+                            </button>
                           ) : (
                             <div className="w-20 h-20 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0">
                               <span className="text-[7px] font-black uppercase tracking-widest text-gray-300">Sem foto</span>
@@ -1415,6 +1509,9 @@ const App: React.FC = () => {
                                 <p className="text-[10px] text-gray-500 mt-2 leading-relaxed font-bold line-clamp-2">{p.description}</p>
                               </div>
                               <div className="flex flex-col items-end shrink-0">
+                                <span className="px-2 py-1 rounded-full bg-primary/15 text-primary text-[9px] font-black uppercase tracking-widest mb-1">
+                                  Destaque
+                                </span>
                                 {hasPromotion && (
                                   <span className="px-2 py-1 rounded-full bg-primary/15 text-primary text-[9px] font-black uppercase tracking-widest mb-1">
                                     Promocao • {promoBadge}
@@ -1478,8 +1575,152 @@ const App: React.FC = () => {
                     );
                   })}
                 </div>
+              </section>
+            )}
+
+            {visibleMenuCategories.map((cat) => {
+              let categoryProducts = products.filter(
+                (p) => p.category_id === cat.id && filteredProductIds.has(p.id)
+              );
+              if (showPromotionsOnly) {
+                categoryProducts = categoryProducts.filter((p) => promotionProductIds.has(p.id));
+              }
+              if (!showPromotionsOnly && !selectedCategoryId && featuredProducts.length > 0) {
+                categoryProducts = categoryProducts.filter((p) => !Boolean(p.is_featured));
+              }
+
+              if (categoryProducts.length === 0) return null;
+
+              categoryProducts = [...categoryProducts].sort((a, b) => {
+                const featuredDiff = Number(Boolean(b.is_featured)) - Number(Boolean(a.is_featured));
+                if (featuredDiff !== 0) return featuredDiff;
+                return (a.name || '').localeCompare(b.name || '', 'pt-BR');
+              });
+
+              return (
+                <div key={cat.id} className="space-y-6">
+                  <div className="flex items-center gap-3">
+                    <h3 className="text-lg font-black uppercase text-gray-800 tracking-tighter shrink-0 italic">{cat.name}</h3>
+                    <div className="h-[1px] w-full bg-gray-100"></div>
+                  </div>
+                  <div className="space-y-3">
+                    {categoryProducts.map((p) => {
+                      const inCartQty = cart.filter((i) => i.product_id === p.id && i.guest_id === guest.id).reduce((acc, i) => acc + i.qty, 0);
+                      const hasAddons = getProductAddons(p.id).length > 0;
+                      const pricing = getProductPricing(p);
+                      const unitPrice = pricing.finalUnitPriceCents;
+                      const hasPromotion = pricing.hasPromotion;
+                      const promoBadge =
+                        pricing.promoDiscountType === 'PERCENT'
+                          ? `${pricing.promoDiscountValue}% OFF`
+                          : `- ${formatCurrency(pricing.discountCents)}`;
+
+                      return (
+                        <div key={p.id} className="bg-white rounded-2xl p-3 border border-gray-100 transition-all">
+                          <div className="flex gap-3 items-start">
+                            {(p.image_url || '').trim() ? (
+                              <button
+                                type="button"
+                                onClick={() => setPreviewImage({ url: p.image_url, name: p.name })}
+                                className="shrink-0 rounded-xl overflow-hidden border border-gray-50 bg-gray-50"
+                              >
+                                <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover shrink-0 cursor-zoom-in" />
+                              </button>
+                            ) : (
+                              <div className="w-20 h-20 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0">
+                                <span className="text-[7px] font-black uppercase tracking-widest text-gray-300">Sem foto</span>
+                              </div>
+                            )}
+
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <h4 className="font-black text-gray-900 text-base leading-none tracking-tighter truncate">{p.name}</h4>
+                                  <p className="text-[10px] text-gray-500 mt-2 leading-relaxed font-bold line-clamp-2">{p.description}</p>
+                                </div>
+                                <div className="flex flex-col items-end shrink-0">
+                                  {hasPromotion && (
+                                    <span className="px-2 py-1 rounded-full bg-primary/15 text-primary text-[9px] font-black uppercase tracking-widest mb-1">
+                                      Promocao • {promoBadge}
+                                    </span>
+                                  )}
+                                  {hasPromotion && (
+                                    <span className="text-[10px] font-black text-gray-400 line-through">{formatCurrency(p.price_cents)}</span>
+                                  )}
+                                  <span className="font-black text-primary text-lg tracking-tighter">{formatCurrency(unitPrice)}</span>
+                                </div>
+                              </div>
+
+                              {session?.status === 'OPEN' && (
+                                <div className="mt-3 flex flex-wrap items-center gap-2 justify-between">
+                                  <div className="flex items-center gap-2">
+                                    {!hasAddons && inCartQty > 0 && (
+                                      <div className="inline-flex items-center gap-3 bg-gray-50 border border-gray-100 rounded-lg p-1 px-2.5">
+                                        <button
+                                          onClick={() => handleUpdateCart(p.id, -1)}
+                                          disabled={hasOwnPendingApproval}
+                                          className="text-lg font-black text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                                        >
+                                          -
+                                        </button>
+                                        <span className="text-xs font-black w-3 text-center text-gray-900">{inCartQty}</span>
+                                        <button
+                                          onClick={() => handleUpdateCart(p.id, 1)}
+                                          disabled={hasOwnPendingApproval}
+                                          className="text-lg font-black text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+                                        >
+                                          +
+                                        </button>
+                                      </div>
+                                    )}
+                                    {inCartQty > 0 && (
+                                      <span className="text-[10px] font-black text-primary">{inCartQty} no carrinho</span>
+                                    )}
+                                  </div>
+
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      onClick={() => (hasAddons ? openAddonSelector(p) : handleUpdateCart(p.id, 1))}
+                                      disabled={hasOwnPendingApproval}
+                                      className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      Adicionar
+                                    </button>
+                                    <button
+                                      onClick={() => openAddonSelector(p)}
+                                      disabled={hasOwnPendingApproval}
+                                      className="text-[8px] font-black uppercase tracking-widest text-gray-500 underline disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      Obs/Adicional
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+
+            {showPromotionsOnly && visibleMenuCategories.length === 0 && (
+              <div className="bg-white border border-gray-100 rounded-2xl p-5 text-center">
+                <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest">
+                  Nenhum item em promocao para hoje.
+                </p>
               </div>
-            ))}
+            )}
+
+            {!showPromotionsOnly && visibleMenuCategories.length === 0 && (
+              <div className="bg-white border border-gray-100 rounded-2xl p-5 text-center">
+                <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest">
+                  Nenhum produto encontrado para essa busca.
+                </p>
+              </div>
+            )}
           </div>
 
           {session?.status === 'OPEN' && myCartItems.length > 0 && (
@@ -1562,6 +1803,29 @@ const App: React.FC = () => {
                   maxLength={180}
                   className="w-full rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-700 outline-none focus:border-primary"
                 />
+              </div>
+            </AppModal>
+          )}
+
+          {previewImage && (
+            <AppModal
+              open={Boolean(previewImage)}
+              onClose={() => setPreviewImage(null)}
+              title={previewImage.name}
+              size="md"
+              zIndex={105}
+              footer={
+                <button
+                  type="button"
+                  onClick={() => setPreviewImage(null)}
+                  className="w-full py-3 rounded-xl border border-gray-200 text-[10px] font-black uppercase tracking-widest text-gray-700"
+                >
+                  Fechar
+                </button>
+              }
+            >
+              <div className="rounded-2xl overflow-hidden border border-gray-200 bg-gray-50">
+                <img src={previewImage.url} alt={previewImage.name} className="w-full h-auto object-contain max-h-[70vh]" />
               </div>
             </AppModal>
           )}

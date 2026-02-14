@@ -252,8 +252,8 @@ const renderTicketCore = (ticket: KitchenPrintTicket, qrDataUrl?: string) => {
   return `
     <section class="ticket-sheet">
       <header class="ticket-header">
+      <img src="${ticket.storeImageUrl || ''};" className="w-full aspect-video rounded-2xl object-cover bg-gray-50 border border-gray-50" />
         <p class="ticket-store-name">${escapeHtml(ticket.storeName || 'Parada do Lanche')}</p>
-        <p class="ticket-store-subtitle">UaiTech</p>
       </header>
 
       <section class="ticket-meta">
@@ -589,12 +589,13 @@ export const printKitchenTicket = async (payload: KitchenPrintPayload): Promise<
     return { status: 'error', message: 'Nao ha cupons para imprimir.' };
   }
 
-  const qrDataUrlByIndex = await buildQrDataUrlByIndex(tickets);
-  const html = renderKitchenTicketDocument(payload, qrDataUrlByIndex);
   const win = window.open('', '_blank', 'width=560,height=920');
   if (!win) {
     return { status: 'error', message: 'Nao foi possivel abrir a janela de impressao.' };
   }
+
+  const qrDataUrlByIndex = await buildQrDataUrlByIndex(tickets);
+  const html = renderKitchenTicketDocument(payload, qrDataUrlByIndex);
 
   win.document.open();
   win.document.write(html);

@@ -51,6 +51,7 @@ const AdminMenu: React.FC = () => {
   const [productPriceInput, setProductPriceInput] = useState('0,00');
   const [productCategoryId, setProductCategoryId] = useState('');
   const [productAddonMode, setProductAddonMode] = useState<'SINGLE' | 'MULTIPLE'>('MULTIPLE');
+  const [productIsFeatured, setProductIsFeatured] = useState(false);
   const [productImageUrlInput, setProductImageUrlInput] = useState('');
   const [productImageUrlUploaded, setProductImageUrlUploaded] = useState('');
   const [productImageName, setProductImageName] = useState('');
@@ -91,6 +92,7 @@ const AdminMenu: React.FC = () => {
     setProductPriceInput('0,00');
     setProductCategoryId(categories[0]?.id || '');
     setProductAddonMode('MULTIPLE');
+    setProductIsFeatured(false);
     setProductImageUrlInput('');
     setProductImageUrlUploaded('');
     setProductImageName('');
@@ -109,7 +111,14 @@ const AdminMenu: React.FC = () => {
     if (addonRes.error) toast(`Falha ao carregar adicionais: ${addonRes.error.message}`, 'error');
 
     if (catRes.data) setCategories(catRes.data as Category[]);
-    if (prodRes.data) setProducts(prodRes.data as Product[]);
+    if (prodRes.data) {
+      const sortedProducts = [...(prodRes.data as Product[])].sort((a, b) => {
+        const featuredDiff = Number(Boolean(b.is_featured)) - Number(Boolean(a.is_featured));
+        if (featuredDiff !== 0) return featuredDiff;
+        return (a.name || '').localeCompare(b.name || '', 'pt-BR');
+      });
+      setProducts(sortedProducts);
+    }
     if (addonRes.data) setAddons(addonRes.data as ProductAddon[]);
   };
 
@@ -199,6 +208,7 @@ const AdminMenu: React.FC = () => {
     setProductPriceInput(centsToInput(product.price_cents));
     setProductCategoryId(product.category_id);
     setProductAddonMode(product.addon_selection_mode || 'MULTIPLE');
+    setProductIsFeatured(Boolean(product.is_featured));
     setProductImageUrlInput(product.image_url || '');
     setProductImageUrlUploaded('');
     setProductImageName('');
@@ -291,6 +301,7 @@ const AdminMenu: React.FC = () => {
         category_id: productCategoryId,
         image_url: productImageUrlUploaded || productImageUrlInput.trim() || '',
         addon_selection_mode: productAddonMode,
+        is_featured: productIsFeatured,
         active: editingProduct ? editingProduct.active : true,
       };
 
@@ -331,6 +342,12 @@ const AdminMenu: React.FC = () => {
   const handleToggleProduct = async (id: string, current: boolean) => {
     const { error } = await supabase.from('products').update({ active: !current }).eq('id', id);
     if (error) toast(`Falha ao atualizar status: ${error.message}`, 'error');
+    else fetchData();
+  };
+
+  const handleToggleFeatured = async (id: string, current: boolean) => {
+    const { error } = await supabase.from('products').update({ is_featured: !current }).eq('id', id);
+    if (error) toast(`Falha ao atualizar destaque: ${error.message}`, 'error');
     else fetchData();
   };
 
@@ -541,6 +558,20 @@ const AdminMenu: React.FC = () => {
                     buttonClassName="p-4 text-sm"
                   />
                 </div>
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Produto em destaque</label>
+                  <button
+                    type="button"
+                    onClick={() => setProductIsFeatured((prev) => !prev)}
+                    className={`w-full p-4 rounded-xl border text-left font-black text-sm transition-colors ${
+                      productIsFeatured
+                        ? 'bg-primary/10 text-primary border-primary/30'
+                        : 'bg-white text-gray-600 border-gray-200'
+                    }`}
+                  >
+                    {productIsFeatured ? 'Ativo no topo do menu digital' : 'Inativo'}
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-6">
@@ -749,6 +780,16 @@ const AdminMenu: React.FC = () => {
                           }`}
                         >
                           {product.active ? 'Ativo' : 'Inativo'}
+                        </button>
+                        <button
+                          onClick={() => handleToggleFeatured(product.id, Boolean(product.is_featured))}
+                          className={`py-3 rounded-xl text-[8px] font-black uppercase tracking-widest border transition-all ${
+                            product.is_featured
+                              ? 'bg-primary/10 text-primary border-primary/20'
+                              : 'bg-gray-50 text-gray-500 border-gray-200'
+                          }`}
+                        >
+                          {product.is_featured ? 'Destaque ON' : 'Destaque OFF'}
                         </button>
                         <button onClick={() => openAddonsModal(product)} className="py-3 rounded-xl text-[8px] font-black uppercase tracking-widest border border-gray-200 text-gray-600 bg-gray-50">
                           Adicionais

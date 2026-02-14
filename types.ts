@@ -65,6 +65,7 @@ export interface Product {
   price_cents: number;
   image_url: string;
   addon_selection_mode: 'SINGLE' | 'MULTIPLE';
+  is_featured?: boolean;
   active: boolean;
   out_of_stock: boolean;
 }
