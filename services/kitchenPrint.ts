@@ -3,6 +3,9 @@ import { groupOrderItems } from './orderItemGrouping';
 import { formatCurrency } from './supabase';
 import QRCode from 'qrcode';
 
+export const UAITECH_LOGO_URL =
+  'https://obeoiqjwqchwedeupngc.supabase.co/storage/v1/object/public/assets/logos/logo-uaitech.png';
+
 export type KitchenPrintTicketType = 'MESA' | 'BALCAO' | 'RETIRADA' | 'ENTREGA';
 
 export type KitchenPrintItem = {
@@ -250,12 +253,14 @@ const renderTicketCore = (ticket: KitchenPrintTicket, qrDataUrl?: string) => {
   const showServiceFee = ticket.ticketType === 'MESA' && (ticket.serviceFeeCents || 0) > 0;
   const showDeliveryFee = ticket.ticketType === 'ENTREGA' && (ticket.deliveryFeeCents || 0) > 0;
   const storeImageUrl = escapeHtml((ticket.storeImageUrl || '').trim());
+  const uaiTechLogoUrl = escapeHtml(UAITECH_LOGO_URL);
 
   return `
     <section class="ticket-sheet">
       <header class="ticket-header">
         ${storeImageUrl ? `<img src="${storeImageUrl}" alt="Logo da loja" class="ticket-store-logo" />` : ''}
         <p class="ticket-store-name">${escapeHtml(ticket.storeName || 'Parada do Lanche')}</p>
+        <img src="${uaiTechLogoUrl}" alt="Logo UaiTech" class="ticket-uaitech-logo ticket-uaitech-logo--header" />
       </header>
 
       <section class="ticket-meta">
@@ -332,7 +337,9 @@ const renderTicketCore = (ticket: KitchenPrintTicket, qrDataUrl?: string) => {
 
       ${renderQrBlock(ticket, qrDataUrl)}
 
-      <footer class="ticket-footer">UaiTech</footer>
+      <footer class="ticket-footer">
+        <img src="${uaiTechLogoUrl}" alt="Logo UaiTech" class="ticket-uaitech-logo ticket-uaitech-logo--footer" />
+      </footer>
     </section>
   `;
 };
@@ -370,12 +377,19 @@ export const kitchenTicketStyles = `
     margin: 0 auto 1.2mm;
     display: block;
   }
-  .ticket-store-subtitle {
-    margin: 0.5mm 0 0;
-    font-size: 10px;
-    font-weight: 900;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
+  .ticket-uaitech-logo {
+    display: block;
+    margin: 0 auto;
+    object-fit: contain;
+  }
+  .ticket-uaitech-logo--header {
+    width: 22mm;
+    height: 7mm;
+    margin-top: 0.8mm;
+  }
+  .ticket-uaitech-logo--footer {
+    width: 20mm;
+    height: 6.5mm;
   }
   .ticket-meta,
   .ticket-order-meta,
@@ -499,10 +513,6 @@ export const kitchenTicketStyles = `
   .ticket-footer {
     margin: 2.2mm 0 0;
     text-align: center;
-    font-size: 11px;
-    font-weight: 900;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
   }
 `;
 

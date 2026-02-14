@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   buildReceiptUrlFromToken,
   KitchenPrintTicket,
+  UAITECH_LOGO_URL,
   kitchenTicketStyles,
   printKitchenTicket,
   renderKitchenTicketMarkup,
@@ -18,6 +19,7 @@ interface PublicReceiptProps {
 
 type PublicReceiptResponse = {
   store_name?: string;
+  store_logo_url?: string | null;
   order?: {
     id?: string;
     service_type?: string;
@@ -78,7 +80,11 @@ const normalizeDeliveryAddress = (value: Record<string, any> | null | undefined)
   };
 };
 
-const toTicket = (payload: PublicReceiptResponse | null, token: string): KitchenPrintTicket | null => {
+const toTicket = (
+  payload: PublicReceiptResponse | null,
+  token: string,
+  settingsLogoUrl?: string | null
+): KitchenPrintTicket | null => {
   const order = payload?.order;
   if (!order?.id) return null;
 
@@ -87,6 +93,7 @@ const toTicket = (payload: PublicReceiptResponse | null, token: string): Kitchen
 
   return {
     storeName: (payload?.store_name || 'Parada do Lanche').trim() || 'Parada do Lanche',
+    storeImageUrl: (payload?.store_logo_url || settingsLogoUrl || '').trim() || null,
     orderId: order.id,
     ticketType,
     openedAt: order.opened_at || null,
@@ -138,20 +145,32 @@ const PublicReceipt: React.FC<PublicReceiptProps> = ({ token, onBackHome }) => {
       setLoading(true);
       setNotFound(false);
 
-      const { data, error } = await supabase.rpc('get_public_receipt_by_token', {
-        p_token: cleanToken,
-      });
+      const [receiptRes, settingsRes] = await Promise.all([
+        supabase.rpc('get_public_receipt_by_token', {
+          p_token: cleanToken,
+        }),
+        supabase.from('settings').select('logo_url').eq('id', 1).maybeSingle(),
+      ]);
 
       if (!active) return;
 
-      if (error) {
+      if (receiptRes.error) {
         setTicket(null);
         setNotFound(true);
         setLoading(false);
         return;
       }
 
-      const normalized = toTicket((data as PublicReceiptResponse) || null, cleanToken);
+      const settingsLogoUrl =
+        !settingsRes.error && settingsRes.data
+          ? String((settingsRes.data as any).logo_url || '').trim()
+          : '';
+
+      const normalized = toTicket(
+        (receiptRes.data as PublicReceiptResponse) || null,
+        cleanToken,
+        settingsLogoUrl || null
+      );
       if (!normalized) {
         setTicket(null);
         setNotFound(true);
@@ -217,7 +236,7 @@ const PublicReceipt: React.FC<PublicReceiptProps> = ({ token, onBackHome }) => {
         <div className="rounded-2xl border border-gray-200 bg-white p-4 flex items-center justify-between gap-3">
           <div>
             <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Cupom Fiscal Digital</p>
-            <img src="https://obeoiqjwqchwedeupngc.supabase.co/storage/v1/object/public/assets/logos/logo-uaitech.png" alt="Logo da loja" class="ticket-store-logo" />
+            <img src={UAITECH_LOGO_URL} alt="Logo UaiTech" className="h-6 w-auto mt-1" />
           </div>
           {onBackHome && (
             <button

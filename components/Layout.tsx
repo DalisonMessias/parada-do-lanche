@@ -1,5 +1,8 @@
-import React from 'react';
+﻿import React from 'react';
 import { StoreSettings } from '../types';
+
+const UAITECH_LOGO_URL =
+  'https://obeoiqjwqchwedeupngc.supabase.co/storage/v1/object/public/assets/logos/logo-uaitech.png';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -84,9 +87,8 @@ const Layout: React.FC<LayoutProps> = ({
 
       {shouldRenderFooter && (
         <footer className="border-t border-gray-100 bg-white px-4 py-3 text-center">
-          <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">
-            Dalison Messias - Uai Tech � {currentYear}
-          </p>
+          <img src={UAITECH_LOGO_URL} alt="Logo UaiTech" className="h-5 w-auto mx-auto" />
+          <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-400">© {currentYear}</p>
           <p className="mt-1 inline-flex items-center justify-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-gray-500">
             Feito com amor
             <svg
