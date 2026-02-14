@@ -27,6 +27,21 @@ type WaiterDraftItem = {
   observation: string;
 };
 
+type WaiterPayloadItem = {
+  product_id: string;
+  name_snapshot: string;
+  original_unit_price_cents: number;
+  unit_price_cents: number;
+  promo_name: string | null;
+  promo_discount_type: 'AMOUNT' | 'PERCENT' | null;
+  promo_discount_value: number;
+  promo_discount_cents: number;
+  qty: number;
+  note: string | null;
+  added_by_name: string;
+  status: 'PENDING';
+};
+
 interface AdminWaiterProps {
   profile: Profile | null;
 }
@@ -240,35 +255,27 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile }) => {
     setSaving(true);
     const rootOrderId = visibleOrders.find((order) => !order.parent_order_id)?.id || visibleOrders[0]?.id || null;
 
-    const payloadItems = groupOrderItems(
-      draftItems.map((item) => ({
-        product_id: item.product_id,
-        name_snapshot: item.product_name,
-        original_unit_price_cents: Math.max(0, Number(item.base_price_cents || 0) + Number(item.addon_total_cents || 0)),
-        unit_price_cents: item.unit_price_cents,
-        promo_name: item.promo_name,
-        promo_discount_type: item.promo_discount_type,
-        promo_discount_value: item.promo_discount_value,
-        promo_discount_cents: item.promo_discount_cents,
-        qty: item.qty,
-        note: makeItemNote(item.addon_names, item.observation),
-        added_by_name: profile.name || 'Garcom',
-        status: 'PENDING',
-      }))
-    ).map((item) => ({
-      product_id: item.product_id,
-      name_snapshot: item.name_snapshot,
-      original_unit_price_cents: (item as any).original_unit_price_cents,
-      unit_price_cents: item.unit_price_cents,
-      promo_name: (item as any).promo_name,
-      promo_discount_type: (item as any).promo_discount_type,
-      promo_discount_value: (item as any).promo_discount_value,
-      promo_discount_cents: (item as any).promo_discount_cents,
-      qty: item.qty,
-      note: item.note,
-      added_by_name: item.added_by_name,
-      status: item.status,
-    }));
+    const payloadItems = groupOrderItems<WaiterPayloadItem>(
+      draftItems.map(
+        (item): WaiterPayloadItem => ({
+          product_id: item.product_id,
+          name_snapshot: item.product_name,
+          original_unit_price_cents: Math.max(
+            0,
+            Number(item.base_price_cents || 0) + Number(item.addon_total_cents || 0)
+          ),
+          unit_price_cents: item.unit_price_cents,
+          promo_name: item.promo_name,
+          promo_discount_type: item.promo_discount_type,
+          promo_discount_value: item.promo_discount_value,
+          promo_discount_cents: item.promo_discount_cents,
+          qty: item.qty,
+          note: makeItemNote(item.addon_names, item.observation),
+          added_by_name: profile.name || 'Garcom',
+          status: 'PENDING',
+        })
+      )
+    );
 
     const { data: orderId, error } = await supabase.rpc('create_staff_order', {
       p_session_id: selectedSession.id,

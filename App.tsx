@@ -723,8 +723,18 @@ const App: React.FC = () => {
       return;
     }
 
-    if (!requiresHostApproval) {
-      await supabase.from('cart_items').delete().eq('session_id', session.id).eq('guest_id', guest.id);
+    const { error: clearCartError } = await supabase
+      .from('cart_items')
+      .delete()
+      .eq('session_id', session.id)
+      .eq('guest_id', guest.id);
+
+    if (clearCartError) {
+      toast(`Pedido enviado, mas houve erro ao limpar carrinho: ${clearCartError.message}`, 'error');
+    } else {
+      setCart((prev) =>
+        prev.filter((item) => !(item.session_id === session.id && item.guest_id === guest.id))
+      );
     }
     setShowCart(false);
     setIsLoading(false);

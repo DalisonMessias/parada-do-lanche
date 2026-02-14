@@ -29,6 +29,21 @@ type CounterCartItem = {
   observation: string;
 };
 
+type CounterPayloadItem = {
+  product_id: string;
+  name_snapshot: string;
+  original_unit_price_cents: number;
+  unit_price_cents: number;
+  promo_name: string | null;
+  promo_discount_type: 'AMOUNT' | 'PERCENT' | null;
+  promo_discount_value: number;
+  promo_discount_cents: number;
+  qty: number;
+  note: string | null;
+  added_by_name: string;
+  status: 'PENDING';
+};
+
 type CounterServiceType = 'NONE' | 'RETIRADA' | 'ENTREGA';
 type CounterPaymentMethod = 'CARD' | 'CASH' | 'PIX';
 
@@ -474,35 +489,27 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
       return;
     }
 
-    const payloadItems = groupOrderItems(
-      cartItems.map((item) => ({
-        product_id: item.product_id,
-        name_snapshot: item.product_name,
-        original_unit_price_cents: Math.max(0, Number(item.base_price_cents || 0) + Number(item.addon_total_cents || 0)),
-        unit_price_cents: item.unit_price_cents,
-        promo_name: item.promo_name,
-        promo_discount_type: item.promo_discount_type,
-        promo_discount_value: item.promo_discount_value,
-        promo_discount_cents: item.promo_discount_cents,
-        qty: item.qty,
-        note: makeItemNote(item.addon_names, item.observation),
-        added_by_name: profile.name || 'Operador',
-        status: 'PENDING',
-      }))
-    ).map((item) => ({
-      product_id: item.product_id,
-      name_snapshot: item.name_snapshot,
-      original_unit_price_cents: (item as any).original_unit_price_cents,
-      unit_price_cents: item.unit_price_cents,
-      promo_name: (item as any).promo_name,
-      promo_discount_type: (item as any).promo_discount_type,
-      promo_discount_value: (item as any).promo_discount_value,
-      promo_discount_cents: (item as any).promo_discount_cents,
-      qty: item.qty,
-      note: item.note,
-      added_by_name: item.added_by_name,
-      status: item.status,
-    }));
+    const payloadItems = groupOrderItems<CounterPayloadItem>(
+      cartItems.map(
+        (item): CounterPayloadItem => ({
+          product_id: item.product_id,
+          name_snapshot: item.product_name,
+          original_unit_price_cents: Math.max(
+            0,
+            Number(item.base_price_cents || 0) + Number(item.addon_total_cents || 0)
+          ),
+          unit_price_cents: item.unit_price_cents,
+          promo_name: item.promo_name,
+          promo_discount_type: item.promo_discount_type,
+          promo_discount_value: item.promo_discount_value,
+          promo_discount_cents: item.promo_discount_cents,
+          qty: item.qty,
+          note: makeItemNote(item.addon_names, item.observation),
+          added_by_name: profile.name || 'Operador',
+          status: 'PENDING',
+        })
+      )
+    );
 
     const deliveryAddress: DeliveryAddress | null =
       mode === 'NEW' && serviceType === 'ENTREGA'
@@ -1011,7 +1018,9 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
                       }`}
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="m7.5 7.5 3-3a2 2 0 0 1 2.8 0l3 3a2 2 0 0 0 1.4.6H20a1 1 0 0 1 .7 1.7l-3 3a2 2 0 0 0-.6 1.4V17a1 1 0 0 1-1.7.7l-3-3a2 2 0 0 0-1.4-.6H8a1 1 0 0 1-.7-1.7l3-3a2 2 0 0 0 .6-1.4V6a1 1 0 0 1 1.7-.7z" />
+                        <rect x="7" y="2.5" width="10" height="19" rx="2.2" />
+                        <line x1="11" y1="5.5" x2="13" y2="5.5" />
+                        <circle cx="12" cy="18.5" r="1" />
                       </svg>
                       <span className="text-[10px] font-black uppercase tracking-widest">Pix</span>
                     </button>
