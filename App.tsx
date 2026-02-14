@@ -34,6 +34,8 @@ type AdminTab =
   | 'COUNTER_MODULE';
 
 const PROMOTIONS_TAB_ID = '__PROMOTIONS__';
+const UAITECH_LOGO_URL =
+  'https://obeoiqjwqchwedeupngc.supabase.co/storage/v1/object/public/assets/logos/logo-uaitech.png';
 
 const getAllowedAdminTabs = (
   role: UserRole,
@@ -1314,8 +1316,9 @@ const App: React.FC = () => {
               {adminTab === 'RATINGS' && <AdminRatings />}
 
               <footer className="mt-8 border-t border-gray-200 pt-4 text-center">
-                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">
-                  Dalison Messias - Uai Tech © {new Date().getFullYear()}
+                <img src={UAITECH_LOGO_URL} alt="Logo UaiTech" className="h-5 w-auto mx-auto" />
+                <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-400">
+                  © {new Date().getFullYear()}
                 </p>
                 <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-500">
                   Feito com amor

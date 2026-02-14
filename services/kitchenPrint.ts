@@ -260,7 +260,6 @@ const renderTicketCore = (ticket: KitchenPrintTicket, qrDataUrl?: string) => {
       <header class="ticket-header">
         ${storeImageUrl ? `<img src="${storeImageUrl}" alt="Logo da loja" class="ticket-store-logo" />` : ''}
         <p class="ticket-store-name">${escapeHtml(ticket.storeName || 'Parada do Lanche')}</p>
-        <img src="${uaiTechLogoUrl}" alt="Logo UaiTech" class="ticket-uaitech-logo ticket-uaitech-logo--header" />
       </header>
 
       <section class="ticket-meta">
@@ -381,11 +380,6 @@ export const kitchenTicketStyles = `
     display: block;
     margin: 0 auto;
     object-fit: contain;
-  }
-  .ticket-uaitech-logo--header {
-    width: 22mm;
-    height: 7mm;
-    margin-top: 0.8mm;
   }
   .ticket-uaitech-logo--footer {
     width: 20mm;
