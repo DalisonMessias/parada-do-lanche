@@ -35,7 +35,7 @@ type AdminTab =
 
 const PROMOTIONS_TAB_ID = '__PROMOTIONS__';
 const UAITECH_LOGO_URL =
-  'https://obeoiqjwqchwedeupngc.supabase.co/storage/v1/object/public/assets/logos/logo-uaitech.png';
+  'https://obeoiqjwqchwedeupngc.supabase.co/storage/v1/object/public/assets/logos/534545345.png';
 
 const getAllowedAdminTabs = (
   role: UserRole,
@@ -1321,7 +1321,7 @@ const App: React.FC = () => {
                   © {new Date().getFullYear()}
                 </p>
                 <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-500">
-                  Feito com amor
+                  Dalison Messias
                 </p>
               </footer>
             </div>

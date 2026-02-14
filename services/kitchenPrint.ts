@@ -4,7 +4,7 @@ import { formatCurrency } from './supabase';
 import QRCode from 'qrcode';
 
 export const UAITECH_LOGO_URL =
-  'https://obeoiqjwqchwedeupngc.supabase.co/storage/v1/object/public/assets/logos/logo-uaitech.png';
+  'https://obeoiqjwqchwedeupngc.supabase.co/storage/v1/object/public/assets/logos/534545345.png';
 
 export type KitchenPrintTicketType = 'MESA' | 'BALCAO' | 'RETIRADA' | 'ENTREGA';
 
@@ -329,7 +329,7 @@ const renderTicketCore = (ticket: KitchenPrintTicket, qrDataUrl?: string) => {
         }
         <div class="ticket-solid-separator"></div>
         <div class="ticket-total-row ticket-grand-total">
-          <span>${toStrongLabel('Total Geral')}</span>
+          <span>${toStrongLabel('Total')}</span>
           <span class="ticket-value-strong">${formatCurrency(ticket.totalCents || 0)}</span>
         </div>
       </section>
