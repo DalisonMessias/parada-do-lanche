@@ -129,6 +129,7 @@ const App: React.FC = () => {
   const adminLatestOrderCreatedAtRef = useRef<string | null>(null);
   const adminOrdersSeededRef = useRef(false);
   const adminOrdersWatcherUserIdRef = useRef<string | null>(null);
+  const sessionResetRef = useRef<string | null>(null);
   const { toast, confirm } = useFeedback();
 
   useEffect(() => {
@@ -156,7 +157,7 @@ const App: React.FC = () => {
     if (data) setSettings(data);
   };
 
-  const pushLocalNotification = async (title: string, body: string, tag: string) => {
+  const pushLocalNotification = useCallback(async (title: string, body: string, tag: string) => {
     const dedupeKey = `${tag}:${title}:${body}`;
     if (lastNotificationRef.current === dedupeKey) return;
     lastNotificationRef.current = dedupeKey;
@@ -190,7 +191,23 @@ const App: React.FC = () => {
     } catch {
       // noop
     }
-  };
+  }, [settings?.notification_sound_enabled, settings?.notification_sound_url, toast, view]);
+
+  const forceCloseCustomerSession = useCallback(async (sessionId: string) => {
+    if (!sessionId) return;
+    if (sessionResetRef.current === sessionId) return;
+    sessionResetRef.current = sessionId;
+
+    localStorage.removeItem(`guest_${sessionId}`);
+    setCart([]);
+    setGuest(null);
+    setSession(null);
+    setActiveTable(null);
+    setSessionOrders([]);
+    setShowCart(false);
+    await pushLocalNotification('Mesa finalizada', 'A mesa foi encerrada pelo atendimento.', `session-closed-${sessionId}`);
+    window.location.hash = '/';
+  }, [pushLocalNotification]);
 
   useEffect(() => {
     fetchSettings();
@@ -258,9 +275,17 @@ const App: React.FC = () => {
           setActiveTable(table);
           const { data: activeSession } = await supabase.from('sessions').select('*').eq('table_id', table.id).eq('status', 'OPEN').maybeSingle();
           if (activeSession) {
+            sessionResetRef.current = null;
             setSession(activeSession);
             const savedGuest = localStorage.getItem(`guest_${activeSession.id}`);
             if (savedGuest) setGuest(JSON.parse(savedGuest));
+          } else {
+            sessionResetRef.current = null;
+            setSession(null);
+            setGuest(null);
+            setCart([]);
+            setSessionOrders([]);
+            setShowCart(false);
           }
           setView('CUSTOMER_MENU');
         }
@@ -421,16 +446,9 @@ const App: React.FC = () => {
         async (payload) => {
           const row = payload.new as Session;
           if (row.status === 'EXPIRED') {
-            localStorage.removeItem(`guest_${session.id}`);
-            setCart([]);
-            setGuest(null);
-            setSession(null);
-            setActiveTable(null);
-            setSessionOrders([]);
-            setShowCart(false);
-            await pushLocalNotification('Mesa finalizada', 'A mesa foi encerrada pelo atendimento.', `session-closed-${session.id}`);
-            window.location.hash = '/';
+            await forceCloseCustomerSession(session.id);
           } else {
+            sessionResetRef.current = null;
             setSession(row);
           }
         }
@@ -440,7 +458,52 @@ const App: React.FC = () => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [session?.id]);
+  }, [forceCloseCustomerSession, session?.id]);
+
+  useEffect(() => {
+    if (view !== 'CUSTOMER_MENU' || !session?.id) return;
+
+    let active = true;
+
+    const checkSessionStatus = async () => {
+      const { data, error } = await supabase
+        .from('sessions')
+        .select('id, status')
+        .eq('id', session.id)
+        .maybeSingle();
+
+      if (!active || error) return;
+      if (!data || data.status === 'EXPIRED') {
+        await forceCloseCustomerSession(session.id);
+      }
+    };
+
+    checkSessionStatus();
+
+    const intervalId = window.setInterval(() => {
+      checkSessionStatus();
+    }, 5000);
+
+    const handleFocus = () => {
+      checkSessionStatus();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        checkSessionStatus();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [forceCloseCustomerSession, session?.id, view]);
 
   useEffect(() => {
     if (view !== 'ADMIN_DASHBOARD' || !user?.id) return;
@@ -605,6 +668,7 @@ const App: React.FC = () => {
       } else {
         setSession(openSession);
       }
+      sessionResetRef.current = null;
       setGuest(newGuest);
       localStorage.setItem(`guest_${openSession.id}`, JSON.stringify(newGuest));
     }

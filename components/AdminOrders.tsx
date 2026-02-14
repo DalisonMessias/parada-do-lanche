@@ -364,42 +364,48 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
     const ok = await confirm(`Finalizar ${session.table?.name || 'mesa'} e encerrar ciclo?`);
     if (!ok) return;
 
-    const nowIso = new Date().toISOString();
+    const { error: finalizeError } = await supabase.rpc('finalize_session_with_history', {
+      p_session_id: session.id,
+    });
 
-    let { error: sessionError } = await supabase
-      .from('sessions')
-      .update({ status: 'EXPIRED', closed_at: nowIso })
-      .eq('id', session.id);
+    if (finalizeError) {
+      const nowIso = new Date().toISOString();
 
-    if (sessionError && /closed_at/i.test(sessionError.message || '')) {
-      const retry = await supabase
+      let { error: sessionError } = await supabase
         .from('sessions')
-        .update({ status: 'EXPIRED' })
+        .update({ status: 'EXPIRED', closed_at: nowIso })
         .eq('id', session.id);
-      sessionError = retry.error;
 
-      if (!sessionError) {
-        toast('Mesa finalizada sem campo closed_at (atualize o SQL unificado no banco).', 'info');
+      if (sessionError && /closed_at/i.test(sessionError.message || '')) {
+        const retry = await supabase
+          .from('sessions')
+          .update({ status: 'EXPIRED' })
+          .eq('id', session.id);
+        sessionError = retry.error;
+
+        if (!sessionError) {
+          toast('Mesa finalizada sem campo closed_at (atualize o SQL unificado no banco).', 'info');
+        }
       }
+
+      if (sessionError) {
+        toast(`Erro ao finalizar mesa: ${sessionError.message}`, 'error');
+        return;
+      }
+
+      await supabase.from('tables').update({ status: 'FREE' }).eq('id', session.table_id);
+      await supabase
+        .from('orders')
+        .update({ status: 'FINISHED' })
+        .eq('session_id', session.id)
+        .eq('approval_status', 'APPROVED');
+
+      await supabase
+        .from('orders')
+        .update({ status: 'CANCELLED', approval_status: 'REJECTED' })
+        .eq('session_id', session.id)
+        .eq('approval_status', 'PENDING_APPROVAL');
     }
-
-    if (sessionError) {
-      toast(`Erro ao finalizar mesa: ${sessionError.message}`, 'error');
-      return;
-    }
-
-    await supabase.from('tables').update({ status: 'FREE' }).eq('id', session.table_id);
-    await supabase
-      .from('orders')
-      .update({ status: 'FINISHED' })
-      .eq('session_id', session.id)
-      .eq('approval_status', 'APPROVED');
-
-    await supabase
-      .from('orders')
-      .update({ status: 'CANCELLED', approval_status: 'REJECTED' })
-      .eq('session_id', session.id)
-      .eq('approval_status', 'PENDING_APPROVAL');
 
     setSelectedSessionId(null);
     toast('Mesa finalizada e liberada para novo ciclo.', 'success');
