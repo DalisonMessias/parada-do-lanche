@@ -1,7 +1,12 @@
-
+﻿
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../services/supabase';
-import { StoreSettings, Profile } from '../types';
+import { StoreSettings, Profile, WaiterFeeMode, PixKeyType } from '../types';
+import { useFeedback } from './feedback/FeedbackProvider';
+import CustomSelect from './ui/CustomSelect';
+import StickerCard, { StickerTheme } from './stickers/StickerCard';
+import { getPixPlaceholder, maskPixInput, normalizePixValue, validatePixValue } from '../services/pixKey';
+import { playOrderAlertSound } from '../services/notifications';
 
 interface AdminSettingsProps {
   settings: StoreSettings | null;
@@ -9,16 +14,46 @@ interface AdminSettingsProps {
   profile: Profile | null;
 }
 
+const brlFormatter = new Intl.NumberFormat('pt-BR', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const parseMaskedCurrencyToCents = (value: string) => {
+  const digits = (value || '').replace(/\D/g, '');
+  if (!digits) return 0;
+  const cents = Number(digits);
+  return Number.isFinite(cents) ? Math.max(0, cents) : 0;
+};
+
+const formatCentsToMaskedCurrency = (cents: number) =>
+  `R$ ${brlFormatter.format(Math.max(0, Number(cents || 0)) / 100)}`;
+
+const clampPercent = (value: number) => {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(100, Math.max(0, Math.round(value)));
+};
+
 const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profile }) => {
+  const { toast } = useFeedback();
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [defaultDeliveryFeeMasked, setDefaultDeliveryFeeMasked] = useState('R$ 0,00');
+  const [waiterFeePercentValue, setWaiterFeePercentValue] = useState(10);
+  const [waiterFeeFixedMasked, setWaiterFeeFixedMasked] = useState('R$ 0,00');
+  const [savedPixKeyValue, setSavedPixKeyValue] = useState('');
   const [formData, setFormData] = useState({
-    store_name: '',
-    primary_color: '#f97316',
     logo_url: '',
     order_approval_mode: 'HOST' as 'HOST' | 'SELF',
     enable_counter_module: true,
+    enable_waiter_fee: false,
+    waiter_fee_mode: 'PERCENT' as WaiterFeeMode,
+    waiter_fee_value: 10,
     default_delivery_fee_cents: 0,
+    pix_key_type: 'cpf' as PixKeyType,
+    pix_key_value: '',
+    notification_sound_enabled: false,
+    notification_sound_url: '',
     sticker_bg_color: '#ffffff',
     sticker_text_color: '#111827',
     sticker_border_color: '#111111',
@@ -30,19 +65,40 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
 
   useEffect(() => {
     if (settings) {
+      const defaultDeliveryFeeCents = Number(settings.default_delivery_fee_cents || 0);
+      const waiterFeeMode: WaiterFeeMode = settings.waiter_fee_mode === 'FIXED' ? 'FIXED' : 'PERCENT';
+      const rawWaiterFeeValue = Number(
+        settings.waiter_fee_value ?? (waiterFeeMode === 'PERCENT' ? 10 : 0)
+      );
+      const normalizedWaiterFeeValue =
+        waiterFeeMode === 'PERCENT' ? clampPercent(rawWaiterFeeValue) : Math.max(0, rawWaiterFeeValue);
+      const pixType: PixKeyType = (settings.pix_key_type || 'cpf') as PixKeyType;
+      const pixValueMasked = maskPixInput(pixType, settings.pix_key_value || '');
+
       setFormData({
-        store_name: settings.store_name,
-        primary_color: settings.primary_color,
         logo_url: settings.logo_url || '',
         order_approval_mode: (settings.order_approval_mode || 'HOST') as 'HOST' | 'SELF',
         enable_counter_module: settings.enable_counter_module !== false,
-        default_delivery_fee_cents: Number(settings.default_delivery_fee_cents || 0),
+        enable_waiter_fee: settings.enable_waiter_fee === true,
+        waiter_fee_mode: waiterFeeMode,
+        waiter_fee_value: normalizedWaiterFeeValue,
+        default_delivery_fee_cents: defaultDeliveryFeeCents,
+        pix_key_type: pixType,
+        pix_key_value: pixValueMasked,
+        notification_sound_enabled: settings.notification_sound_enabled === true,
+        notification_sound_url: settings.notification_sound_url || '',
         sticker_bg_color: settings.sticker_bg_color || '#ffffff',
         sticker_text_color: settings.sticker_text_color || '#111827',
         sticker_border_color: settings.sticker_border_color || '#111111',
         sticker_muted_text_color: settings.sticker_muted_text_color || '#9ca3af',
         sticker_qr_frame_color: settings.sticker_qr_frame_color || '#111111'
       });
+      setSavedPixKeyValue(settings.pix_key_value || '');
+      setDefaultDeliveryFeeMasked(formatCentsToMaskedCurrency(defaultDeliveryFeeCents));
+      setWaiterFeePercentValue(waiterFeeMode === 'PERCENT' ? normalizedWaiterFeeValue : 10);
+      setWaiterFeeFixedMasked(
+        formatCentsToMaskedCurrency(waiterFeeMode === 'FIXED' ? normalizedWaiterFeeValue : 0)
+      );
     }
   }, [settings]);
 
@@ -59,7 +115,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
       const { data } = supabase.storage.from('assets').getPublicUrl(filePath);
       setFormData(prev => ({ ...prev, logo_url: data.publicUrl }));
     } catch (error: any) {
-      alert("Erro no upload: " + error.message);
+      toast(`Erro no upload: ${error.message}`, 'error');
     } finally {
       setUploading(false);
     }
@@ -68,11 +124,106 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isAdmin) return;
+
+    const rawPixValue = (formData.pix_key_value || '').trim();
+    let pixTypeToSave: PixKeyType | null = formData.pix_key_type;
+    let pixValueToSave: string | null = rawPixValue;
+
+    if (!rawPixValue) {
+      pixTypeToSave = null;
+      pixValueToSave = null;
+    } else {
+      if (!validatePixValue(formData.pix_key_type, rawPixValue)) {
+        toast('Chave Pix invalida para o tipo selecionado.', 'error');
+        return;
+      }
+      pixValueToSave = normalizePixValue(formData.pix_key_type, rawPixValue);
+    }
+
+    const soundUrl = (formData.notification_sound_url || '').trim();
+    if (soundUrl && !/^https?:\/\//i.test(soundUrl)) {
+      toast('Informe uma URL valida para o som MP3.', 'error');
+      return;
+    }
+
     setLoading(true);
-    const { error } = await supabase.from('settings').upsert({ id: 1, ...formData });
-    if (error) alert("Erro ao salvar: " + error.message);
-    else { onUpdate(); alert("Configurações atualizadas!"); }
+    const waiterFeeValue =
+      formData.waiter_fee_mode === 'PERCENT'
+        ? clampPercent(waiterFeePercentValue)
+        : parseMaskedCurrencyToCents(waiterFeeFixedMasked);
+    const payload = {
+      id: 1,
+      ...formData,
+      pix_key_type: pixTypeToSave,
+      pix_key_value: pixValueToSave,
+      notification_sound_url: soundUrl,
+      waiter_fee_mode: formData.waiter_fee_mode,
+      waiter_fee_value: waiterFeeValue,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await supabase.from('settings').upsert(payload);
+    if (error) toast(`Erro ao salvar: ${error.message}`, 'error');
+    else {
+      setSavedPixKeyValue(pixValueToSave || '');
+      onUpdate();
+      toast('Configuracoes atualizadas!', 'success');
+    }
     setLoading(false);
+  };
+
+  const previewWifiSsid = (settings?.wifi_ssid || '').trim();
+  const previewWifiPassword = settings?.wifi_password || '';
+  const showWifiQr = Boolean(previewWifiSsid && previewWifiPassword);
+
+  const buildMenuUrl = () => `${window.location.origin}/#/m/preview-settings`;
+  const buildWifiString = () => `WIFI:S:${previewWifiSsid};T:WPA;P:${previewWifiPassword};;`;
+  const getQrUrl = (data: string) => `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(data)}&margin=0`;
+  const getQrFallbackUrl = (data: string) => `https://quickchart.io/qr?size=300&text=${encodeURIComponent(data)}`;
+
+  const stickerTheme: StickerTheme = {
+    bg: formData.sticker_bg_color,
+    text: formData.sticker_text_color,
+    border: formData.sticker_border_color,
+    muted: formData.sticker_muted_text_color,
+    qrFrame: formData.sticker_qr_frame_color,
+  };
+
+  const pixPlaceholder = getPixPlaceholder(formData.pix_key_type);
+  const showCopyPixButton = Boolean((savedPixKeyValue || '').trim());
+
+  const handlePixTypeChange = (nextType: PixKeyType) => {
+    const maskedValue = maskPixInput(nextType, formData.pix_key_value || '');
+    setFormData((prev) => ({
+      ...prev,
+      pix_key_type: nextType,
+      pix_key_value: maskedValue,
+    }));
+  };
+
+  const handlePixValueChange = (rawValue: string) => {
+    const maskedValue = maskPixInput(formData.pix_key_type, rawValue);
+    setFormData((prev) => ({ ...prev, pix_key_value: maskedValue }));
+  };
+
+  const handleCopyPixKey = async () => {
+    const key = (savedPixKeyValue || '').trim();
+    if (!key) return;
+    try {
+      await navigator.clipboard.writeText(key);
+      toast('Copiado!', 'success');
+    } catch {
+      toast('Nao foi possivel copiar a chave Pix.', 'error');
+    }
+  };
+
+  const handleTestNotificationSound = async () => {
+    await playOrderAlertSound({
+      enabled: formData.notification_sound_enabled,
+      mp3Url: formData.notification_sound_url,
+      force: true,
+      throttleMs: 0,
+    });
+    toast('Som de teste executado.', 'info');
   };
 
   if (!isAdmin) {
@@ -103,27 +254,17 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
         
         <form onSubmit={handleSubmit} className="space-y-10">
           <div className="grid md:grid-cols-2 gap-10">
-            <div className="space-y-2">
-              <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">NOME DA LOJA</label>
-              <input value={formData.store_name} onChange={e => setFormData({...formData, store_name: e.target.value})} className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black" placeholder="Ex: Parada do Lanche" />
-            </div>
-            <div className="space-y-2">
-              <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">COR DE MARCA (HEX)</label>
-              <div className="flex gap-4 items-center">
-                <input type="color" value={formData.primary_color} onChange={e => setFormData({...formData, primary_color: e.target.value})} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
-                <input value={formData.primary_color} onChange={e => setFormData({...formData, primary_color: e.target.value})} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
-              </div>
-            </div>
             <div className="space-y-2 md:col-span-2">
               <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">MODO DE ACEITE DA MESA</label>
-              <select
+              <CustomSelect
                 value={formData.order_approval_mode}
-                onChange={e => setFormData({ ...formData, order_approval_mode: e.target.value as 'HOST' | 'SELF' })}
-                className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black appearance-none"
-              >
-                <option value="HOST">Responsavel da mesa aprova tudo (recomendado)</option>
-                <option value="SELF">Cada pessoa aprova o proprio pedido</option>
-              </select>
+                onChange={(nextValue) => setFormData({ ...formData, order_approval_mode: nextValue as 'HOST' | 'SELF' })}
+                options={[
+                  { value: 'HOST', label: 'Responsavel da mesa aprova tudo (recomendado)' },
+                  { value: 'SELF', label: 'Cada pessoa aprova o proprio pedido' },
+                ]}
+                buttonClassName="p-4 text-sm"
+              />
             </div>
             <div className="space-y-3 md:col-span-2 rounded-2xl border border-gray-100 p-4 bg-gray-50">
               <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Modulo Balcao</p>
@@ -136,27 +277,185 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
                   type="checkbox"
                   checked={formData.enable_counter_module}
                   onChange={(e) => setFormData({ ...formData, enable_counter_module: e.target.checked })}
-                  className="w-5 h-5 accent-primary"
+                  aria-label="Habilitar modulo Balcao"
                 />
               </label>
+            </div>
+
+            <div className="space-y-3 md:col-span-2 rounded-2xl border border-gray-100 p-4 bg-gray-50">
+              <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Taxa do Garcom</p>
+              <label className="flex items-center justify-between gap-4 bg-white border border-gray-200 rounded-xl px-4 py-3 cursor-pointer">
+                <div>
+                  <p className="text-sm font-black text-gray-800">Ativar taxa de garcom</p>
+                  <p className="text-[10px] text-gray-500 font-bold">Escolha percentual (%) ou valor fixo para aplicar no pagamento da mesa.</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={formData.enable_waiter_fee}
+                  onChange={(e) => setFormData({ ...formData, enable_waiter_fee: e.target.checked })}
+                  aria-label="Ativar taxa de garcom"
+                />
+              </label>
+              {formData.enable_waiter_fee && (
+                <div className="grid md:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Modo da taxa</label>
+                    <CustomSelect
+                      value={formData.waiter_fee_mode}
+                      onChange={(nextValue) => {
+                        const nextMode = (nextValue as WaiterFeeMode) === 'FIXED' ? 'FIXED' : 'PERCENT';
+                        const nextValueByMode =
+                          nextMode === 'PERCENT'
+                            ? clampPercent(waiterFeePercentValue)
+                            : parseMaskedCurrencyToCents(waiterFeeFixedMasked);
+                        setFormData((prev) => ({
+                          ...prev,
+                          waiter_fee_mode: nextMode,
+                          waiter_fee_value: nextValueByMode,
+                        }));
+                      }}
+                      options={[
+                        { value: 'PERCENT', label: 'Percentual (%)' },
+                        { value: 'FIXED', label: 'Valor fixo (R$)' },
+                      ]}
+                      buttonClassName="p-4 text-sm"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">
+                      {formData.waiter_fee_mode === 'PERCENT' ? 'Percentual (%)' : 'Valor fixo (R$)'}
+                    </label>
+                    {formData.waiter_fee_mode === 'PERCENT' ? (
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={waiterFeePercentValue}
+                        onChange={(e) => {
+                          const next = clampPercent(Number(e.target.value || 0));
+                          setWaiterFeePercentValue(next);
+                          setFormData((prev) => ({ ...prev, waiter_fee_value: next }));
+                        }}
+                        className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
+                        placeholder="0"
+                      />
+                    ) : (
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={waiterFeeFixedMasked}
+                        onChange={(e) => {
+                          const cents = parseMaskedCurrencyToCents(e.target.value);
+                          setWaiterFeeFixedMasked(formatCentsToMaskedCurrency(cents));
+                          setFormData((prev) => ({ ...prev, waiter_fee_value: cents }));
+                        }}
+                        className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
+                        placeholder="R$ 0,00"
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="space-y-2 md:col-span-2">
               <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Taxa de entrega padrao (R$)</label>
               <input
-                type="number"
-                min={0}
-                step="0.01"
-                value={(Math.max(0, Number(formData.default_delivery_fee_cents || 0)) / 100).toString()}
+                type="text"
+                inputMode="numeric"
+                value={defaultDeliveryFeeMasked}
                 onChange={(e) => {
-                  const value = Number(e.target.value || 0);
-                  const cents = Number.isFinite(value) ? Math.max(0, Math.round(value * 100)) : 0;
-                  setFormData({ ...formData, default_delivery_fee_cents: cents });
+                  const cents = parseMaskedCurrencyToCents(e.target.value);
+                  setDefaultDeliveryFeeMasked(formatCentsToMaskedCurrency(cents));
+                  setFormData((prev) => ({ ...prev, default_delivery_fee_cents: cents }));
                 }}
                 className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
-                placeholder="0.00"
+                placeholder="R$ 0,00"
               />
               <p className="text-[10px] text-gray-500 font-bold">Usada como valor inicial em pedidos de entrega no Balcao.</p>
+            </div>
+
+            <div className="space-y-3 md:col-span-2 rounded-2xl border border-gray-100 p-4 bg-gray-50">
+              <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">PIX</p>
+              <div className="grid md:grid-cols-5 gap-2">
+                {([
+                  { value: 'cpf', label: 'CPF' },
+                  { value: 'cnpj', label: 'CNPJ' },
+                  { value: 'phone', label: 'Telefone' },
+                  { value: 'email', label: 'E-mail' },
+                  { value: 'random', label: 'Aleatoria' },
+                ] as Array<{ value: PixKeyType; label: string }>).map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => handlePixTypeChange(option.value)}
+                    className={`py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${
+                      formData.pix_key_type === option.value
+                        ? 'bg-gray-900 text-white border-gray-900'
+                        : 'bg-white text-gray-600 border-gray-200'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2 items-center">
+                <input
+                  type="text"
+                  value={formData.pix_key_value}
+                  onChange={(e) => handlePixValueChange(e.target.value)}
+                  placeholder={pixPlaceholder}
+                  className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
+                />
+                {showCopyPixButton && (
+                  <button
+                    type="button"
+                    onClick={handleCopyPixKey}
+                    className="px-4 py-3 rounded-xl border border-gray-200 bg-white text-gray-700 text-[10px] font-black uppercase tracking-widest"
+                  >
+                    Copiar
+                  </button>
+                )}
+              </div>
+              <p className="text-[10px] text-gray-500 font-bold">
+                Salve para manter a chave Pix disponivel e copiar rapidamente.
+              </p>
+            </div>
+
+            <div className="space-y-3 md:col-span-2 rounded-2xl border border-gray-100 p-4 bg-gray-50">
+              <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Notificacoes de novo pedido</p>
+              <label className="flex items-center justify-between gap-4 bg-white border border-gray-200 rounded-xl px-4 py-3 cursor-pointer">
+                <div>
+                  <p className="text-sm font-black text-gray-800">Ativar som de novo pedido</p>
+                  <p className="text-[10px] text-gray-500 font-bold">Toca o som configurado quando chegar novo pedido no Admin.</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={formData.notification_sound_enabled}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, notification_sound_enabled: e.target.checked }))}
+                  aria-label="Ativar som de novo pedido"
+                />
+              </label>
+              <div className="space-y-2">
+                <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Link do Som MP3</label>
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    value={formData.notification_sound_url}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, notification_sound_url: e.target.value }))}
+                    placeholder="https://dominio.com/alerta.mp3"
+                    className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleTestNotificationSound}
+                    className="px-4 py-3 rounded-xl border border-gray-200 bg-white text-gray-700 text-[10px] font-black uppercase tracking-widest"
+                  >
+                    Testar Som
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -174,7 +473,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
               <div className="md:col-span-8 flex flex-col justify-center h-full space-y-6">
                 <div className="p-6 bg-gray-50/50 border border-gray-100 rounded-[24px]">
                   <p className="text-[10px] text-gray-500 font-black uppercase tracking-tight leading-loose italic">
-                    Utilize arquivos transparentes (PNG/SVG) para garantir que a marca se integre perfeitamente à interface clara.
+                    Utilize arquivos transparentes (PNG/SVG) para garantir que a marca se integre perfeitamente Ã  interface clara.
                   </p>
                 </div>
                 {formData.logo_url && (
@@ -231,19 +530,26 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
               </div>
             </div>
 
-            <div className="rounded-2xl border border-gray-200 p-6" style={{ backgroundColor: formData.sticker_bg_color }}>
-              <div className="rounded-xl border-2 p-4 text-center" style={{ borderColor: formData.sticker_border_color }}>
-                <p className="text-[10px] font-black uppercase tracking-widest" style={{ color: formData.sticker_text_color }}>Preview da Mesa</p>
-                <p className="text-3xl font-black italic mt-2" style={{ color: formData.sticker_text_color }}>MESA 01</p>
-                <div className="w-16 h-16 mx-auto mt-4 rounded-lg border-2" style={{ borderColor: formData.sticker_qr_frame_color }} />
-                <p className="text-[9px] font-black uppercase tracking-widest mt-3" style={{ color: formData.sticker_muted_text_color }}>Scaneie para pedir</p>
+            <div className="rounded-2xl border border-gray-200 p-4 bg-gray-50 overflow-auto">
+              <div className="min-w-[390px] flex justify-center">
+                <StickerCard
+                  tableName="MESA 01"
+                  logoUrl={formData.logo_url}
+                  storeName="Parada do Lanche"
+                  stickerTheme={stickerTheme}
+                  menuQrUrl={getQrUrl(buildMenuUrl())}
+                  menuQrFallbackUrl={getQrFallbackUrl(buildMenuUrl())}
+                  wifiQrUrl={getQrUrl(buildWifiString())}
+                  wifiQrFallbackUrl={getQrFallbackUrl(buildWifiString())}
+                  showWifi={showWifiQr}
+                />
               </div>
             </div>
           </div>
 
           <div className="pt-6 border-t border-gray-100 flex justify-end">
             <button type="submit" disabled={loading || uploading} className="w-full md:w-auto px-12 bg-gray-900 text-white py-5 rounded-2xl font-black uppercase tracking-widest text-[11px] transition-transform active:scale-95 italic">
-              {loading ? 'Sincronizando...' : 'Aplicar Configurações'}
+              {loading ? 'Sincronizando...' : 'Aplicar configurações'}
             </button>
           </div>
         </form>

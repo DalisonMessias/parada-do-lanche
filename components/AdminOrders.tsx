@@ -1,20 +1,24 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, formatCurrency } from '../services/supabase';
-import { printKitchenTicket } from '../services/kitchenPrint';
-import { Guest, Order, OrderItem, OrderStatus, Session } from '../types';
+import { buildReceiptUrlFromToken, printKitchenTicket } from '../services/kitchenPrint';
+import { groupOrderItems } from '../services/orderItemGrouping';
+import { Guest, Order, OrderItem, OrderStatus, Session, StoreSettings } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
+import AppModal from './ui/AppModal';
+import { playOrderAlertSound } from '../services/notifications';
 
 type AdminOrdersMode = 'ACTIVE' | 'FINISHED';
 
 type SessionAggregate = Session & {
-  table?: { name: string } | null;
+  table?: { name: string; table_type?: string } | null;
   guests?: Guest[];
   orders?: (Order & { items?: OrderItem[] })[];
 };
 
 interface AdminOrdersProps {
   mode: AdminOrdersMode;
+  settings: StoreSettings | null;
 }
 
 type PrintScope = 'ALL' | 'UNPRINTED' | 'ORDER';
@@ -56,8 +60,6 @@ const normalizeSession = (row: any): SessionAggregate => {
     orders,
   };
 };
-
-const sumOrderItems = (items: OrderItem[] = []) => items.reduce((acc, item) => acc + (item.qty || 0), 0);
 
 type OrderGroup = {
   groupId: string;
@@ -105,49 +107,54 @@ const serviceTypeLabel = (serviceType?: string | null) => {
   return 'Mesa';
 };
 
+type SessionCardType = 'MESA' | 'BALCAO' | 'RETIRADA' | 'ENTREGA';
+
+const getTicketTypeFromOrder = (order?: Order | null): SessionCardType => {
+  if (!order) return 'MESA';
+  if (order.service_type === 'ENTREGA') return 'ENTREGA';
+  if (order.service_type === 'RETIRADA') return 'RETIRADA';
+  if (order.origin === 'BALCAO') return 'BALCAO';
+  return 'MESA';
+};
+
+const shouldHaveReceiptToken = (type: SessionCardType) => type === 'ENTREGA' || type === 'RETIRADA';
+
+const getTicketStatusLabel = (order: Order) => {
+  if (order.approval_status === 'PENDING_APPROVAL') return 'Aguardando aceite';
+  if (order.approval_status === 'REJECTED') return 'Rejeitado';
+  if (order.status === 'PREPARING') return 'Em preparo';
+  if (order.status === 'READY') return 'Pronto';
+  if (order.status === 'FINISHED') return 'Finalizado';
+  if (order.status === 'CANCELLED') return 'Cancelado';
+  return 'Confirmado';
+};
+
 const getDeliveryLines = (order: Order) => {
   const address = order.delivery_address;
   if (!address) return [];
 
   const firstLine = [address.street, address.number].filter(Boolean).join(', ');
-  const secondLine = [address.neighborhood, address.city].filter(Boolean).join(' - ');
+  const secondLine = [address.neighborhood].filter(Boolean).join(' - ');
   const thirdLine = [address.complement, address.reference].filter(Boolean).join(' | ');
 
   return [firstLine, secondLine, thirdLine].filter((line) => !!line);
 };
 
-const beep = () => {
-  try {
-    const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioContextCtor) return;
-    const ctx = new AudioContextCtor();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'triangle';
-    osc.frequency.value = 740;
-    gain.gain.value = 0.02;
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.1);
-    osc.onended = () => ctx.close();
-  } catch {
-    // noop
-  }
-};
-
-const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
+const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
   const [sessions, setSessions] = useState<SessionAggregate[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [seenOrderIdsBySession, setSeenOrderIdsBySession] = useState<Record<string, string[]>>({});
   const [selectedDate, setSelectedDate] = useState<string>(getTodayInputDate());
   const [splitMode, setSplitMode] = useState<'EQUAL' | 'CONSUMPTION'>('CONSUMPTION');
   const [splitPeople, setSplitPeople] = useState(2);
-  const [storePrintMeta, setStorePrintMeta] = useState<{ store_name?: string } | null>(null);
-  const lastNotificationRef = useRef<string>('');
   const initializedSeenRef = useRef(false);
 
   const { toast, confirm } = useFeedback();
+  const waiterFeeEnabled = settings?.enable_waiter_fee === true;
+  const waiterFeeMode = settings?.waiter_fee_mode === 'FIXED' ? 'FIXED' : 'PERCENT';
+  const waiterFeeRawValue = Number(settings?.waiter_fee_value ?? (waiterFeeMode === 'PERCENT' ? 10 : 0));
+  const waiterFeePercent = Math.min(100, Math.max(0, waiterFeeRawValue));
+  const waiterFeeFixedCents = Math.max(0, waiterFeeRawValue);
 
   const markOrdersAsSeen = useCallback((sessionId: string, orderIds: string[]) => {
     if (!sessionId || orderIds.length === 0) return;
@@ -166,32 +173,12 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     });
   }, []);
 
-  const notifyAdmin = async (title: string, body: string, tag: string) => {
-    const key = `${title}:${body}:${tag}`;
-    if (lastNotificationRef.current === key) return;
-    lastNotificationRef.current = key;
-    setTimeout(() => {
-      if (lastNotificationRef.current === key) lastNotificationRef.current = '';
-    }, 1500);
-
-    try {
-      if (!('Notification' in window)) return;
-      if (Notification.permission === 'default') {
-        await Notification.requestPermission();
-      }
-      if (Notification.permission !== 'granted') return;
-      new Notification(title, { body, tag });
-    } catch {
-      // noop
-    }
-  };
-
   const fetchSessions = async () => {
     const statusFilter = mode === 'ACTIVE' ? 'OPEN' : 'EXPIRED';
 
     const { data, error } = await supabase
       .from('sessions')
-      .select('*, table:tables(name), guests:session_guests(*), orders:orders(*, items:order_items(*))')
+      .select('*, table:tables(name,table_type), guests:session_guests(*), orders:orders(*, items:order_items(*))')
       .eq('status', statusFilter)
       .order('created_at', { ascending: false });
 
@@ -216,16 +203,6 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
   };
 
   useEffect(() => {
-    const fetchPrintMeta = async () => {
-      const { data } = await supabase.from('settings').select('store_name').eq('id', 1).maybeSingle();
-      if (data) {
-        setStorePrintMeta(data as { store_name?: string });
-      }
-    };
-    fetchPrintMeta();
-  }, []);
-
-  useEffect(() => {
     initializedSeenRef.current = false;
     setSeenOrderIdsBySession({});
     fetchSessions();
@@ -238,19 +215,22 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
         if (mode !== 'ACTIVE') return;
         const row = (payload.new || payload.old || {}) as any;
         if (payload.eventType === 'INSERT') {
-          beep();
+          await playOrderAlertSound({
+            enabled: settings?.notification_sound_enabled,
+            mp3Url: settings?.notification_sound_url,
+          });
           if (row.approval_status === 'PENDING_APPROVAL') {
             toast('Novo pedido aguardando aceite.', 'info');
-            await notifyAdmin('Novo pedido', 'Pedido aguardando aceite na mesa.', `order-pending-${row.id}`);
           } else {
             toast('Novo pedido entrou em uma mesa ativa.', 'info');
-            await notifyAdmin('Novo pedido', 'Pedido confirmado na mesa ativa.', `order-insert-${row.id}`);
           }
         }
         if (payload.eventType === 'UPDATE' && row.status === 'READY') {
-          beep();
+          await playOrderAlertSound({
+            enabled: settings?.notification_sound_enabled,
+            mp3Url: settings?.notification_sound_url,
+          });
           toast('Pedido marcado como pronto.', 'success');
-          await notifyAdmin('Pedido pronto', 'Um pedido foi marcado como pronto.', `order-ready-${row.id}`);
         }
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, fetchSessions)
@@ -259,7 +239,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [mode]);
+  }, [mode, settings?.notification_sound_enabled, settings?.notification_sound_url]);
 
   const filteredSessions = useMemo(() => {
     if (!selectedDate) return sessions;
@@ -290,14 +270,15 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     return getConfirmedOrdersFrom(orders).reduce((acc, order) => acc + order.total_cents, 0);
   };
 
-  const getSessionTotal = (session: SessionAggregate) => {
-    return getOrdersTotal(getVisibleOrders(session));
+  const getWaiterFeeCents = (subtotalCents: number) => {
+    if (!waiterFeeEnabled) return 0;
+    if (waiterFeeMode === 'FIXED') return waiterFeeFixedCents;
+    return Math.round(subtotalCents * (waiterFeePercent / 100));
   };
 
-  const getSessionItemsCount = (session: SessionAggregate) => {
-    return getVisibleOrders(session)
-      .filter((order) => order.status !== 'CANCELLED')
-      .reduce((acc, order) => acc + sumOrderItems(order.items), 0);
+  const getSessionTotal = (session: SessionAggregate) => {
+    const subtotal = getOrdersTotal(getVisibleOrders(session));
+    return subtotal + getWaiterFeeCents(subtotal);
   };
 
   const getPendingApprovals = (session: SessionAggregate) => {
@@ -318,7 +299,9 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
 
     getConfirmedOrdersFrom(orders).forEach((order) => {
       (order.items || []).forEach((item) => {
-        const key = item.added_by_name || 'Sem nome';
+        const key = order.origin === 'CUSTOMER'
+          ? (item.added_by_name || 'Cliente')
+          : 'Atendimento interno';
         const row = map.get(key) || { total: 0, items: 0 };
         row.total += item.qty * item.unit_price_cents;
         row.items += item.qty;
@@ -445,36 +428,90 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
       return;
     }
 
-    const byGuest = getTotalsByGuestFromOrders(printableOrders);
-    const total = getOrdersTotal(printableOrders);
-    const filterLabel =
-      scope === 'ORDER' && options.orderId
-        ? `Pedido #${options.orderId.slice(0, 6)}`
-        : scope === 'UNPRINTED'
-          ? 'Somente pedidos novos'
-          : 'Todos os pedidos';
+    let printableOrdersWithToken = printableOrders;
+    try {
+      printableOrdersWithToken = await Promise.all(
+        printableOrders.map(async (order) => {
+          const ticketType = getTicketTypeFromOrder(order);
+          if (!shouldHaveReceiptToken(ticketType)) return order;
+
+          const existingToken = (order.receipt_token || '').trim();
+          if (existingToken) {
+            return {
+              ...order,
+              receipt_token: existingToken,
+            };
+          }
+
+          const { data, error } = await supabase.rpc('ensure_order_receipt_token', {
+            p_order_id: order.id,
+          });
+          if (error) {
+            throw new Error(error.message || `Falha ao gerar token do cupom para o pedido ${order.id.slice(0, 6)}.`);
+          }
+
+          const generatedToken = String(data || '').trim();
+          if (!generatedToken) {
+            throw new Error(`Nao foi possivel gerar token do cupom para o pedido ${order.id.slice(0, 6)}.`);
+          }
+
+          return {
+            ...order,
+            receipt_token: generatedToken,
+          };
+        })
+      );
+    } catch (error: any) {
+      toast(error?.message || 'Falha ao preparar tokens de cupom digital.', 'error');
+      return;
+    }
 
     const printResult = await printKitchenTicket({
-      storeName: (storePrintMeta?.store_name || 'Parada do Lanche').trim(),
-      tableName: session.table?.name || 'Mesa',
-      filterLabel,
-      openedAt: session.created_at,
-      closedAt: session.closed_at || null,
-      totalCents: total,
-      guestTotals: byGuest.map((row) => ({ name: row.name, total_cents: row.total })),
-      orders: printableOrders.map((order) => ({
-        id: order.id,
-        created_at: order.created_at,
-        total_cents: order.total_cents || 0,
-        approval_label: approvalLabel[order.approval_status || 'APPROVED'] || 'Confirmado',
-        items: (order.items || []).map((item) => ({
-          name_snapshot: item.name_snapshot,
-          qty: item.qty || 0,
-          unit_price_cents: item.unit_price_cents || 0,
-          note: item.note || '',
-          added_by_name: item.added_by_name || 'Operacao',
-        })),
-      })),
+      tickets: printableOrdersWithToken.map((order) => {
+        const ticketType = getTicketTypeFromOrder(order);
+        const fallbackSubtotal = (order.items || []).reduce(
+          (acc, item) => acc + (item.qty || 0) * (item.unit_price_cents || 0),
+          0
+        );
+        const subtotalCents = Number(order.subtotal_cents ?? fallbackSubtotal);
+        const serviceFeeCents = ticketType === 'MESA' ? getWaiterFeeCents(subtotalCents) : 0;
+        const deliveryFeeCents = Number(order.delivery_fee_cents || 0);
+        const totalCentsResolved =
+          Number(order.total_cents) ||
+          Math.max(0, subtotalCents + serviceFeeCents + (ticketType === 'ENTREGA' ? deliveryFeeCents : 0));
+
+        return {
+          storeName: 'Parada do Lanche',
+          orderId: order.id,
+          ticketType,
+          openedAt: order.created_at || session.created_at,
+          closedAt: session.closed_at || null,
+          statusLabel: getTicketStatusLabel(order),
+          orderTime: new Date(order.created_at || session.created_at).toLocaleTimeString('pt-BR', {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          tableName: session.table?.name || 'Mesa',
+          customerName: order.customer_name || null,
+          customerPhone: order.customer_phone || null,
+          deliveryAddress: order.delivery_address || null,
+          items: (order.items || []).map((item) => ({
+            name_snapshot: item.name_snapshot,
+            qty: item.qty || 0,
+            unit_price_cents: item.unit_price_cents || 0,
+            note: item.note || '',
+          })),
+          subtotalCents,
+          serviceFeeCents,
+          deliveryFeeCents,
+          totalCents: totalCentsResolved,
+          receiptToken: shouldHaveReceiptToken(ticketType) ? order.receipt_token || null : null,
+          receiptUrl:
+            shouldHaveReceiptToken(ticketType) && (order.receipt_token || '').trim()
+              ? buildReceiptUrlFromToken((order.receipt_token || '').trim())
+              : null,
+        };
+      }),
     });
 
     if (printResult.status === 'error') {
@@ -508,23 +545,53 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     }
 
     return filteredSessions.map((session) => {
-      const peopleCount = session.guests?.length || 0;
-      const itemCount = getSessionItemsCount(session);
+      const visibleOrders = [...getVisibleOrders(session)].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      const latestOrder = visibleOrders[0] || null;
+      const tableType = session.table?.table_type || 'DINING';
+      const cardType: SessionCardType =
+        tableType === 'COUNTER'
+          ? latestOrder
+            ? getTicketTypeFromOrder(latestOrder)
+            : 'BALCAO'
+          : 'MESA';
+      const cardTypeLabel =
+        cardType === 'ENTREGA'
+          ? 'Entrega'
+          : cardType === 'RETIRADA'
+            ? 'Retirada'
+            : cardType === 'BALCAO'
+              ? 'Balcao'
+              : 'Mesa';
+      const referenceOrderId = latestOrder?.id || null;
+      const referenceTime = latestOrder?.created_at || session.created_at;
       const total = getSessionTotal(session);
       const pendingApprovals = getPendingApprovals(session).length;
       const newOrdersCount = getNewOrders(session).length;
       const unprintedCount = getUnprintedOrders(session).length;
+      const shortAddress =
+        cardType === 'ENTREGA' && latestOrder?.delivery_address
+          ? [latestOrder.delivery_address.street, latestOrder.delivery_address.number, latestOrder.delivery_address.neighborhood]
+              .filter(Boolean)
+              .join(' - ')
+          : '';
 
       return (
         <div key={session.id} className="bg-white border border-gray-200 rounded-[28px] overflow-hidden flex flex-col">
           <div className="p-5 bg-gray-50/50 border-b border-gray-100 flex justify-between items-start text-left">
             <div>
-              <h3 className="font-black text-gray-800 text-lg uppercase tracking-tighter">{session.table?.name || 'Mesa'}</h3>
+              <h3 className="font-black text-gray-800 text-lg uppercase tracking-tighter">
+                {cardType === 'MESA' ? (session.table?.name || 'Mesa') : cardTypeLabel}
+              </h3>
               <span className="text-[9px] text-gray-400 font-bold tracking-widest uppercase">
-                Sessao #{session.id.slice(0, 6)} • {new Date(session.created_at).toLocaleTimeString()}
+                {referenceOrderId ? `Pedido #${referenceOrderId.slice(0, 6)}` : `Sessao #${session.id.slice(0, 6)}`} • {new Date(referenceTime).toLocaleTimeString()}
               </span>
             </div>
             <div className="flex flex-col items-end gap-2">
+              <span className="px-3 py-1.5 rounded-full text-[8px] font-black tracking-widest border uppercase bg-slate-50 text-slate-700 border-slate-200">
+                {cardTypeLabel}
+              </span>
               <span className={`px-3 py-1.5 rounded-full text-[8px] font-black tracking-widest border uppercase ${mode === 'ACTIVE' ? 'bg-green-50 text-green-600 border-green-100' : 'bg-gray-100 text-gray-500 border-gray-200'}`}>
                 {mode === 'ACTIVE' ? 'Ativa' : 'Finalizada'}
               </span>
@@ -539,12 +606,12 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
           <div className="p-5 flex-1 flex flex-col gap-3">
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
-                <p className="text-[8px] font-black uppercase tracking-widest text-gray-400">Pessoas</p>
-                <p className="text-lg font-black text-gray-800">{peopleCount}</p>
+                <p className="text-[8px] font-black uppercase tracking-widest text-gray-400">Status</p>
+                <p className="text-sm font-black text-gray-800 uppercase">{mode === 'ACTIVE' ? 'Ativa' : 'Finalizada'}</p>
               </div>
               <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
-                <p className="text-[8px] font-black uppercase tracking-widest text-gray-400">Itens</p>
-                <p className="text-lg font-black text-gray-800">{itemCount}</p>
+                <p className="text-[8px] font-black uppercase tracking-widest text-gray-400">Horario</p>
+                <p className="text-sm font-black text-gray-800">{new Date(referenceTime).toLocaleTimeString('pt-BR')}</p>
               </div>
             </div>
 
@@ -552,6 +619,13 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
               <p className="text-[8px] font-black uppercase tracking-widest text-gray-400">Total</p>
               <p className="text-xl font-black text-gray-900 tracking-tighter italic">{formatCurrency(total)}</p>
             </div>
+
+            {cardType === 'ENTREGA' && shortAddress && (
+              <div className="rounded-xl border border-blue-100 bg-blue-50 px-3 py-2">
+                <p className="text-[8px] font-black uppercase tracking-widest text-blue-500">Endereco</p>
+                <p className="text-[11px] font-black text-blue-700">{shortAddress}</p>
+              </div>
+            )}
 
             {pendingApprovals > 0 && mode === 'ACTIVE' && (
               <div className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-amber-700 text-[10px] font-black uppercase tracking-widest">
@@ -589,7 +663,11 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
   };
 
   const selectedTotalsByGuest = selectedSession ? getTotalsByGuest(selectedSession) : [];
-  const selectedTotal = selectedSession ? getSessionTotal(selectedSession) : 0;
+  const selectedSubtotal = selectedSession ? getOrdersTotal(getVisibleOrders(selectedSession)) : 0;
+  const selectedWaiterFee = getWaiterFeeCents(selectedSubtotal);
+  const selectedWaiterFeeLabel =
+    waiterFeeMode === 'FIXED' ? 'Taxa do garcom (valor fixo)' : `Taxa do garcom (${waiterFeePercent}%)`;
+  const selectedTotal = selectedSubtotal + selectedWaiterFee;
   const selectedPendingApprovals = selectedSession ? getPendingApprovals(selectedSession) : [];
   const selectedVisibleOrders = selectedSession ? getVisibleOrders(selectedSession) : [];
   const selectedOrderGroups = useMemo(
@@ -617,7 +695,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
     <>
       <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-6 flex flex-wrap items-end gap-3">
         <div className="space-y-1">
-          <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Filtrar por data</label>
+          <label className="text-[9px] mr-4 font-black uppercase tracking-widest text-gray-400">Filtrar por data</label>
           <input
             type="date"
             value={selectedDate}
@@ -645,17 +723,46 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
       </div>
 
       {selectedSession && (
-        <div className="fixed inset-0 z-[200] bg-gray-900/75 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6">
-          <div className="w-full max-w-6xl bg-white rounded-t-[28px] sm:rounded-[30px] border border-gray-200 p-5 sm:p-8 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto flex flex-col gap-6">
-            <div className="flex items-center justify-between border-b border-gray-100 pb-4">
-              <div>
-                <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900">{selectedSession.table?.name || 'Mesa'}</h3>
-                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                  {mode === 'ACTIVE' ? 'Mesa ativa' : 'Mesa finalizada'} • Pessoas: {selectedSession.guests?.length || 0}
-                </p>
-              </div>
-              <button onClick={() => setSelectedSessionId(null)} className="text-gray-400 font-black">Fechar</button>
+        <AppModal
+          open={!!selectedSession}
+          onClose={() => setSelectedSessionId(null)}
+          title={
+            <div>
+              <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900">{selectedSession.table?.name || 'Mesa'}</h3>
+              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
+                {mode === 'ACTIVE' ? 'Mesa ativa' : 'Mesa finalizada'} • Pessoas: {selectedSession.guests?.length || 0}
+              </p>
             </div>
+          }
+          size="xl"
+          zIndex={200}
+          bodyClassName="space-y-6"
+          footer={
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                onClick={() => printSession(selectedSession, { scope: 'UNPRINTED' })}
+                disabled={selectedUnprintedCount === 0}
+                className="px-4 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Imprimir Novos
+              </button>
+              <button
+                onClick={() => printSession(selectedSession, { scope: 'ALL' })}
+                className="px-4 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest"
+              >
+                Imprimir Todos
+              </button>
+              {mode === 'ACTIVE' && (
+                <button
+                  onClick={() => handleFinalizeSession(selectedSession)}
+                  className="px-4 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest"
+                >
+                  Finalizar Mesa
+                </button>
+              )}
+            </div>
+          }
+        >
 
             {mode === 'ACTIVE' && selectedPendingApprovals.length > 0 && (
               <div className="border border-amber-100 bg-amber-50 rounded-2xl p-4 flex flex-col gap-3">
@@ -691,13 +798,13 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
                   <div key={group.groupId} className="border border-gray-100 rounded-xl p-3 flex flex-col gap-3">
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-sm font-black text-gray-800">
-                        Pedido raiz #{group.rootOrder.id.slice(0, 6)} - {new Date(group.rootOrder.created_at).toLocaleTimeString()}
+                        Pedido:  #{group.rootOrder.id.slice(0, 6)} | {new Date(group.rootOrder.created_at).toLocaleTimeString()}
                       </p>
                       <button
                         onClick={() => selectedSession && printSession(selectedSession, { scope: 'ORDER', orderId: group.rootOrder.id })}
                         className="px-2 py-0.5 rounded-full border border-gray-200 text-[9px] font-black uppercase tracking-widest text-gray-600"
                       >
-                        Imprimir raiz
+                        Imprimir
                       </button>
                     </div>
 
@@ -705,7 +812,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
                       <div key={order.id} className="border border-gray-100 rounded-lg p-2.5 space-y-2">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <p className="text-[11px] font-black text-gray-700">
-                            Pedido #{order.id.slice(0, 6)} - {new Date(order.created_at).toLocaleTimeString()}
+                            Pedido:  #{order.id.slice(0, 6)} | {new Date(order.created_at).toLocaleTimeString()}
                           </p>
                           <div className="flex gap-1.5">
                             <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest ${approvalClass[order.approval_status || 'APPROVED'] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>
@@ -751,13 +858,15 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
                             )}
                           </div>
                         )}
-                        {(order.items || []).map((item) => (
-                          <div key={item.id} className="flex items-start justify-between gap-2 border-t border-gray-50 pt-2">
+                        {groupOrderItems(order.items || []).map((item, index) => (
+                          <div key={`${order.id}-${item.id || index}`} className="flex items-start justify-between gap-2 border-t border-gray-50 pt-2">
                             <div>
                               <p className="font-black text-gray-700 text-sm">{item.qty}x {item.name_snapshot}</p>
-                              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                                Pedido por {item.added_by_name}
-                              </p>
+                              {Number((item as any).promo_discount_cents || 0) > 0 && (
+                                <p className="text-[10px] text-emerald-600 font-black mt-1">
+                                  Promocao {((item as any).promo_name || '').trim() ? `(${(item as any).promo_name})` : ''}: -{formatCurrency(Number((item as any).promo_discount_cents || 0))}
+                                </p>
+                              )}
                               {item.note && <p className="text-[10px] text-gray-500 font-black mt-1 whitespace-pre-line">{item.note}</p>}
                             </div>
                             <span className="font-black text-gray-800 text-sm">{formatCurrency(item.qty * item.unit_price_cents)}</span>
@@ -781,13 +890,13 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
                     onClick={() => setSplitMode('CONSUMPTION')}
                     className={`px-3 py-2 rounded-lg border text-[10px] font-black uppercase tracking-widest ${splitMode === 'CONSUMPTION' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}
                   >
-                    Por consumo
+                    Paganto unico
                   </button>
                   <button
                     onClick={() => setSplitMode('EQUAL')}
                     className={`px-3 py-2 rounded-lg border text-[10px] font-black uppercase tracking-widest ${splitMode === 'EQUAL' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}
                   >
-                    Igual
+                    Dividir conta
                   </button>
                 </div>
               </div>
@@ -823,7 +932,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
                       <div className="text-right">
                         <span className="font-black text-gray-900">{formatCurrency(row.total)}</span>
                         <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mt-1">
-                          {selectedTotal > 0 ? `${Math.round((row.total / selectedTotal) * 100)}% da mesa` : '0% da mesa'}
+                          {selectedSubtotal > 0 ? `${Math.round((row.total / selectedSubtotal) * 100)}% da mesa` : '0% da mesa'}
                         </p>
                       </div>
                     </div>
@@ -848,7 +957,14 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
 
             <div className="border-t border-gray-100 pt-4 flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Total geral da mesa</p>
+                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Subtotal da mesa</p>
+                <p className="text-xl font-black text-gray-900 tracking-tighter italic">{formatCurrency(selectedSubtotal)}</p>
+                {waiterFeeEnabled && (
+                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mt-1">
+                    {selectedWaiterFeeLabel}: + {formatCurrency(selectedWaiterFee)}
+                  </p>
+                )}
+                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-2">Total geral da mesa</p>
                 <p className="text-2xl font-black text-gray-900 tracking-tighter italic">{formatCurrency(selectedTotal)}</p>
                 {selectedTotalsByGuest.length > 0 && (
                   <div className="mt-2 flex flex-col gap-1">
@@ -860,32 +976,8 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode }) => {
                   </div>
                 )}
               </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => printSession(selectedSession, { scope: 'UNPRINTED' })}
-                  disabled={selectedUnprintedCount === 0}
-                  className="px-4 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  Imprimir Novos
-                </button>
-                <button
-                  onClick={() => printSession(selectedSession, { scope: 'ALL' })}
-                  className="px-4 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest"
-                >
-                  Imprimir Todos
-                </button>
-                {mode === 'ACTIVE' && (
-                  <button
-                    onClick={() => handleFinalizeSession(selectedSession)}
-                    className="px-4 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest"
-                  >
-                    Finalizar Mesa
-                  </button>
-                )}
-              </div>
             </div>
-          </div>
-        </div>
+        </AppModal>
       )}
     </>
   );

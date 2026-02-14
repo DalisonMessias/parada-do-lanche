@@ -7,6 +7,10 @@ export type OrderOrigin = 'CUSTOMER' | 'WAITER' | 'BALCAO';
 export type DiscountMode = 'NONE' | 'AMOUNT' | 'PERCENT';
 export type TableType = 'DINING' | 'COUNTER';
 export type ServiceType = 'ON_TABLE' | 'RETIRADA' | 'ENTREGA';
+export type WaiterFeeMode = 'PERCENT' | 'FIXED';
+export type PixKeyType = 'cpf' | 'cnpj' | 'phone' | 'email' | 'random';
+export type PromotionScope = 'GLOBAL' | 'PRODUCT';
+export type PromotionDiscountType = 'AMOUNT' | 'PERCENT';
 
 export interface DeliveryAddress {
   street: string;
@@ -14,16 +18,17 @@ export interface DeliveryAddress {
   neighborhood: string;
   complement?: string;
   reference?: string;
-  city?: string;
 }
 
 export interface StoreSettings {
   id: string;
-  store_name: string;
-  primary_color: string;
   logo_url: string;
   wifi_ssid: string;
   wifi_password: string;
+  pix_key_type?: PixKeyType | null;
+  pix_key_value?: string | null;
+  notification_sound_enabled?: boolean;
+  notification_sound_url?: string;
   sticker_bg_color: string;
   sticker_text_color: string;
   sticker_border_color: string;
@@ -32,6 +37,10 @@ export interface StoreSettings {
   order_approval_mode?: OrderApprovalMode;
   enable_counter_module?: boolean;
   default_delivery_fee_cents?: number;
+  enable_waiter_fee?: boolean;
+  waiter_fee_mode?: WaiterFeeMode;
+  waiter_fee_value?: number;
+  updated_at?: string | null;
 }
 
 export interface Profile {
@@ -66,6 +75,33 @@ export interface ProductAddon {
   name: string;
   price_cents: number;
   active: boolean;
+}
+
+export interface Promotion {
+  id: string;
+  name: string;
+  scope: PromotionScope;
+  discount_type: PromotionDiscountType;
+  discount_value: number;
+  weekdays: number[];
+  active: boolean;
+  created_at?: string;
+  updated_at?: string;
+  promotion_products?: { product_id: string }[];
+}
+
+export interface StoreFeedback {
+  id: string;
+  store_id: number;
+  stars: number;
+  comment?: string | null;
+  customer_name?: string | null;
+  source: string;
+  table_id?: string | null;
+  session_id?: string | null;
+  order_id?: string | null;
+  device_token?: string | null;
+  created_at: string;
 }
 
 export interface Table {
@@ -111,6 +147,11 @@ export interface CartItem {
   addon_names?: string[];
   addon_total_cents?: number;
   observation?: string;
+  base_price_cents?: number;
+  promo_name?: string | null;
+  promo_discount_type?: PromotionDiscountType | null;
+  promo_discount_value?: number;
+  promo_discount_cents?: number;
 }
 
 export interface Order {
@@ -131,6 +172,8 @@ export interface Order {
   round_number?: number;
   printed_at?: string | null;
   printed_count?: number;
+  receipt_token?: string | null;
+  receipt_token_created_at?: string | null;
   subtotal_cents?: number;
   discount_mode?: DiscountMode;
   discount_value?: number;
@@ -149,12 +192,17 @@ export interface OrderItem {
   order_id: string;
   product_id: string;
   name_snapshot: string;
+  original_unit_price_cents?: number | null;
   unit_price_cents: number;
   qty: number;
   status?: 'PENDING' | 'READY';
   printed_at?: string | null;
   note?: string;
+  promo_name?: string | null;
+  promo_discount_type?: PromotionDiscountType | null;
+  promo_discount_value?: number | null;
+  promo_discount_cents?: number | null;
   added_by_name: string;
 }
 
-export type AppView = 'LANDING' | 'CUSTOMER_MENU' | 'ADMIN_LOGIN' | 'ADMIN_DASHBOARD' | 'TEMP_REGISTER';
+export type AppView = 'LANDING' | 'CUSTOMER_MENU' | 'ADMIN_LOGIN' | 'ADMIN_DASHBOARD' | 'TEMP_REGISTER' | 'PUBLIC_RECEIPT';

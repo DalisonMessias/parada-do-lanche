@@ -6,21 +6,31 @@ create extension if not exists "pgcrypto";
 
 create table if not exists public.settings (
   id integer primary key default 1,
-  store_name text not null default 'Parada do Lanche',
-  primary_color text not null default '#f97316',
   logo_url text,
   wifi_ssid text not null default '',
   wifi_password text not null default '',
   order_approval_mode text not null default 'HOST' check (order_approval_mode in ('HOST', 'SELF')),
   enable_counter_module boolean not null default true,
+  enable_waiter_fee boolean not null default false,
+  waiter_fee_mode text not null default 'PERCENT' check (waiter_fee_mode in ('PERCENT', 'FIXED')),
+  waiter_fee_value integer not null default 10,
   default_delivery_fee_cents integer not null default 0,
+  pix_key_type text,
+  pix_key_value text,
+  notification_sound_enabled boolean not null default false,
+  notification_sound_url text not null default '',
   sticker_bg_color text not null default '#ffffff',
   sticker_text_color text not null default '#111827',
   sticker_border_color text not null default '#111111',
   sticker_muted_text_color text not null default '#9ca3af',
   sticker_qr_frame_color text not null default '#111111',
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
   constraint single_row check (id = 1)
 );
+alter table if exists public.settings
+  drop column if exists primary_color;
+alter table if exists public.settings
+  drop column if exists store_name;
 alter table if exists public.settings
   add column if not exists wifi_ssid text not null default '';
 alter table if exists public.settings
@@ -30,7 +40,21 @@ alter table if exists public.settings
 alter table if exists public.settings
   add column if not exists enable_counter_module boolean not null default true;
 alter table if exists public.settings
+  add column if not exists enable_waiter_fee boolean not null default false;
+alter table if exists public.settings
+  add column if not exists waiter_fee_mode text not null default 'PERCENT';
+alter table if exists public.settings
+  add column if not exists waiter_fee_value integer not null default 10;
+alter table if exists public.settings
   add column if not exists default_delivery_fee_cents integer not null default 0;
+alter table if exists public.settings
+  add column if not exists pix_key_type text;
+alter table if exists public.settings
+  add column if not exists pix_key_value text;
+alter table if exists public.settings
+  add column if not exists notification_sound_enabled boolean not null default false;
+alter table if exists public.settings
+  add column if not exists notification_sound_url text not null default '';
 alter table if exists public.settings
   add column if not exists sticker_bg_color text not null default '#ffffff';
 alter table if exists public.settings
@@ -41,6 +65,27 @@ alter table if exists public.settings
   add column if not exists sticker_muted_text_color text not null default '#9ca3af';
 alter table if exists public.settings
   add column if not exists sticker_qr_frame_color text not null default '#111111';
+alter table if exists public.settings
+  add column if not exists updated_at timestamp with time zone default timezone('utc'::text, now()) not null;
+
+update public.settings
+set
+  waiter_fee_mode = case
+    when waiter_fee_mode in ('PERCENT', 'FIXED') then waiter_fee_mode
+    else 'PERCENT'
+  end,
+  waiter_fee_value = case
+    when (case when waiter_fee_mode in ('PERCENT', 'FIXED') then waiter_fee_mode else 'PERCENT' end) = 'PERCENT'
+      then least(greatest(coalesce(waiter_fee_value, 10), 0), 100)
+    else greatest(coalesce(waiter_fee_value, 0), 0)
+  end,
+  pix_key_type = case
+    when pix_key_type in ('cpf', 'cnpj', 'phone', 'email', 'random') then pix_key_type
+    else null
+  end,
+  notification_sound_enabled = coalesce(notification_sound_enabled, false),
+  notification_sound_url = coalesce(notification_sound_url, ''),
+  updated_at = coalesce(updated_at, timezone('utc'::text, now()));
 
 do $$
 begin
@@ -52,6 +97,62 @@ begin
     alter table public.settings
       add constraint settings_order_approval_mode_check
       check (order_approval_mode in ('HOST', 'SELF'));
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'settings_waiter_fee_mode_check'
+      and conrelid = 'public.settings'::regclass
+  ) then
+    alter table public.settings
+      add constraint settings_waiter_fee_mode_check
+      check (waiter_fee_mode in ('PERCENT', 'FIXED'));
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'settings_waiter_fee_value_check'
+      and conrelid = 'public.settings'::regclass
+  ) then
+    alter table public.settings
+      add constraint settings_waiter_fee_value_check
+      check (
+        (waiter_fee_mode = 'PERCENT' and waiter_fee_value between 0 and 100)
+        or
+        (waiter_fee_mode = 'FIXED' and waiter_fee_value >= 0)
+      );
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'settings_pix_key_type_check'
+      and conrelid = 'public.settings'::regclass
+  ) then
+    alter table public.settings
+      add constraint settings_pix_key_type_check
+      check (pix_key_type is null or pix_key_type in ('cpf', 'cnpj', 'phone', 'email', 'random'));
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'settings_notification_sound_url_check'
+      and conrelid = 'public.settings'::regclass
+  ) then
+    alter table public.settings
+      add constraint settings_notification_sound_url_check
+      check (notification_sound_url is not null);
   end if;
 end $$;
 
@@ -120,6 +221,98 @@ create table if not exists public.product_addons (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 create index if not exists idx_product_addons_product_id on public.product_addons(product_id);
+
+create table if not exists public.promotions (
+  id uuid default gen_random_uuid() primary key,
+  name text not null,
+  scope text not null check (scope in ('GLOBAL', 'PRODUCT')),
+  discount_type text not null check (discount_type in ('AMOUNT', 'PERCENT')),
+  discount_value integer not null default 0,
+  weekdays smallint[] not null default '{0,1,2,3,4,5,6}',
+  active boolean not null default true,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+alter table if exists public.promotions
+  add column if not exists weekdays smallint[] not null default '{0,1,2,3,4,5,6}';
+alter table if exists public.promotions
+  add column if not exists active boolean not null default true;
+alter table if exists public.promotions
+  add column if not exists updated_at timestamp with time zone default timezone('utc'::text, now()) not null;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'promotions_scope_check'
+      and conrelid = 'public.promotions'::regclass
+  ) then
+    alter table public.promotions
+      add constraint promotions_scope_check
+      check (scope in ('GLOBAL', 'PRODUCT'));
+  end if;
+end $$;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'promotions_discount_type_check'
+      and conrelid = 'public.promotions'::regclass
+  ) then
+    alter table public.promotions
+      add constraint promotions_discount_type_check
+      check (discount_type in ('AMOUNT', 'PERCENT'));
+  end if;
+end $$;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'promotions_discount_value_check'
+      and conrelid = 'public.promotions'::regclass
+  ) then
+    alter table public.promotions
+      add constraint promotions_discount_value_check
+      check (discount_value >= 0);
+  end if;
+end $$;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'promotions_weekdays_check'
+      and conrelid = 'public.promotions'::regclass
+  ) then
+    alter table public.promotions
+      add constraint promotions_weekdays_check
+      check (coalesce(array_length(weekdays, 1), 0) > 0);
+  end if;
+end $$;
+create index if not exists idx_promotions_active on public.promotions(active);
+create index if not exists idx_promotions_scope on public.promotions(scope);
+
+create table if not exists public.promotion_products (
+  promotion_id uuid not null references public.promotions(id) on delete cascade,
+  product_id uuid not null references public.products(id) on delete cascade,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  primary key (promotion_id, product_id)
+);
+create index if not exists idx_promotion_products_product_id on public.promotion_products(product_id);
+
+create table if not exists public.store_feedback (
+  id uuid default gen_random_uuid() primary key,
+  store_id integer not null default 1,
+  stars integer not null check (stars between 1 and 5),
+  comment text,
+  customer_name text,
+  source text not null default 'cardapio_digital',
+  table_id uuid,
+  session_id uuid,
+  order_id uuid,
+  device_token text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+create index if not exists idx_store_feedback_created_at on public.store_feedback(created_at desc);
+create index if not exists idx_store_feedback_stars on public.store_feedback(stars);
 
 create table if not exists public.tables (
   id uuid default gen_random_uuid() primary key,
@@ -230,6 +423,8 @@ create table if not exists public.orders (
   round_number integer not null default 1,
   printed_at timestamp with time zone,
   printed_count integer not null default 0,
+  receipt_token text,
+  receipt_token_created_at timestamp with time zone,
   subtotal_cents integer not null default 0,
   discount_mode text not null default 'NONE' check (discount_mode in ('NONE', 'AMOUNT', 'PERCENT')),
   discount_value integer not null default 0,
@@ -275,6 +470,10 @@ alter table if exists public.orders
 alter table if exists public.orders
   add column if not exists printed_count integer not null default 0;
 alter table if exists public.orders
+  add column if not exists receipt_token text;
+alter table if exists public.orders
+  add column if not exists receipt_token_created_at timestamp with time zone;
+alter table if exists public.orders
   add column if not exists subtotal_cents integer not null default 0;
 alter table if exists public.orders
   add column if not exists discount_mode text not null default 'NONE';
@@ -309,6 +508,11 @@ set
     when (case when origin in ('CUSTOMER', 'WAITER', 'BALCAO') then origin else 'CUSTOMER' end) = 'BALCAO'
       then 'RETIRADA'
     else 'ON_TABLE'
+  end,
+  delivery_address = case
+    when delivery_address is null then null
+    when jsonb_typeof(delivery_address) = 'object' then delivery_address - 'city'
+    else delivery_address
   end,
   delivery_fee_cents = greatest(coalesce(delivery_fee_cents, 0), 0);
 
@@ -369,17 +573,32 @@ create table if not exists public.order_items (
   order_id uuid references public.orders(id) on delete cascade,
   product_id uuid references public.products(id) on delete set null,
   name_snapshot text not null,
+  original_unit_price_cents integer,
   unit_price_cents integer not null,
   qty integer not null,
   status text not null default 'PENDING' check (status in ('PENDING', 'READY')),
   printed_at timestamp with time zone,
   note text,
+  promo_name text,
+  promo_discount_type text,
+  promo_discount_value integer,
+  promo_discount_cents integer not null default 0,
   added_by_name text not null
 );
+alter table if exists public.order_items
+  add column if not exists original_unit_price_cents integer;
 alter table if exists public.order_items
   add column if not exists status text not null default 'PENDING';
 alter table if exists public.order_items
   add column if not exists printed_at timestamp with time zone;
+alter table if exists public.order_items
+  add column if not exists promo_name text;
+alter table if exists public.order_items
+  add column if not exists promo_discount_type text;
+alter table if exists public.order_items
+  add column if not exists promo_discount_value integer;
+alter table if exists public.order_items
+  add column if not exists promo_discount_cents integer not null default 0;
 do $$
 begin
   if not exists (
@@ -392,11 +611,50 @@ begin
       check (status in ('PENDING', 'READY'));
   end if;
 end $$;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'order_items_original_unit_price_cents_check'
+      and conrelid = 'public.order_items'::regclass
+  ) then
+    alter table public.order_items
+      add constraint order_items_original_unit_price_cents_check
+      check (original_unit_price_cents is null or original_unit_price_cents >= 0);
+  end if;
+end $$;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'order_items_promo_discount_type_check'
+      and conrelid = 'public.order_items'::regclass
+  ) then
+    alter table public.order_items
+      add constraint order_items_promo_discount_type_check
+      check (promo_discount_type is null or promo_discount_type in ('AMOUNT', 'PERCENT'));
+  end if;
+end $$;
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'order_items_promo_discount_cents_check'
+      and conrelid = 'public.order_items'::regclass
+  ) then
+    alter table public.order_items
+      add constraint order_items_promo_discount_cents_check
+      check (promo_discount_cents >= 0);
+  end if;
+end $$;
 
 create index if not exists idx_orders_session_printed on public.orders(session_id, printed_at);
 create index if not exists idx_orders_session_round on public.orders(session_id, round_number desc);
 create index if not exists idx_orders_session_origin_printed on public.orders(session_id, origin, printed_at);
 create index if not exists idx_orders_parent_order_id on public.orders(parent_order_id);
+create unique index if not exists uq_orders_receipt_token
+on public.orders(receipt_token)
+where receipt_token is not null;
 create index if not exists idx_order_items_order_printed on public.order_items(order_id, printed_at);
 
 create table if not exists public.session_events (
@@ -431,8 +689,8 @@ alter table if exists public.order_items alter column id set default gen_random_
 alter table if exists public.session_events alter column id set default gen_random_uuid();
 alter table if exists public.staff_password_audit alter column id set default gen_random_uuid();
 
-insert into public.settings (id, store_name, primary_color)
-values (1, 'Parada do Lanche', '#f97316')
+insert into public.settings (id)
+values (1)
 on conflict (id) do nothing;
 
 update public.settings
@@ -441,12 +699,30 @@ set
   wifi_password = coalesce(wifi_password, ''),
   order_approval_mode = coalesce(order_approval_mode, 'HOST'),
   enable_counter_module = coalesce(enable_counter_module, true),
+  enable_waiter_fee = coalesce(enable_waiter_fee, false),
+  waiter_fee_mode = case
+    when waiter_fee_mode in ('PERCENT', 'FIXED') then waiter_fee_mode
+    else 'PERCENT'
+  end,
+  waiter_fee_value = case
+    when (case when waiter_fee_mode in ('PERCENT', 'FIXED') then waiter_fee_mode else 'PERCENT' end) = 'PERCENT'
+      then least(greatest(coalesce(waiter_fee_value, 10), 0), 100)
+    else greatest(coalesce(waiter_fee_value, 0), 0)
+  end,
   default_delivery_fee_cents = greatest(coalesce(default_delivery_fee_cents, 0), 0),
+  pix_key_type = case
+    when pix_key_type in ('cpf', 'cnpj', 'phone', 'email', 'random') then pix_key_type
+    else null
+  end,
+  pix_key_value = nullif(trim(coalesce(pix_key_value, '')), ''),
+  notification_sound_enabled = coalesce(notification_sound_enabled, false),
+  notification_sound_url = coalesce(notification_sound_url, ''),
   sticker_bg_color = coalesce(sticker_bg_color, '#ffffff'),
   sticker_text_color = coalesce(sticker_text_color, '#111827'),
   sticker_border_color = coalesce(sticker_border_color, '#111111'),
   sticker_muted_text_color = coalesce(sticker_muted_text_color, '#9ca3af'),
-  sticker_qr_frame_color = coalesce(sticker_qr_frame_color, '#111111')
+  sticker_qr_frame_color = coalesce(sticker_qr_frame_color, '#111111'),
+  updated_at = coalesce(updated_at, timezone('utc'::text, now()))
 where id = 1;
 
 update public.orders
@@ -470,7 +746,47 @@ set
     when origin = 'BALCAO' then 'RETIRADA'
     else 'ON_TABLE'
   end,
+  delivery_address = case
+    when delivery_address is null then null
+    when jsonb_typeof(delivery_address) = 'object' then delivery_address - 'city'
+    else delivery_address
+  end,
   delivery_fee_cents = greatest(coalesce(delivery_fee_cents, 0), 0);
+
+update public.orders
+set receipt_token_created_at = coalesce(receipt_token_created_at, timezone('utc'::text, now()))
+where receipt_token is not null
+  and receipt_token_created_at is null;
+
+update public.orders
+set
+  receipt_token = encode(
+    digest(
+      coalesce(id::text, '') || '-' ||
+      coalesce(created_at::text, '') || '-' ||
+      gen_random_uuid()::text || '-' ||
+      random()::text || '-' ||
+      clock_timestamp()::text,
+      'sha256'
+    ),
+    'hex'
+  ),
+  receipt_token_created_at = coalesce(receipt_token_created_at, timezone('utc'::text, now()))
+where service_type in ('ENTREGA', 'RETIRADA')
+  and (receipt_token is null or btrim(receipt_token) = '');
+
+update public.order_items
+set
+  original_unit_price_cents = greatest(
+    coalesce(original_unit_price_cents, unit_price_cents, 0),
+    0
+  ),
+  promo_discount_type = case
+    when promo_discount_type in ('AMOUNT', 'PERCENT') then promo_discount_type
+    else null
+  end,
+  promo_discount_value = greatest(coalesce(promo_discount_value, 0), 0),
+  promo_discount_cents = greatest(coalesce(promo_discount_cents, 0), 0);
 
 -- Mantem o app funcionando com RLS habilitado, sem bloquear o fluxo atual.
 -- As policies abaixo sao abertas (to public) e devem ser endurecidas depois.
@@ -705,6 +1021,67 @@ begin
 end;
 $$;
 
+create or replace function public.create_store_feedback(
+  p_stars integer,
+  p_comment text default null,
+  p_customer_name text default null,
+  p_table_id uuid default null,
+  p_session_id uuid default null,
+  p_order_id uuid default null,
+  p_device_token text default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_feedback_id uuid;
+begin
+  if p_stars is null or p_stars < 1 or p_stars > 5 then
+    raise exception 'nota invalida: use de 1 a 5 estrelas';
+  end if;
+
+  if nullif(trim(coalesce(p_device_token, '')), '') is not null then
+    perform 1
+    from public.store_feedback
+    where device_token = trim(p_device_token)
+      and created_at >= timezone('utc'::text, now()) - interval '3 minutes'
+    limit 1;
+
+    if found then
+      raise exception 'aguarde alguns minutos antes de enviar nova avaliacao';
+    end if;
+  end if;
+
+  insert into public.store_feedback (
+    store_id,
+    stars,
+    comment,
+    customer_name,
+    source,
+    table_id,
+    session_id,
+    order_id,
+    device_token
+  )
+  values (
+    1,
+    p_stars,
+    nullif(trim(coalesce(p_comment, '')), ''),
+    nullif(trim(coalesce(p_customer_name, '')), ''),
+    'cardapio_digital',
+    p_table_id,
+    p_session_id,
+    p_order_id,
+    nullif(trim(coalesce(p_device_token, '')), '')
+  )
+  returning id into v_feedback_id;
+
+  return v_feedback_id;
+end;
+$$;
+
 create or replace function public.create_individual_order(
   p_session_id uuid,
   p_table_id uuid,
@@ -749,6 +1126,11 @@ begin
     product_id uuid,
     name_snapshot text,
     unit_price_cents integer,
+    original_unit_price_cents integer,
+    promo_name text,
+    promo_discount_type text,
+    promo_discount_value integer,
+    promo_discount_cents integer,
     qty integer,
     note text,
     added_by_name text,
@@ -797,30 +1179,81 @@ begin
     order_id,
     product_id,
     name_snapshot,
+    original_unit_price_cents,
     unit_price_cents,
     qty,
     note,
+    promo_name,
+    promo_discount_type,
+    promo_discount_value,
+    promo_discount_cents,
     added_by_name,
     status
   )
+  with normalized_items as (
+    select
+      i.product_id,
+      coalesce(nullif(trim(coalesce(i.name_snapshot, '')), ''), 'Item') as name_snapshot,
+      greatest(coalesce(i.original_unit_price_cents, i.unit_price_cents, 0), 0) as original_unit_price_cents,
+      greatest(coalesce(i.unit_price_cents, 0), 0) as unit_price_cents,
+      greatest(coalesce(i.qty, 1), 1) as qty,
+      nullif(trim(coalesce(i.note, '')), '') as note,
+      nullif(trim(coalesce(i.promo_name, '')), '') as promo_name,
+      case
+        when i.promo_discount_type in ('AMOUNT', 'PERCENT') then i.promo_discount_type
+        else null
+      end as promo_discount_type,
+      greatest(coalesce(i.promo_discount_value, 0), 0) as promo_discount_value,
+      greatest(coalesce(i.promo_discount_cents, 0), 0) as promo_discount_cents,
+      coalesce(nullif(trim(coalesce(i.added_by_name, '')), ''), nullif(trim(coalesce(p_guest_name, '')), ''), 'Cliente') as added_by_name,
+      coalesce(nullif(i.status, ''), 'PENDING') as status
+    from jsonb_to_recordset(p_items) as i(
+      product_id uuid,
+      name_snapshot text,
+      unit_price_cents integer,
+      original_unit_price_cents integer,
+      promo_name text,
+      promo_discount_type text,
+      promo_discount_value integer,
+      promo_discount_cents integer,
+      qty integer,
+      note text,
+      added_by_name text,
+      status text
+    )
+  ),
+  grouped_items as (
+    select
+      min(product_id) as product_id,
+      name_snapshot,
+      original_unit_price_cents,
+      unit_price_cents,
+      sum(qty)::integer as qty,
+      note,
+      promo_name,
+      promo_discount_type,
+      promo_discount_value,
+      promo_discount_cents,
+      added_by_name,
+      status
+    from normalized_items
+    group by name_snapshot, original_unit_price_cents, unit_price_cents, note, promo_name, promo_discount_type, promo_discount_value, promo_discount_cents, added_by_name, status
+  )
   select
     v_order_id,
-    i.product_id,
-    coalesce(i.name_snapshot, 'Item'),
-    i.unit_price_cents,
-    i.qty,
-    i.note,
-    coalesce(i.added_by_name, p_guest_name),
-    coalesce(i.status, 'PENDING')
-  from jsonb_to_recordset(p_items) as i(
-    product_id uuid,
-    name_snapshot text,
-    unit_price_cents integer,
-    qty integer,
-    note text,
-    added_by_name text,
-    status text
-  );
+    g.product_id,
+    g.name_snapshot,
+    g.original_unit_price_cents,
+    g.unit_price_cents,
+    g.qty,
+    g.note,
+    g.promo_name,
+    g.promo_discount_type,
+    g.promo_discount_value,
+    g.promo_discount_cents,
+    g.added_by_name,
+    g.status
+  from grouped_items g;
 
   delete from public.cart_items
   where session_id = p_session_id
@@ -843,6 +1276,206 @@ begin
   return v_order_id;
 end;
 $$;
+
+create or replace function public.ensure_order_receipt_token(
+  p_order_id uuid
+)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_service_type text;
+  v_token text;
+  v_candidate text;
+begin
+  if p_order_id is null then
+    return null;
+  end if;
+
+  select service_type, receipt_token
+    into v_service_type, v_token
+  from public.orders
+  where id = p_order_id
+  for update;
+
+  if not found then
+    raise exception 'pedido nao encontrado para gerar receipt_token';
+  end if;
+
+  if nullif(btrim(coalesce(v_token, '')), '') is not null then
+    return v_token;
+  end if;
+
+  if v_service_type not in ('ENTREGA', 'RETIRADA') then
+    return null;
+  end if;
+
+  loop
+    v_candidate := encode(
+      digest(
+        p_order_id::text || '-' ||
+        gen_random_uuid()::text || '-' ||
+        clock_timestamp()::text || '-' ||
+        random()::text,
+        'sha256'
+      ),
+      'hex'
+    );
+
+    begin
+      update public.orders
+      set
+        receipt_token = v_candidate,
+        receipt_token_created_at = coalesce(receipt_token_created_at, timezone('utc'::text, now()))
+      where id = p_order_id
+        and (receipt_token is null or btrim(receipt_token) = '')
+      returning receipt_token into v_token;
+
+      if nullif(btrim(coalesce(v_token, '')), '') is not null then
+        return v_token;
+      end if;
+
+      select receipt_token
+        into v_token
+      from public.orders
+      where id = p_order_id
+      limit 1;
+
+      if nullif(btrim(coalesce(v_token, '')), '') is not null then
+        return v_token;
+      end if;
+    exception
+      when unique_violation then
+        -- Gera novo token e tenta novamente.
+        null;
+    end;
+  end loop;
+end;
+$$;
+
+create or replace function public.get_public_receipt_by_token(
+  p_token text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_order record;
+  v_items jsonb := '[]'::jsonb;
+  v_delivery_address jsonb;
+begin
+  if p_token is null or btrim(p_token) = '' then
+    return null;
+  end if;
+
+  select
+    o.id,
+    o.session_id,
+    o.table_id,
+    o.service_type,
+    o.status,
+    o.approval_status,
+    o.created_at,
+    s.closed_at,
+    o.customer_name,
+    o.customer_phone,
+    o.delivery_address,
+    o.delivery_fee_cents,
+    o.subtotal_cents,
+    o.discount_mode,
+    o.discount_value,
+    o.discount_cents,
+    o.total_cents,
+    t.name as table_name
+    into v_order
+  from public.orders o
+  left join public.sessions s on s.id = o.session_id
+  left join public.tables t on t.id = o.table_id
+  where o.receipt_token = p_token
+    and o.service_type in ('ENTREGA', 'RETIRADA')
+  limit 1;
+
+  if not found then
+    return null;
+  end if;
+
+  v_delivery_address := case
+    when v_order.delivery_address is null then null
+    when jsonb_typeof(v_order.delivery_address) = 'object' then v_order.delivery_address - 'city'
+    else v_order.delivery_address
+  end;
+
+  select coalesce(
+    jsonb_agg(
+      jsonb_build_object(
+        'id', oi.id,
+        'product_id', oi.product_id,
+        'name_snapshot', oi.name_snapshot,
+        'original_unit_price_cents', oi.original_unit_price_cents,
+        'unit_price_cents', oi.unit_price_cents,
+        'qty', oi.qty,
+        'promo_name', oi.promo_name,
+        'promo_discount_type', oi.promo_discount_type,
+        'promo_discount_value', oi.promo_discount_value,
+        'promo_discount_cents', oi.promo_discount_cents,
+        'note', oi.note
+      )
+      order by oi.id
+    ),
+    '[]'::jsonb
+  )
+  into v_items
+  from public.order_items oi
+  where oi.order_id = v_order.id;
+
+  return jsonb_build_object(
+    'store_name', 'Parada do Lanche',
+    'order', jsonb_build_object(
+      'id', v_order.id,
+      'session_id', v_order.session_id,
+      'table_id', v_order.table_id,
+      'table_name', v_order.table_name,
+      'service_type', v_order.service_type,
+      'status', v_order.status,
+      'approval_status', v_order.approval_status,
+      'opened_at', v_order.created_at,
+      'closed_at', v_order.closed_at,
+      'customer_name', v_order.customer_name,
+      'customer_phone', v_order.customer_phone,
+      'delivery_address', v_delivery_address,
+      'delivery_fee_cents', greatest(coalesce(v_order.delivery_fee_cents, 0), 0),
+      'subtotal_cents', greatest(coalesce(v_order.subtotal_cents, 0), 0),
+      'discount_mode', coalesce(v_order.discount_mode, 'NONE'),
+      'discount_value', greatest(coalesce(v_order.discount_value, 0), 0),
+      'discount_cents', greatest(coalesce(v_order.discount_cents, 0), 0),
+      'total_cents', greatest(coalesce(v_order.total_cents, 0), 0),
+      'receipt_token', p_token,
+      'receipt_url', '/#/cupom/' || p_token
+    ),
+    'items', v_items
+  );
+end;
+$$;
+
+-- Remove assinatura legada para evitar ambiguidade no PostgREST RPC.
+drop function if exists public.create_staff_order(
+  uuid,
+  uuid,
+  text,
+  uuid,
+  text,
+  uuid,
+  text,
+  text,
+  text,
+  text,
+  integer,
+  jsonb
+);
 
 create or replace function public.create_staff_order(
   p_session_id uuid,
@@ -908,6 +1541,7 @@ begin
   v_delivery_fee := greatest(coalesce(p_delivery_fee_cents, 0), 0);
   v_delivery_address := case
     when p_delivery_address is null or p_delivery_address = 'null'::jsonb then null
+    when jsonb_typeof(p_delivery_address) = 'object' then p_delivery_address - 'city'
     else p_delivery_address
   end;
 
@@ -936,6 +1570,11 @@ begin
     product_id uuid,
     name_snapshot text,
     unit_price_cents integer,
+    original_unit_price_cents integer,
+    promo_name text,
+    promo_discount_type text,
+    promo_discount_value integer,
+    promo_discount_cents integer,
     qty integer,
     note text,
     added_by_name text,
@@ -1020,34 +1659,89 @@ begin
   )
   returning id into v_order_id;
 
+  if v_service_type in ('ENTREGA', 'RETIRADA') then
+    perform public.ensure_order_receipt_token(v_order_id);
+  end if;
+
   insert into public.order_items (
     order_id,
     product_id,
     name_snapshot,
+    original_unit_price_cents,
     unit_price_cents,
     qty,
     note,
+    promo_name,
+    promo_discount_type,
+    promo_discount_value,
+    promo_discount_cents,
     added_by_name,
     status
   )
+  with normalized_items as (
+    select
+      i.product_id,
+      coalesce(nullif(trim(coalesce(i.name_snapshot, '')), ''), 'Item') as name_snapshot,
+      greatest(coalesce(i.original_unit_price_cents, i.unit_price_cents, 0), 0) as original_unit_price_cents,
+      greatest(coalesce(i.unit_price_cents, 0), 0) as unit_price_cents,
+      greatest(coalesce(i.qty, 1), 1) as qty,
+      nullif(trim(coalesce(i.note, '')), '') as note,
+      nullif(trim(coalesce(i.promo_name, '')), '') as promo_name,
+      case
+        when i.promo_discount_type in ('AMOUNT', 'PERCENT') then i.promo_discount_type
+        else null
+      end as promo_discount_type,
+      greatest(coalesce(i.promo_discount_value, 0), 0) as promo_discount_value,
+      greatest(coalesce(i.promo_discount_cents, 0), 0) as promo_discount_cents,
+      coalesce(nullif(i.added_by_name, ''), nullif(trim(coalesce(p_added_by_name, '')), ''), 'Operador') as added_by_name,
+      coalesce(nullif(i.status, ''), 'PENDING') as status
+    from jsonb_to_recordset(p_items) as i(
+      product_id uuid,
+      name_snapshot text,
+      unit_price_cents integer,
+      original_unit_price_cents integer,
+      promo_name text,
+      promo_discount_type text,
+      promo_discount_value integer,
+      promo_discount_cents integer,
+      qty integer,
+      note text,
+      added_by_name text,
+      status text
+    )
+  ),
+  grouped_items as (
+    select
+      min(product_id) as product_id,
+      name_snapshot,
+      original_unit_price_cents,
+      unit_price_cents,
+      sum(qty)::integer as qty,
+      note,
+      promo_name,
+      promo_discount_type,
+      promo_discount_value,
+      promo_discount_cents,
+      added_by_name,
+      status
+    from normalized_items
+    group by name_snapshot, original_unit_price_cents, unit_price_cents, note, promo_name, promo_discount_type, promo_discount_value, promo_discount_cents, added_by_name, status
+  )
   select
     v_order_id,
-    i.product_id,
-    coalesce(nullif(i.name_snapshot, ''), 'Item'),
-    greatest(coalesce(i.unit_price_cents, 0), 0),
-    greatest(coalesce(i.qty, 1), 1),
-    i.note,
-    coalesce(nullif(i.added_by_name, ''), nullif(trim(coalesce(p_added_by_name, '')), ''), 'Operador'),
-    coalesce(nullif(i.status, ''), 'PENDING')
-  from jsonb_to_recordset(p_items) as i(
-    product_id uuid,
-    name_snapshot text,
-    unit_price_cents integer,
-    qty integer,
-    note text,
-    added_by_name text,
-    status text
-  );
+    g.product_id,
+    g.name_snapshot,
+    g.original_unit_price_cents,
+    g.unit_price_cents,
+    g.qty,
+    g.note,
+    g.promo_name,
+    g.promo_discount_type,
+    g.promo_discount_value,
+    g.promo_discount_cents,
+    g.added_by_name,
+    g.status
+  from grouped_items g;
 
   perform public.register_session_event(
     p_session_id,
@@ -1188,8 +1882,6 @@ begin
 end;
 $$;
 
--- Garante refresh do schema cache da API (PostgREST/Supabase)
-select pg_notify('pgrst', 'reload schema');
 
 -- Storage bucket e policies para assets (logo/fotos)
 insert into storage.buckets (id, name, public)
@@ -1224,4 +1916,3 @@ on storage.objects
 for delete
 to authenticated
 using (bucket_id = 'assets');
-

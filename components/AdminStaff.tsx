@@ -3,6 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import { supabase, supabaseKey, supabaseUrl } from '../services/supabase';
 import { Profile, UserRole } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
+import CustomSelect from './ui/CustomSelect';
+import AppModal from './ui/AppModal';
 
 type StaffForm = {
   id?: string;
@@ -278,11 +280,33 @@ const AdminStaff: React.FC<AdminStaffProps> = ({ profile }) => {
       </div>
 
       {showModal && (
-        <div className="fixed inset-0 z-[150] bg-gray-900/90 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6">
-          <form onSubmit={handleCreateOrUpdate} className="bg-white w-full max-w-md rounded-t-[28px] sm:rounded-[32px] p-6 sm:p-10 flex flex-col gap-8 sm:gap-10 border border-gray-200 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto">
-            <h3 className="text-2xl font-black uppercase tracking-tighter italic text-gray-900">
-              {isEditing ? 'Editar Perfil' : 'Novo Perfil'}
-            </h3>
+        <AppModal
+          open={showModal}
+          onClose={() => setShowModal(false)}
+          size="sm"
+          zIndex={150}
+          title={isEditing ? 'Editar Perfil' : 'Novo Perfil'}
+          bodyClassName="space-y-8 sm:space-y-10"
+          footer={
+            <div className="flex gap-4">
+              <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-4 text-gray-400 font-black uppercase tracking-widest text-[10px]">
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  const form = document.getElementById('staff-form-modal') as HTMLFormElement | null;
+                  form?.requestSubmit();
+                }}
+                className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px] disabled:opacity-50"
+              >
+                {isEditing ? 'Salvar' : 'Criar Agora'}
+              </button>
+            </div>
+          }
+        >
+          <form id="staff-form-modal" onSubmit={handleCreateOrUpdate} className="flex flex-col gap-8 sm:gap-10">
             <div className="space-y-6">
               <div className="space-y-2">
                 <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Nome Completo</label>
@@ -307,15 +331,16 @@ const AdminStaff: React.FC<AdminStaffProps> = ({ profile }) => {
               </div>
               <div className="space-y-2">
                 <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Funcao</label>
-                <select
+                <CustomSelect
                   value={formData.role}
-                  onChange={(e) => setFormData({ ...formData, role: e.target.value as UserRole })}
-                  className="w-full p-4 border border-gray-200 rounded-xl outline-none focus:border-primary font-black appearance-none"
-                >
-                  <option value="ADMIN">ADMINISTRADOR</option>
-                  <option value="MANAGER">GERENTE</option>
-                  <option value="WAITER">GARCOM</option>
-                </select>
+                  onChange={(nextValue) => setFormData({ ...formData, role: nextValue as UserRole })}
+                  options={[
+                    { value: 'ADMIN', label: 'ADMINISTRADOR' },
+                    { value: 'MANAGER', label: 'GERENTE' },
+                    { value: 'WAITER', label: 'GARCOM' },
+                  ]}
+                  buttonClassName="p-4 text-sm"
+                />
               </div>
               {!isEditing && (
                 <div className="space-y-2">
@@ -337,26 +362,53 @@ const AdminStaff: React.FC<AdminStaffProps> = ({ profile }) => {
                 </p>
               )}
             </div>
-            <div className="flex gap-4 border-t border-gray-100 pt-8">
-              <button type="button" onClick={() => setShowModal(false)} className="flex-1 py-4 text-gray-400 font-black uppercase tracking-widest text-[10px]">
-                Cancelar
-              </button>
-              <button type="submit" disabled={loading} className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px]">
-                {isEditing ? 'Salvar' : 'Criar Agora'}
-              </button>
-            </div>
           </form>
-        </div>
+        </AppModal>
       )}
 
       {showPasswordModal && passwordTarget && (
-        <div className="fixed inset-0 z-[160] bg-gray-900/90 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6">
+        <AppModal
+          open={showPasswordModal && !!passwordTarget}
+          onClose={() => {
+            setShowPasswordModal(false);
+            setPasswordTarget(null);
+          }}
+          size="sm"
+          zIndex={160}
+          title="Alterar Senha"
+          bodyClassName="space-y-8"
+          footer={
+            <div className="flex gap-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPasswordModal(false);
+                  setPasswordTarget(null);
+                }}
+                className="flex-1 py-4 text-gray-400 font-black uppercase tracking-widest text-[10px]"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={updatingPassword}
+                onClick={() => {
+                  const form = document.getElementById('staff-password-form-modal') as HTMLFormElement | null;
+                  form?.requestSubmit();
+                }}
+                className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px] disabled:opacity-50"
+              >
+                {updatingPassword ? 'Salvando...' : 'Salvar'}
+              </button>
+            </div>
+          }
+        >
           <form
+            id="staff-password-form-modal"
             onSubmit={handleUpdatePassword}
-            className="bg-white w-full max-w-md rounded-t-[28px] sm:rounded-[32px] p-6 sm:p-10 flex flex-col gap-8 border border-gray-200"
+            className="flex flex-col gap-8"
           >
             <div>
-              <h3 className="text-2xl font-black uppercase tracking-tighter italic text-gray-900">Alterar Senha</h3>
               <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-2">
                 Colaborador: {passwordTarget.name}
               </p>
@@ -395,28 +447,8 @@ const AdminStaff: React.FC<AdminStaffProps> = ({ profile }) => {
                 </div>
               )}
             </div>
-
-            <div className="flex gap-4 border-t border-gray-100 pt-6">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowPasswordModal(false);
-                  setPasswordTarget(null);
-                }}
-                className="flex-1 py-4 text-gray-400 font-black uppercase tracking-widest text-[10px]"
-              >
-                Cancelar
-              </button>
-              <button
-                type="submit"
-                disabled={updatingPassword}
-                className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px] disabled:opacity-50"
-              >
-                {updatingPassword ? 'Salvando...' : 'Salvar'}
-              </button>
-            </div>
           </form>
-        </div>
+        </AppModal>
       )}
     </div>
   );

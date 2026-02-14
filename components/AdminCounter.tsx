@@ -1,8 +1,12 @@
 ﻿import React, { useEffect, useMemo, useState } from 'react';
 import { formatCurrency, supabase } from '../services/supabase';
-import { printKitchenTicket } from '../services/kitchenPrint';
-import { DeliveryAddress, DiscountMode, Order, OrderItem, Product, ProductAddon, Profile, ServiceType, Session, StoreSettings } from '../types';
+import { buildReceiptUrlFromToken, printKitchenTicket } from '../services/kitchenPrint';
+import { buildLineItemKey, groupOrderItems } from '../services/orderItemGrouping';
+import { DeliveryAddress, DiscountMode, Order, OrderItem, Product, ProductAddon, Profile, Promotion, ServiceType, Session, StoreSettings } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
+import CustomSelect from './ui/CustomSelect';
+import AppModal from './ui/AppModal';
+import { applyPromotionToPrice, resolvePromotionForProduct } from '../services/promotions';
 
 type SessionWithDetails = Session & {
   table?: { id: string; name: string; table_type?: string; token?: string } | null;
@@ -14,10 +18,19 @@ type CounterCartItem = {
   product_id: string;
   product_name: string;
   qty: number;
+  base_price_cents: number;
+  addon_total_cents: number;
   unit_price_cents: number;
+  promo_name: string | null;
+  promo_discount_type: 'AMOUNT' | 'PERCENT' | null;
+  promo_discount_value: number;
+  promo_discount_cents: number;
   addon_names: string[];
   observation: string;
 };
+
+type CounterServiceType = 'NONE' | 'RETIRADA' | 'ENTREGA';
+type CounterPaymentMethod = 'CARD' | 'CASH' | 'PIX';
 
 interface AdminCounterProps {
   profile: Profile | null;
@@ -26,15 +39,25 @@ interface AdminCounterProps {
 
 const makeId = () => Math.random().toString(36).slice(2);
 
-const parseMoneyToCents = (value: string) => {
-  const normalized = (value || '').replace(',', '.').replace(/[^\d.]/g, '');
-  const numeric = Number(normalized);
-  if (!Number.isFinite(numeric)) return 0;
-  return Math.max(0, Math.round(numeric * 100));
+const currencyFormatter = new Intl.NumberFormat('pt-BR', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const parseMaskedCurrencyToCents = (value: string) => {
+  const digits = (value || '').replace(/\D/g, '');
+  if (!digits) return 0;
+  const cents = Number(digits);
+  return Number.isFinite(cents) ? Math.max(0, cents) : 0;
 };
 
+const formatCentsToMaskedCurrency = (cents: number) =>
+  `R$ ${currencyFormatter.format(Math.max(0, Number(cents || 0)) / 100)}`;
+
+const maskCurrencyInput = (value: string) => formatCentsToMaskedCurrency(parseMaskedCurrencyToCents(value));
+
 const parsePercent = (value: string) => {
-  const numeric = Number((value || '').replace(',', '.'));
+  const numeric = Number((value || '').replace(',', '.').replace(/[^\d.]/g, ''));
   if (!Number.isFinite(numeric)) return 0;
   return Math.max(0, Math.min(100, Math.round(numeric)));
 };
@@ -50,11 +73,31 @@ const makeItemNote = (addonNames: string[], observation: string) => {
 const getVisibleOrders = (session: SessionWithDetails) =>
   (session.orders || []).filter((order) => order.approval_status !== 'REJECTED');
 
+const paymentMethodLabels: Record<CounterPaymentMethod, string> = {
+  CARD: 'Cartao',
+  CASH: 'Dinheiro',
+  PIX: 'Pix',
+};
+
+const shouldHaveReceiptToken = (ticketType: 'MESA' | 'BALCAO' | 'RETIRADA' | 'ENTREGA') =>
+  ticketType === 'ENTREGA' || ticketType === 'RETIRADA';
+
+const getTicketStatusLabel = (order: Order) => {
+  if (order.approval_status === 'PENDING_APPROVAL') return 'Aguardando aceite';
+  if (order.approval_status === 'REJECTED') return 'Rejeitado';
+  if (order.status === 'PREPARING') return 'Em preparo';
+  if (order.status === 'READY') return 'Pronto';
+  if (order.status === 'FINISHED') return 'Finalizado';
+  if (order.status === 'CANCELLED') return 'Cancelado';
+  return 'Confirmado';
+};
+
 const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
   const { toast } = useFeedback();
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [addons, setAddons] = useState<ProductAddon[]>([]);
+  const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [sessions, setSessions] = useState<SessionWithDetails[]>([]);
   const [counterSession, setCounterSession] = useState<SessionWithDetails | null>(null);
 
@@ -71,14 +114,15 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
   const [customerName, setCustomerName] = useState('Balcao');
   const [customerPhone, setCustomerPhone] = useState('');
   const [generalNote, setGeneralNote] = useState('');
-  const [serviceType, setServiceType] = useState<ServiceType>('RETIRADA');
+  const [serviceType, setServiceType] = useState<CounterServiceType>('NONE');
   const [deliveryStreet, setDeliveryStreet] = useState('');
   const [deliveryNumber, setDeliveryNumber] = useState('');
   const [deliveryNeighborhood, setDeliveryNeighborhood] = useState('');
   const [deliveryComplement, setDeliveryComplement] = useState('');
   const [deliveryReference, setDeliveryReference] = useState('');
-  const [deliveryCity, setDeliveryCity] = useState('');
-  const [deliveryFeeInput, setDeliveryFeeInput] = useState('0');
+  const [deliveryFeeInput, setDeliveryFeeInput] = useState('R$ 0,00');
+  const [paymentMethod, setPaymentMethod] = useState<CounterPaymentMethod>('CARD');
+  const [cashChangeInput, setCashChangeInput] = useState('R$ 0,00');
 
   const [discountMode, setDiscountMode] = useState<DiscountMode>('NONE');
   const [discountInput, setDiscountInput] = useState('');
@@ -92,14 +136,16 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
   const counterEnabled = settings?.enable_counter_module !== false;
 
   const loadCatalog = async () => {
-    const [catRes, prodRes, addonRes] = await Promise.all([
+    const [catRes, prodRes, addonRes, promoRes] = await Promise.all([
       supabase.from('categories').select('id,name').eq('active', true).order('sort_order'),
       supabase.from('products').select('*').eq('active', true).eq('out_of_stock', false).order('name'),
       supabase.from('product_addons').select('*').eq('active', true).order('name'),
+      supabase.from('promotions').select('*, promotion_products(product_id)').eq('active', true).order('created_at', { ascending: false }),
     ]);
     if (catRes.data) setCategories(catRes.data as { id: string; name: string }[]);
     if (prodRes.data) setProducts(prodRes.data as Product[]);
     if (addonRes.data) setAddons(addonRes.data as ProductAddon[]);
+    if (promoRes.data) setPromotions(promoRes.data as Promotion[]);
   };
 
   const loadSessions = async () => {
@@ -147,6 +193,10 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
   }, [profile?.id]);
 
   const getAddonsByProduct = (productId: string) => addons.filter((addon) => addon.product_id === productId);
+  const getProductPricing = (product: Product) => {
+    const promotion = resolvePromotionForProduct(product.id, promotions);
+    return applyPromotionToPrice(product.price_cents || 0, promotion);
+  };
 
   const filteredProducts = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -178,9 +228,13 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
     () => cartItems.reduce((acc, item) => acc + item.qty * item.unit_price_cents, 0),
     [cartItems]
   );
+  const promotionDiscountCents = useMemo(
+    () => cartItems.reduce((acc, item) => acc + Math.max(0, Number(item.promo_discount_cents || 0)) * item.qty, 0),
+    [cartItems]
+  );
 
   const discountValueNormalized = useMemo(() => {
-    if (discountMode === 'AMOUNT') return parseMoneyToCents(discountInput);
+    if (discountMode === 'AMOUNT') return parseMaskedCurrencyToCents(discountInput);
     if (discountMode === 'PERCENT') return parsePercent(discountInput);
     return 0;
   }, [discountInput, discountMode]);
@@ -191,19 +245,26 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
     return 0;
   }, [discountMode, discountValueNormalized, subtotalCents]);
 
+  const isAdditionalMode = mode === 'ADDITIONAL';
+  const hasSelectedServiceType = serviceType === 'RETIRADA' || serviceType === 'ENTREGA';
+  const shouldDisableAdditionalModeButton = mode !== 'ADDITIONAL' && hasSelectedServiceType;
   const deliveryFeeCents = useMemo(
-    () => (serviceType === 'ENTREGA' ? parseMoneyToCents(deliveryFeeInput) : 0),
+    () => (serviceType === 'ENTREGA' ? parseMaskedCurrencyToCents(deliveryFeeInput) : 0),
     [serviceType, deliveryFeeInput]
   );
+  const paymentMethodLabel = paymentMethodLabels[paymentMethod];
+  const effectiveDiscountMode: DiscountMode = isAdditionalMode ? 'NONE' : discountMode;
+  const effectiveDiscountValueNormalized = isAdditionalMode ? 0 : discountValueNormalized;
+  const effectiveDiscountCents = isAdditionalMode ? 0 : discountCents;
 
-  const totalCents = Math.max(0, subtotalCents - discountCents + deliveryFeeCents);
+  const totalCents = Math.max(0, subtotalCents - effectiveDiscountCents + deliveryFeeCents);
 
   const resetCart = () => {
     setCartItems([]);
     setDiscountMode('NONE');
     setDiscountInput('');
     setGeneralNote('');
-    setServiceType('RETIRADA');
+    setServiceType('NONE');
     setCustomerName('Balcao');
     setCustomerPhone('');
     setDeliveryStreet('');
@@ -211,11 +272,17 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
     setDeliveryNeighborhood('');
     setDeliveryComplement('');
     setDeliveryReference('');
-    setDeliveryCity('');
-    setDeliveryFeeInput('0');
+    setDeliveryFeeInput('R$ 0,00');
+    setPaymentMethod('CARD');
+    setCashChangeInput('R$ 0,00');
   };
 
   const activatePickup = () => {
+    if (mode === 'ADDITIONAL') return;
+    if (serviceType === 'RETIRADA') {
+      setServiceType('NONE');
+      return;
+    }
     setServiceType('RETIRADA');
     if (!customerName.trim()) {
       setCustomerName('Balcao');
@@ -223,9 +290,15 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
   };
 
   const activateDelivery = () => {
+    if (mode === 'ADDITIONAL') return;
+    if (serviceType === 'ENTREGA') {
+      setServiceType('NONE');
+      setDeliveryFeeInput('R$ 0,00');
+      return;
+    }
     setServiceType('ENTREGA');
     const defaultFee = Math.max(0, Number(settings?.default_delivery_fee_cents || 0));
-    setDeliveryFeeInput((defaultFee / 100).toFixed(2));
+    setDeliveryFeeInput(formatCentsToMaskedCurrency(defaultFee));
     if ((customerName || '').trim().toLowerCase() === 'balcao') {
       setCustomerName('');
     }
@@ -243,19 +316,56 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
     if (!pendingProduct) return;
     const selectedAddons = getAddonsByProduct(pendingProduct.id).filter((addon) => pendingAddonIds.includes(addon.id));
     const addonTotal = selectedAddons.reduce((acc, addon) => acc + addon.price_cents, 0);
+    const pricing = getProductPricing(pendingProduct);
+    const note = makeItemNote(selectedAddons.map((addon) => addon.name), pendingObservation);
+    const unitPriceCents = pricing.finalUnitPriceCents + addonTotal;
+    const qty = Math.max(1, pendingQty);
+    const itemKey = `${pendingProduct.id}::${buildLineItemKey({
+      name_snapshot: pendingProduct.name,
+      unit_price_cents: unitPriceCents,
+      note,
+    })}`;
 
-    setCartItems((prev) => [
-      ...prev,
-      {
-        id: makeId(),
-        product_id: pendingProduct.id,
-        product_name: pendingProduct.name,
-        qty: Math.max(1, pendingQty),
-        unit_price_cents: (pendingProduct.price_cents || 0) + addonTotal,
-        addon_names: selectedAddons.map((addon) => addon.name),
-        observation: pendingObservation.trim(),
-      },
-    ]);
+    setCartItems((prev) => {
+      const existingIndex = prev.findIndex((item) => {
+        const existingKey = `${item.product_id}::${buildLineItemKey({
+          name_snapshot: item.product_name,
+          unit_price_cents: item.unit_price_cents,
+          note: makeItemNote(item.addon_names, item.observation),
+        })}`;
+        return existingKey === itemKey;
+      });
+
+      if (existingIndex < 0) {
+        return [
+          ...prev,
+          {
+            id: makeId(),
+            product_id: pendingProduct.id,
+            product_name: pendingProduct.name,
+            qty,
+            base_price_cents: pricing.originalUnitPriceCents,
+            addon_total_cents: addonTotal,
+            unit_price_cents: unitPriceCents,
+            promo_name: pricing.promoName,
+            promo_discount_type: pricing.promoDiscountType,
+            promo_discount_value: pricing.promoDiscountValue,
+            promo_discount_cents: pricing.discountCents,
+            addon_names: selectedAddons.map((addon) => addon.name),
+            observation: pendingObservation.trim(),
+          },
+        ];
+      }
+
+      return prev.map((item, index) =>
+        index === existingIndex
+          ? {
+              ...item,
+              qty: item.qty + qty,
+            }
+          : item
+      );
+    });
 
     setShowAddModal(false);
   };
@@ -340,7 +450,12 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
       return;
     }
 
-    if (serviceType === 'ENTREGA') {
+    if (mode === 'NEW' && !hasSelectedServiceType) {
+      toast('Selecione Retirada ou Entrega para gerar novo pedido.', 'error');
+      return;
+    }
+
+    if (mode === 'NEW' && serviceType === 'ENTREGA') {
       if (!customerName.trim()) {
         toast('Nome do cliente e obrigatorio para entrega.', 'error');
         return;
@@ -359,27 +474,52 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
       return;
     }
 
-    const payloadItems = cartItems.map((item) => ({
+    const payloadItems = groupOrderItems(
+      cartItems.map((item) => ({
+        product_id: item.product_id,
+        name_snapshot: item.product_name,
+        original_unit_price_cents: Math.max(0, Number(item.base_price_cents || 0) + Number(item.addon_total_cents || 0)),
+        unit_price_cents: item.unit_price_cents,
+        promo_name: item.promo_name,
+        promo_discount_type: item.promo_discount_type,
+        promo_discount_value: item.promo_discount_value,
+        promo_discount_cents: item.promo_discount_cents,
+        qty: item.qty,
+        note: makeItemNote(item.addon_names, item.observation),
+        added_by_name: profile.name || 'Operador',
+        status: 'PENDING',
+      }))
+    ).map((item) => ({
       product_id: item.product_id,
-      name_snapshot: item.product_name,
+      name_snapshot: item.name_snapshot,
+      original_unit_price_cents: (item as any).original_unit_price_cents,
       unit_price_cents: item.unit_price_cents,
+      promo_name: (item as any).promo_name,
+      promo_discount_type: (item as any).promo_discount_type,
+      promo_discount_value: (item as any).promo_discount_value,
+      promo_discount_cents: (item as any).promo_discount_cents,
       qty: item.qty,
-      note: makeItemNote(item.addon_names, item.observation),
-      added_by_name: profile.name || 'Operador',
-      status: 'PENDING',
+      note: item.note,
+      added_by_name: item.added_by_name,
+      status: item.status,
     }));
 
     const deliveryAddress: DeliveryAddress | null =
-      serviceType === 'ENTREGA'
+      mode === 'NEW' && serviceType === 'ENTREGA'
         ? {
             street: deliveryStreet.trim(),
             number: deliveryNumber.trim(),
             neighborhood: deliveryNeighborhood.trim(),
             complement: deliveryComplement.trim() || undefined,
             reference: deliveryReference.trim() || undefined,
-            city: deliveryCity.trim() || undefined,
           }
         : null;
+    const rpcServiceType: ServiceType =
+      mode === 'ADDITIONAL'
+        ? 'ON_TABLE'
+        : serviceType === 'ENTREGA'
+          ? 'ENTREGA'
+          : 'RETIRADA';
 
     const { data: orderId, error } = await supabase.rpc('create_staff_order', {
       p_session_id: target.session_id,
@@ -388,14 +528,19 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
       p_created_by_profile_id: profile.id,
       p_added_by_name: profile.name || 'Operador',
       p_parent_order_id: target.parent_order_id,
-      p_customer_name: serviceType === 'ENTREGA' ? customerName.trim() : (customerName.trim() || 'Balcao'),
-      p_customer_phone: customerPhone.trim() || null,
+      p_customer_name:
+        mode === 'ADDITIONAL'
+          ? null
+          : serviceType === 'ENTREGA'
+            ? customerName.trim()
+            : (customerName.trim() || 'Balcao'),
+      p_customer_phone: mode === 'ADDITIONAL' ? null : (customerPhone.trim() || null),
       p_general_note: generalNote.trim() || null,
-      p_service_type: serviceType,
+      p_service_type: rpcServiceType,
       p_delivery_address: deliveryAddress,
-      p_delivery_fee_cents: deliveryFeeCents,
-      p_discount_mode: discountMode,
-      p_discount_value: discountValueNormalized,
+      p_delivery_fee_cents: mode === 'NEW' ? deliveryFeeCents : 0,
+      p_discount_mode: effectiveDiscountMode,
+      p_discount_value: effectiveDiscountValueNormalized,
       p_items: payloadItems,
     });
 
@@ -414,41 +559,66 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
 
       if (createdOrder) {
         const order = createdOrder as Order & { items?: OrderItem[] };
-        const deliveryLines =
-          serviceType === 'ENTREGA' && deliveryAddress
-            ? [
-                `${deliveryAddress.street}, ${deliveryAddress.number} - ${deliveryAddress.neighborhood}`,
-                [deliveryAddress.complement, deliveryAddress.reference, deliveryAddress.city].filter(Boolean).join(' | '),
-                customerPhone.trim() ? `Tel: ${customerPhone.trim()}` : '',
-              ].filter(Boolean)
-            : [];
+        const ticketType =
+          order.service_type === 'ENTREGA'
+            ? 'ENTREGA'
+            : order.service_type === 'RETIRADA'
+              ? 'RETIRADA'
+              : order.origin === 'BALCAO'
+                ? 'BALCAO'
+                : 'MESA';
+        const fallbackSubtotal = (order.items || []).reduce(
+          (acc, item) => acc + (item.qty || 0) * (item.unit_price_cents || 0),
+          0
+        );
+        const subtotalCents = Number(order.subtotal_cents ?? fallbackSubtotal);
+        const deliveryFeeCents = Number(order.delivery_fee_cents || 0);
+        const totalCentsResolved = Number(order.total_cents ?? Math.max(0, subtotalCents + deliveryFeeCents));
+        let receiptToken = (order.receipt_token || '').trim() || null;
+
+        if (shouldHaveReceiptToken(ticketType) && !receiptToken) {
+          const { data: tokenData, error: tokenError } = await supabase.rpc('ensure_order_receipt_token', {
+            p_order_id: order.id,
+          });
+          if (tokenError) {
+            toast(`Pedido criado, mas falhou ao gerar token do cupom digital: ${tokenError.message}`, 'error');
+          } else {
+            const resolvedToken = String(tokenData || '').trim();
+            if (resolvedToken) receiptToken = resolvedToken;
+          }
+        }
 
         const result = await printKitchenTicket({
-          storeName: settings?.store_name || 'Parada do Lanche',
-          tableName: target.table_name || 'BALCAO',
-          filterLabel: `Pedido #${String(orderId).slice(0, 6)}`,
-          ticketTitle:
-            serviceType === 'ENTREGA'
-              ? (customerName.trim() || order.customer_name || 'Cliente')
-              : 'COMANDA BALCAO',
-          orderTypeLabel: serviceType === 'ENTREGA' ? 'ENTREGA' : 'RETIRADA',
-          deliveryDetails: deliveryLines,
-          openedAt: new Date().toISOString(),
-          closedAt: null,
-          totalCents: order.total_cents || 0,
-          orders: [
+          tickets: [
             {
-              id: order.id,
-              created_at: order.created_at,
-              total_cents: order.total_cents || 0,
-              approval_label: 'Confirmado',
+              storeName: 'Parada do Lanche',
+              orderId: order.id,
+              ticketType,
+              openedAt: order.created_at,
+              closedAt: null,
+              statusLabel: getTicketStatusLabel(order),
+              orderTime: new Date(order.created_at).toLocaleTimeString('pt-BR', {
+                hour: '2-digit',
+                minute: '2-digit',
+              }),
+              tableName: target.table_name || null,
+              customerName: order.customer_name || null,
+              customerPhone: order.customer_phone || null,
+              deliveryAddress: order.delivery_address || null,
               items: (order.items || []).map((item) => ({
                 name_snapshot: item.name_snapshot,
                 qty: item.qty || 0,
                 unit_price_cents: item.unit_price_cents || 0,
                 note: item.note || '',
-                added_by_name: item.added_by_name || profile.name || 'Operador',
               })),
+              subtotalCents,
+              deliveryFeeCents,
+              totalCents: totalCentsResolved,
+              receiptToken: shouldHaveReceiptToken(ticketType) ? receiptToken : null,
+              receiptUrl:
+                shouldHaveReceiptToken(ticketType) && receiptToken
+                  ? buildReceiptUrlFromToken(receiptToken)
+                  : null,
             },
           ],
         });
@@ -506,7 +676,7 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
           </div>
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-500">
-              <input type="checkbox" checked={printNow} onChange={(e) => setPrintNow(e.target.checked)} className="w-4 h-4 accent-primary" />
+              <input type="checkbox" checked={printNow} onChange={(e) => setPrintNow(e.target.checked)} aria-label="Imprimir agora" />
               Imprimir agora
             </label>
             {counterSession && (
@@ -525,10 +695,28 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
           <div className="space-y-2">
             <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Fluxo do pedido</label>
             <div className="flex gap-2">
-              <button onClick={() => setMode('NEW')} className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${mode === 'NEW' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}>
+              <button
+                onClick={() => setMode('NEW')}
+                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${mode === 'NEW' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}
+              >
                 Novo
               </button>
-              <button onClick={() => setMode('ADDITIONAL')} className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${mode === 'ADDITIONAL' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}>
+              <button
+                onClick={() => {
+                  setMode('ADDITIONAL');
+                  setServiceType('NONE');
+                  setDeliveryStreet('');
+                  setDeliveryNumber('');
+                  setDeliveryNeighborhood('');
+                  setDeliveryComplement('');
+                  setDeliveryReference('');
+                  setDeliveryFeeInput('R$ 0,00');
+                }}
+                disabled={shouldDisableAdditionalModeButton}
+                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${
+                  mode === 'ADDITIONAL' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
                 Adicional
               </button>
             </div>
@@ -539,13 +727,19 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
             <div className="flex gap-2">
               <button
                 onClick={activatePickup}
-                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${serviceType === 'RETIRADA' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}
+                disabled={mode === 'ADDITIONAL'}
+                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${
+                  mode === 'NEW' && serviceType === 'RETIRADA' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
                 Retirada
               </button>
               <button
                 onClick={activateDelivery}
-                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${serviceType === 'ENTREGA' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}
+                disabled={mode === 'ADDITIONAL'}
+                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${
+                  mode === 'NEW' && serviceType === 'ENTREGA' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
                 Entrega
               </button>
@@ -554,9 +748,9 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
 
           <div className="space-y-2">
             <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">
-              Cliente {serviceType === 'ENTREGA' ? '(obrigatorio)' : '(opcional)'}
+              Cliente {mode === 'NEW' && serviceType === 'ENTREGA' ? '(obrigatorio)' : '(opcional)'}
             </label>
-            <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder={serviceType === 'ENTREGA' ? 'Nome do cliente' : 'Balcao'} className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary" />
+            <input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder={mode === 'NEW' && serviceType === 'ENTREGA' ? 'Nome do cliente' : 'Balcao'} className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary" />
           </div>
         </div>
 
@@ -565,26 +759,21 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
             <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Telefone (opcional)</label>
             <input value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} placeholder="(00) 00000-0000" className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary" />
           </div>
-          {serviceType === 'ENTREGA' && (
-            <>
-              <div className="space-y-2">
-                <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Taxa de entrega (R$)</label>
-                <input
-                  value={deliveryFeeInput}
-                  onChange={(e) => setDeliveryFeeInput(e.target.value)}
-                  placeholder="0,00"
-                  className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary"
-                />
-              </div>
-              <div className="space-y-2">
-                <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Cidade (opcional)</label>
-                <input value={deliveryCity} onChange={(e) => setDeliveryCity(e.target.value)} placeholder="Cidade" className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary" />
-              </div>
-            </>
+          {mode === 'NEW' && serviceType === 'ENTREGA' && (
+            <div className="space-y-2">
+              <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Taxa de entrega (R$)</label>
+              <input
+                value={deliveryFeeInput}
+                inputMode="numeric"
+                onChange={(e) => setDeliveryFeeInput(maskCurrencyInput(e.target.value))}
+                placeholder="R$ 0,00"
+                className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary"
+              />
+            </div>
           )}
         </div>
 
-        {serviceType === 'ENTREGA' && (
+        {mode === 'NEW' && serviceType === 'ENTREGA' && (
           <div className="grid lg:grid-cols-2 gap-4 border border-gray-100 rounded-2xl p-4 bg-gray-50">
             <div className="space-y-2">
               <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Rua (obrigatorio)</label>
@@ -626,26 +815,34 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
             {additionalLinkType === 'SESSION' ? (
               <div className="space-y-2 lg:col-span-2">
                 <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Sessao da mesa</label>
-                <select value={selectedAdditionalSessionId} onChange={(e) => setSelectedAdditionalSessionId(e.target.value)} className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary bg-white">
-                  <option value="">Selecione uma sessao</option>
-                  {openDiningSessions.map((session) => (
-                    <option key={session.id} value={session.id}>
-                      {session.table?.name || 'Mesa'} - Sessao #{session.id.slice(0, 6)}
-                    </option>
-                  ))}
-                </select>
+                <CustomSelect
+                  value={selectedAdditionalSessionId}
+                  onChange={setSelectedAdditionalSessionId}
+                  options={[
+                    { value: '', label: 'Selecione uma sessao' },
+                    ...openDiningSessions.map((session) => ({
+                      value: session.id,
+                      label: `${session.table?.name || 'Mesa'} - Sessao #${session.id.slice(0, 6)}`,
+                    })),
+                  ]}
+                  buttonClassName="p-3 text-sm font-bold"
+                />
               </div>
             ) : (
               <div className="space-y-2 lg:col-span-2">
                 <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Pedido alvo</label>
-                <select value={selectedAdditionalOrderId} onChange={(e) => setSelectedAdditionalOrderId(e.target.value)} className="w-full p-3 rounded-xl border border-gray-200 font-bold outline-none focus:border-primary bg-white">
-                  <option value="">Selecione um pedido</option>
-                  {sessionOrderOptions.map((order) => (
-                    <option key={order.id} value={order.id}>
-                      {order.table_name} - Pedido #{order.id.slice(0, 6)} ({formatCurrency(order.total_cents)})
-                    </option>
-                  ))}
-                </select>
+                <CustomSelect
+                  value={selectedAdditionalOrderId}
+                  onChange={setSelectedAdditionalOrderId}
+                  options={[
+                    { value: '', label: 'Selecione um pedido' },
+                    ...sessionOrderOptions.map((order) => ({
+                      value: order.id,
+                      label: `${order.table_name} - Pedido #${order.id.slice(0, 6)} (${formatCurrency(order.total_cents)})`,
+                    })),
+                  ]}
+                  buttonClassName="p-3 text-sm font-bold"
+                />
               </div>
             )}
           </div>
@@ -666,7 +863,17 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
                   <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">{(categories.find((category) => category.id === product.category_id)?.name || 'Categoria').toUpperCase()} • {product.id.slice(0, 8)}</p>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="font-black text-gray-900">{formatCurrency(product.price_cents)}</span>
+                  {(() => {
+                    const pricing = getProductPricing(product);
+                    return (
+                      <div className="text-right">
+                        {pricing.hasPromotion && (
+                          <p className="text-[10px] text-gray-400 line-through font-black">{formatCurrency(product.price_cents)}</p>
+                        )}
+                        <span className="font-black text-gray-900">{formatCurrency(pricing.finalUnitPriceCents)}</span>
+                      </div>
+                    );
+                  })()}
                   <button onClick={() => openAddModal(product)} className="px-3 py-2 rounded-lg bg-gray-900 text-white text-[9px] font-black uppercase tracking-widest">Adicionar</button>
                 </div>
               </div>
@@ -684,6 +891,11 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
                 <div>
                   <p className="text-sm font-black text-gray-800">{item.qty}x {item.product_name}</p>
                   {item.addon_names.length > 0 && <p className="text-[10px] text-primary font-black uppercase tracking-widest mt-1">+ {item.addon_names.join(', ')}</p>}
+                  {item.promo_discount_cents > 0 && (
+                    <p className="text-[10px] text-emerald-600 font-black uppercase tracking-widest mt-1">
+                      Promocao: -{formatCurrency(item.promo_discount_cents)}
+                    </p>
+                  )}
                   {!!item.observation && <p className="text-[10px] text-gray-500 font-black mt-1">Obs: {item.observation}</p>}
                 </div>
                 <div className="flex flex-col items-end gap-2">
@@ -695,32 +907,148 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
           </div>
 
           <div className="border border-gray-100 rounded-2xl p-4 bg-gray-50 space-y-3">
+            {promotionDiscountCents > 0 && (
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Desconto promocional</span>
+                <span className="font-black text-emerald-600">- {formatCurrency(promotionDiscountCents)}</span>
+              </div>
+            )}
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Subtotal</span>
               <span className="font-black text-gray-900">{formatCurrency(subtotalCents)}</span>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Desconto</label>
-              <div className="grid grid-cols-[120px_1fr] gap-2">
-                <select value={discountMode} onChange={(e) => setDiscountMode(e.target.value as DiscountMode)} className="p-2.5 rounded-lg border border-gray-200 font-black bg-white">
-                  <option value="NONE">Nenhum</option>
-                  <option value="AMOUNT">Valor</option>
-                  <option value="PERCENT">Percentual</option>
-                </select>
-                <input value={discountInput} onChange={(e) => setDiscountInput(e.target.value)} disabled={discountMode === 'NONE'} placeholder={discountMode === 'PERCENT' ? '0 a 100' : '0,00'} className="p-2.5 rounded-lg border border-gray-200 font-bold bg-white disabled:opacity-50" />
-              </div>
-            </div>
+            {!isAdditionalMode && (
+              <>
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Desconto</label>
+                  <div className="grid grid-cols-[120px_1fr] gap-2">
+                    <CustomSelect
+                      value={discountMode}
+                      onChange={(nextValue) => {
+                        const nextMode = nextValue as DiscountMode;
+                        setDiscountMode(nextMode);
+                        if (nextMode === 'NONE') {
+                          setDiscountInput('');
+                          return;
+                        }
+                        if (nextMode === 'AMOUNT') {
+                          setDiscountInput(maskCurrencyInput(discountInput));
+                          return;
+                        }
+                        setDiscountInput('');
+                      }}
+                      options={[
+                        { value: 'NONE', label: 'Nenhum' },
+                        { value: 'AMOUNT', label: 'Valor' },
+                        { value: 'PERCENT', label: 'Percentual' },
+                      ]}
+                      buttonClassName="p-2.5 rounded-lg text-sm"
+                    />
+                    <input
+                      value={discountInput}
+                      inputMode={discountMode === 'AMOUNT' ? 'numeric' : 'decimal'}
+                      onChange={(e) => {
+                        if (discountMode === 'AMOUNT') {
+                          setDiscountInput(maskCurrencyInput(e.target.value));
+                          return;
+                        }
+                        if (discountMode === 'PERCENT') {
+                          const raw = e.target.value.replace(/[^\d.,]/g, '');
+                          setDiscountInput(raw);
+                          return;
+                        }
+                        setDiscountInput('');
+                      }}
+                      disabled={discountMode === 'NONE'}
+                      placeholder={discountMode === 'PERCENT' ? '0 a 100' : 'R$ 0,00'}
+                      className="p-2.5 rounded-lg border border-gray-200 font-bold bg-white disabled:opacity-50"
+                    />
+                  </div>
+                </div>
 
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Desconto aplicado</span>
-              <span className="font-black text-red-500">- {formatCurrency(discountCents)}</span>
-            </div>
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Tipo de pagamento</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPaymentMethod('CARD')}
+                      className={`rounded-xl border p-2.5 flex flex-col items-center gap-1.5 transition-all ${
+                        paymentMethod === 'CARD'
+                          ? 'border-primary bg-primary/10 text-gray-900'
+                          : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                      }`}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="2" y="5" width="20" height="14" rx="2" />
+                        <path d="M2 10h20" />
+                      </svg>
+                      <span className="text-[10px] font-black uppercase tracking-widest">Cartao</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPaymentMethod('CASH')}
+                      className={`rounded-xl border p-2.5 flex flex-col items-center gap-1.5 transition-all ${
+                        paymentMethod === 'CASH'
+                          ? 'border-primary bg-primary/10 text-gray-900'
+                          : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                      }`}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="2" y="6" width="20" height="12" rx="2" />
+                        <circle cx="12" cy="12" r="2.5" />
+                        <path d="M6 12h.01M18 12h.01" />
+                      </svg>
+                      <span className="text-[10px] font-black uppercase tracking-widest">Dinheiro</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPaymentMethod('PIX')}
+                      className={`rounded-xl border p-2.5 flex flex-col items-center gap-1.5 transition-all ${
+                        paymentMethod === 'PIX'
+                          ? 'border-primary bg-primary/10 text-gray-900'
+                          : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
+                      }`}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="m7.5 7.5 3-3a2 2 0 0 1 2.8 0l3 3a2 2 0 0 0 1.4.6H20a1 1 0 0 1 .7 1.7l-3 3a2 2 0 0 0-.6 1.4V17a1 1 0 0 1-1.7.7l-3-3a2 2 0 0 0-1.4-.6H8a1 1 0 0 1-.7-1.7l3-3a2 2 0 0 0 .6-1.4V6a1 1 0 0 1 1.7-.7z" />
+                      </svg>
+                      <span className="text-[10px] font-black uppercase tracking-widest">Pix</span>
+                    </button>
+                  </div>
+                </div>
 
-            {serviceType === 'ENTREGA' && (
+                {paymentMethod === 'CASH' && (
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="text-[9px] font-black uppercase tracking-widest text-gray-500">Troco (opcional)</label>
+                    <input
+                      value={cashChangeInput}
+                      inputMode="numeric"
+                      onChange={(e) => setCashChangeInput(maskCurrencyInput(e.target.value))}
+                      placeholder="R$ 0,00"
+                      className="w-[150px] p-3 rounded-xl border border-gray-200 font-bold bg-white text-right outline-none focus:border-primary"
+                    />
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Desconto aplicado</span>
+                  <span className="font-black text-red-500">- {formatCurrency(effectiveDiscountCents)}</span>
+                </div>
+              </>
+            )}
+
+            {mode === 'NEW' && serviceType === 'ENTREGA' && (
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Taxa de entrega</span>
                 <span className="font-black text-gray-900">+ {formatCurrency(deliveryFeeCents)}</span>
+              </div>
+            )}
+
+            {!isAdditionalMode && (
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Pagamento</span>
+                <span className="font-black text-gray-900">{paymentMethodLabel}</span>
               </div>
             )}
 
@@ -742,15 +1070,24 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
       </div>
 
       {showAddModal && pendingProduct && (
-        <div className="fixed inset-0 z-[230] bg-gray-900/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6">
-          <div className="w-full max-w-lg bg-white rounded-t-[28px] sm:rounded-[28px] border border-gray-200 p-5 sm:p-6 space-y-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">{pendingProduct.name}</h3>
-                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">{formatCurrency(pendingProduct.price_cents)}</p>
-              </div>
-              <button onClick={() => setShowAddModal(false)} className="text-gray-400 font-black">Fechar</button>
+        <AppModal
+          open={showAddModal && !!pendingProduct}
+          onClose={() => setShowAddModal(false)}
+          size="sm"
+          zIndex={230}
+          bodyClassName="space-y-5"
+          title={
+            <div>
+              <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">{pendingProduct.name}</h3>
+              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">{formatCurrency(getProductPricing(pendingProduct).finalUnitPriceCents)}</p>
             </div>
+          }
+          footer={
+            <button onClick={addPendingProductToCart} className="w-full bg-gray-900 text-white py-3 rounded-xl text-[10px] font-black uppercase tracking-widest">
+              Adicionar ao carrinho
+            </button>
+          }
+        >
 
             <div className="space-y-2">
               <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Quantidade</label>
@@ -772,7 +1109,7 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
                             type="checkbox"
                             checked={checked}
                             onChange={(e) => setPendingAddonIds((prev) => (e.target.checked ? [...prev, addon.id] : prev.filter((id) => id !== addon.id)))}
-                            className="w-4 h-4 accent-primary"
+                            aria-label={`Selecionar adicional ${addon.name}`}
                           />
                         </div>
                       </label>
@@ -786,16 +1123,12 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
               <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Observacao (opcional)</label>
               <textarea rows={3} value={pendingObservation} onChange={(e) => setPendingObservation(e.target.value)} className="w-full p-3 rounded-xl border border-gray-200 text-sm font-bold outline-none focus:border-primary" placeholder="Ex.: sem gelo, molho separado..." />
             </div>
-
-            <button onClick={addPendingProductToCart} className="w-full bg-gray-900 text-white py-3 rounded-xl text-[10px] font-black uppercase tracking-widest">
-              Adicionar ao carrinho
-            </button>
-          </div>
-        </div>
+        </AppModal>
       )}
     </div>
   );
 };
 
 export default AdminCounter;
+
 

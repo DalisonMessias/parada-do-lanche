@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { supabase, formatCurrency } from '../services/supabase';
 import { Category, Product, ProductAddon } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
+import CustomSelect from './ui/CustomSelect';
+import AppModal from './ui/AppModal';
 
 type MenuTab = 'ALL' | string;
 
@@ -435,11 +437,32 @@ const AdminMenu: React.FC = () => {
         </div>
       </div>
       {showCategoryModal && (
-        <div className="fixed inset-0 z-[110] bg-gray-900/90 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6">
-          <form onSubmit={handleSaveCategory} className="bg-white w-full max-w-md rounded-t-[28px] sm:rounded-[32px] p-6 sm:p-10 flex flex-col gap-8 border border-gray-200 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto">
-            <h3 className="text-2xl font-black uppercase tracking-tighter italic text-gray-900">
-              {editingCategory ? 'Editar Categoria' : 'Nova Categoria'}
-            </h3>
+        <AppModal
+          open={showCategoryModal}
+          onClose={() => setShowCategoryModal(false)}
+          size="sm"
+          zIndex={110}
+          title={editingCategory ? 'Editar Categoria' : 'Nova Categoria'}
+          footer={
+            <div className="flex gap-3">
+              <button type="button" onClick={() => setShowCategoryModal(false)} className="flex-1 py-4 text-gray-400 font-black uppercase tracking-widest text-[10px]">
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  const form = document.getElementById('menu-category-form') as HTMLFormElement | null;
+                  form?.requestSubmit();
+                }}
+                className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px] disabled:opacity-50"
+              >
+                Salvar
+              </button>
+            </div>
+          }
+        >
+          <form id="menu-category-form" onSubmit={handleSaveCategory} className="flex flex-col gap-8">
             <div className="space-y-2">
               <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Nome da Categoria</label>
               <input
@@ -450,25 +473,37 @@ const AdminMenu: React.FC = () => {
                 className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
               />
             </div>
-            <div className="flex gap-3 pt-2">
-              <button type="button" onClick={() => setShowCategoryModal(false)} className="flex-1 py-4 text-gray-400 font-black uppercase tracking-widest text-[10px]">
-                Cancelar
-              </button>
-              <button type="submit" disabled={loading} className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px]">
-                Salvar
-              </button>
-            </div>
           </form>
-        </div>
+        </AppModal>
       )}
 
       {showProductModal && (
-        <div className="fixed inset-0 z-[110] bg-gray-900/90 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6 overflow-y-auto">
-          <form onSubmit={handleSaveProduct} className="bg-white w-full max-w-4xl rounded-t-[28px] sm:rounded-[40px] p-5 sm:p-10 flex flex-col gap-6 sm:gap-8 border border-gray-200 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto">
-            <h3 className="text-3xl font-black uppercase tracking-tighter italic text-gray-900">
-              {editingProduct ? 'Editar Produto' : 'Novo Produto'}
-            </h3>
-
+        <AppModal
+          open={showProductModal}
+          onClose={() => setShowProductModal(false)}
+          size="lg"
+          zIndex={110}
+          title={editingProduct ? 'Editar Produto' : 'Novo Produto'}
+          footer={
+            <div className="flex gap-4">
+              <button type="button" onClick={() => setShowProductModal(false)} className="flex-1 py-4 text-gray-400 font-black uppercase tracking-widest text-[10px]">
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={loading || uploadingImage}
+                onClick={() => {
+                  const form = document.getElementById('menu-product-form') as HTMLFormElement | null;
+                  form?.requestSubmit();
+                }}
+                className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px] disabled:opacity-50"
+              >
+                Salvar
+              </button>
+            </div>
+          }
+        >
+          <form id="menu-product-form" onSubmit={handleSaveProduct} className="flex flex-col gap-6 sm:gap-8">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               <div className="space-y-6">
                 <div className="space-y-2">
@@ -481,19 +516,30 @@ const AdminMenu: React.FC = () => {
                 </div>
                 <div className="space-y-2">
                   <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Categoria</label>
-                  <select value={productCategoryId} onChange={(e) => setProductCategoryId(e.target.value)} required className="w-full p-4 bg-white border border-gray-200 rounded-xl font-black outline-none focus:border-primary appearance-none">
-                    <option value="">Selecione...</option>
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
+                  <CustomSelect
+                    value={productCategoryId}
+                    onChange={setProductCategoryId}
+                    options={[
+                      { value: '', label: 'Selecione...' },
+                      ...categories.map((category) => ({
+                        value: category.id,
+                        label: category.name,
+                      })),
+                    ]}
+                    buttonClassName="p-4 text-sm"
+                  />
                 </div>
                 <div className="space-y-2">
                   <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Modo de adicionais</label>
-                  <select value={productAddonMode} onChange={(e) => setProductAddonMode(e.target.value as 'SINGLE' | 'MULTIPLE')} className="w-full p-4 bg-white border border-gray-200 rounded-xl font-black outline-none focus:border-primary">
-                    <option value="SINGLE">Selecionar apenas 1 adicional</option>
-                    <option value="MULTIPLE">Selecionar multiplos adicionais</option>
-                  </select>
+                  <CustomSelect
+                    value={productAddonMode}
+                    onChange={(nextValue) => setProductAddonMode(nextValue as 'SINGLE' | 'MULTIPLE')}
+                    options={[
+                      { value: 'SINGLE', label: 'Selecionar apenas 1 adicional' },
+                      { value: 'MULTIPLE', label: 'Selecionar multiplos adicionais' },
+                    ]}
+                    buttonClassName="p-4 text-sm"
+                  />
                 </div>
               </div>
 
@@ -577,27 +623,23 @@ const AdminMenu: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex gap-4 border-t border-gray-100 pt-8">
-              <button type="button" onClick={() => setShowProductModal(false)} className="flex-1 py-4 text-gray-400 font-black uppercase tracking-widest text-[10px]">
-                Cancelar
-              </button>
-              <button type="submit" disabled={loading || uploadingImage} className="flex-1 py-4 bg-gray-900 text-white rounded-xl font-black uppercase tracking-widest text-[10px]">
-                Salvar
-              </button>
-            </div>
           </form>
-        </div>
+        </AppModal>
       )}
       {showAddonsModal && selectedProduct && (
-        <div className="fixed inset-0 z-[120] bg-gray-900/90 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6 overflow-y-auto">
-          <div className="bg-white w-full max-w-2xl rounded-t-[28px] sm:rounded-[32px] p-5 sm:p-8 flex flex-col gap-6 border border-gray-200 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900">Adicionais Avulsos</h3>
-                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">{selectedProduct.name}</p>
-              </div>
-              <button onClick={() => setShowAddonsModal(false)} className="text-gray-400 font-black">Fechar</button>
+        <AppModal
+          open={showAddonsModal && !!selectedProduct}
+          onClose={() => setShowAddonsModal(false)}
+          size="md"
+          zIndex={120}
+          title={
+            <div>
+              <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900">Adicionais Avulsos</h3>
+              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">{selectedProduct.name}</p>
             </div>
+          }
+          bodyClassName="space-y-6"
+        >
 
             <form onSubmit={handleCreateAddonFromModal} className="grid grid-cols-12 gap-2 border border-gray-100 rounded-xl p-3">
               <input
@@ -642,8 +684,7 @@ const AdminMenu: React.FC = () => {
                 </div>
               ))}
             </div>
-          </div>
-        </div>
+        </AppModal>
       )}
 
       {visibleCategories.length === 0 ? (

@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import AppModal from '../ui/AppModal';
 
 type ToastType = 'success' | 'error' | 'info';
 
@@ -67,18 +68,26 @@ export const FeedbackProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         ))}
       </div>
 
-      {confirmState.open && (
-        <div className="fixed inset-0 z-[11999] bg-gray-900/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6">
-          <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl border border-gray-200 bg-white p-5 sm:p-6 flex flex-col gap-6 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto">
-            <h3 className="text-lg font-black uppercase tracking-tighter text-gray-900">Confirmar Acao</h3>
-            <p className="text-sm font-bold text-gray-600 leading-relaxed">{confirmState.message}</p>
-            <div className="flex gap-3">
-              <button onClick={() => handleConfirm(false)} className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-500 font-black uppercase text-[10px] tracking-widest">Cancelar</button>
-              <button onClick={() => handleConfirm(true)} className="flex-1 py-3 rounded-xl bg-gray-900 text-white font-black uppercase text-[10px] tracking-widest">Confirmar</button>
-            </div>
+      <AppModal
+        open={confirmState.open}
+        onClose={() => handleConfirm(false)}
+        title="Confirmar Acao"
+        size="sm"
+        zIndex={11999}
+        bodyClassName="pb-0"
+        footer={
+          <div className="flex gap-3">
+            <button onClick={() => handleConfirm(false)} className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-500 font-black uppercase text-[10px] tracking-widest">
+              Cancelar
+            </button>
+            <button onClick={() => handleConfirm(true)} className="flex-1 py-3 rounded-xl bg-gray-900 text-white font-black uppercase text-[10px] tracking-widest">
+              Confirmar
+            </button>
           </div>
-        </div>
-      )}
+        }
+      >
+        <p className="text-sm font-bold text-gray-600 leading-relaxed">{confirmState.message}</p>
+      </AppModal>
     </FeedbackContext.Provider>
   );
 };

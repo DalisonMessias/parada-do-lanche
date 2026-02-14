@@ -1,7 +1,8 @@
-
+﻿
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { supabase, formatCurrency } from './services/supabase';
-import { AppView, Table, Session, Guest, CartItem, Category, Product, ProductAddon, StoreSettings, Profile, UserRole, Order } from './types';
+import { groupOrderItems } from './services/orderItemGrouping';
+import { AppView, Table, Session, Guest, CartItem, Category, Product, ProductAddon, StoreSettings, Profile, UserRole, Order, Promotion } from './types';
 import Layout from './components/Layout';
 import AdminOrders from './components/AdminOrders';
 import AdminTables from './components/AdminTables';
@@ -10,7 +11,15 @@ import AdminSettings from './components/AdminSettings';
 import AdminStaff from './components/AdminStaff';
 import AdminWaiter from './components/AdminWaiter';
 import AdminCounter from './components/AdminCounter';
+import AdminPromotions from './components/AdminPromotions';
+import AdminRatings from './components/AdminRatings';
+import PublicReceipt from './components/PublicReceipt';
 import { useFeedback } from './components/feedback/FeedbackProvider';
+import CustomSelect from './components/ui/CustomSelect';
+import AppModal from './components/ui/AppModal';
+import CalculatorModal from './components/ui/CalculatorModal';
+import { playOrderAlertSound } from './services/notifications';
+import { applyPromotionToPrice, resolvePromotionForProduct } from './services/promotions';
 
 type AdminTab =
   | 'ACTIVE_TABLES'
@@ -19,6 +28,8 @@ type AdminTab =
   | 'MENU'
   | 'SETTINGS'
   | 'STAFF'
+  | 'PROMOTIONS'
+  | 'RATINGS'
   | 'WAITER_MODULE'
   | 'COUNTER_MODULE';
 
@@ -35,6 +46,8 @@ const getAllowedAdminTabs = (
   if (role === 'ADMIN') {
     tabs.push('SETTINGS');
     tabs.push('STAFF');
+    tabs.push('PROMOTIONS');
+    tabs.push('RATINGS');
   }
   return tabs;
 };
@@ -66,6 +79,7 @@ const App: React.FC = () => {
   const tempRegisterEnabled = ((import.meta as any).env?.VITE_ENABLE_TEMP_REGISTER || '').trim().toLowerCase() === 'true';
   const adminHash = adminAccessKey ? `/admin/${adminAccessKey}` : '/admin';
   const [view, setView] = useState<AppView>('LANDING');
+  const [publicReceiptToken, setPublicReceiptToken] = useState('');
   const [activeTable, setActiveTable] = useState<Table | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [guest, setGuest] = useState<Guest | null>(null);
@@ -78,11 +92,19 @@ const App: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [showCart, setShowCart] = useState(false);
   const [showAddonSelector, setShowAddonSelector] = useState(false);
+  const [showCalculator, setShowCalculator] = useState(false);
+  const [showRatingModal, setShowRatingModal] = useState(false);
+  const [ratingStars, setRatingStars] = useState(0);
+  const [ratingComment, setRatingComment] = useState('');
+  const [ratingName, setRatingName] = useState('');
+  const [sendingRating, setSendingRating] = useState(false);
   const [pendingProduct, setPendingProduct] = useState<Product | null>(null);
   const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>([]);
   const [productObservation, setProductObservation] = useState('');
+  const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [sessionOrders, setSessionOrders] = useState<Order[]>([]);
   const [tempRegisterStatus, setTempRegisterStatus] = useState('');
+  const [tempRegisterRole, setTempRegisterRole] = useState<UserRole>('WAITER');
   const [adminTab, setAdminTab] = useState<AdminTab>('ACTIVE_TABLES');
   const [adminSidebarOpen, setAdminSidebarOpen] = useState(false);
   const [isDesktopAdmin, setIsDesktopAdmin] = useState(
@@ -128,7 +150,14 @@ const App: React.FC = () => {
       if (lastNotificationRef.current === dedupeKey) lastNotificationRef.current = '';
     }, 1200);
 
-    playLocalBeep();
+    if (view === 'ADMIN_DASHBOARD') {
+      await playOrderAlertSound({
+        enabled: settings?.notification_sound_enabled,
+        mp3Url: settings?.notification_sound_url,
+      });
+    } else {
+      playLocalBeep();
+    }
     toast(body, 'info');
 
     try {
@@ -198,7 +227,17 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleHash = async () => {
       const hash = window.location.hash;
-      if (hash.startsWith('#/m/')) {
+      if (hash.startsWith('#/cupom/')) {
+        const token = decodeURIComponent((hash.split('/cupom/')[1] || '').split(/[?#]/)[0] || '').trim();
+        if (!token) {
+          setPublicReceiptToken('');
+          setView('LANDING');
+          return;
+        }
+        setPublicReceiptToken(token);
+        setView('PUBLIC_RECEIPT');
+      } else if (hash.startsWith('#/m/')) {
+        setPublicReceiptToken('');
         const token = hash.split('/m/')[1];
         const { data: table } = await supabase.from('tables').select('*').eq('token', token).single();
         if (table) {
@@ -212,8 +251,10 @@ const App: React.FC = () => {
           setView('CUSTOMER_MENU');
         }
       } else if (hash === '#/cadastro-temp') {
+        setPublicReceiptToken('');
         setView(tempRegisterEnabled ? 'TEMP_REGISTER' : 'LANDING');
       } else if (hash.startsWith('#/admin')) {
+        setPublicReceiptToken('');
         const clean = hash.replace(/^#\//, '');
         const [, providedKey = ''] = clean.split('/');
         if (adminAccessKey && providedKey !== adminAccessKey) {
@@ -222,6 +263,7 @@ const App: React.FC = () => {
         }
         setView('ADMIN_DASHBOARD');
       } else {
+        setPublicReceiptToken('');
         setView('LANDING');
       }
     };
@@ -235,9 +277,15 @@ const App: React.FC = () => {
       const { data: cats } = await supabase.from('categories').select('*').eq('active', true).order('sort_order');
       const { data: prods } = await supabase.from('products').select('*').eq('active', true);
       const { data: addns } = await supabase.from('product_addons').select('*').eq('active', true);
+      const { data: promos } = await supabase
+        .from('promotions')
+        .select('*, promotion_products(product_id)')
+        .eq('active', true)
+        .order('created_at', { ascending: false });
       if (cats) setCategories(cats);
       if (prods) setProducts(prods);
       if (addns) setAddons(addns);
+      if (promos) setPromotions(promos as Promotion[]);
     };
     fetchMenu();
   }, []);
@@ -268,6 +316,11 @@ const App: React.FC = () => {
             addon_names: Array.isArray(parsed?.addon_names) ? parsed.addon_names : [],
             addon_total_cents: Number(parsed?.addon_total_cents || 0),
             observation,
+            base_price_cents: Number(parsed?.base_price_cents || 0),
+            promo_name: parsed?.promo_name || null,
+            promo_discount_type: parsed?.promo_discount_type || null,
+            promo_discount_value: Number(parsed?.promo_discount_value || 0),
+            promo_discount_cents: Number(parsed?.promo_discount_cents || 0),
           } as CartItem;
         }));
       }
@@ -375,6 +428,35 @@ const App: React.FC = () => {
     };
   }, [session?.id]);
 
+  useEffect(() => {
+    if (view !== 'ADMIN_DASHBOARD' || !user) return;
+
+    const channel = supabase
+      .channel(`admin_global_orders_${user.id}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, async (payload) => {
+        const order = payload.new as any;
+        const type =
+          order?.service_type === 'ENTREGA'
+            ? 'Entrega'
+            : order?.service_type === 'RETIRADA'
+              ? 'Retirada'
+              : order?.origin === 'BALCAO'
+                ? 'Balcao'
+                : 'Mesa';
+        const shortId = String(order?.id || '').slice(0, 6) || '----';
+        await pushLocalNotification(
+          'Novo pedido recebido',
+          `${type} • Pedido #${shortId}`,
+          `admin-new-order-${order?.id || shortId}`
+        );
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [view, user?.id, settings?.notification_sound_enabled, settings?.notification_sound_url]);
+
   const handleOpenTable = async (name: string) => {
     if (!activeTable) return;
     setIsLoading(true);
@@ -426,17 +508,40 @@ const App: React.FC = () => {
   const handleUpdateCart = async (productId: string, delta: number) => {
     if (!session || !guest) return;
     if (hasOwnPendingApproval) return;
-    const existing = cart.find(i => i.product_id === productId && i.guest_id === guest.id && !i.note);
+    const product = products.find((item) => item.id === productId);
+    if (!product) return;
+    const pricing = getProductPricing(product);
+    const notePayload = {
+      addon_ids: [] as string[],
+      addon_names: [] as string[],
+      addon_total_cents: 0,
+      base_price_cents: pricing.originalUnitPriceCents,
+      promo_name: pricing.promoName,
+      promo_discount_type: pricing.promoDiscountType,
+      promo_discount_value: pricing.promoDiscountValue,
+      promo_discount_cents: pricing.discountCents,
+      observation: '',
+    };
+    const note = JSON.stringify(notePayload);
+    const existing = cart.find(
+      (item) => item.product_id === productId && item.guest_id === guest.id && (item.note || null) === note
+    );
     if (existing) {
       const newQty = existing.qty + delta;
       if (newQty <= 0) await supabase.from('cart_items').delete().eq('id', existing.id);
       else await supabase.from('cart_items').update({ qty: newQty }).eq('id', existing.id);
     } else if (delta > 0) {
-      await supabase.from('cart_items').insert({ session_id: session.id, guest_id: guest.id, product_id: productId, qty: delta });
+      await supabase
+        .from('cart_items')
+        .insert({ session_id: session.id, guest_id: guest.id, product_id: productId, qty: delta, note });
     }
   };
 
   const getProductAddons = (productId: string) => addons.filter(a => a.product_id === productId);
+  const getProductPricing = (product: Product) => {
+    const promotion = resolvePromotionForProduct(product.id, promotions);
+    return applyPromotionToPrice(product.price_cents || 0, promotion);
+  };
 
   const openAddonSelector = (product: Product) => {
     if (hasOwnPendingApproval) return;
@@ -444,6 +549,13 @@ const App: React.FC = () => {
     setSelectedAddonIds([]);
     setProductObservation('');
     setShowAddonSelector(true);
+  };
+
+  const closeAddonSelector = () => {
+    setShowAddonSelector(false);
+    setPendingProduct(null);
+    setSelectedAddonIds([]);
+    setProductObservation('');
   };
 
   const toggleAddon = (product: Product, addonId: string) => {
@@ -455,7 +567,12 @@ const App: React.FC = () => {
     setSelectedAddonIds((prev) => prev.includes(addonId) ? prev.filter(id => id !== addonId) : [...prev, addonId]);
   };
 
-  const getCartItemUnitPrice = (item: CartItem) => (item.product?.price_cents || 0) + (item.addon_total_cents || 0);
+  const getCartItemUnitPrice = (item: CartItem) => {
+    const basePrice = Number(item.base_price_cents || item.product?.price_cents || 0);
+    const promoDiscount = Math.max(0, Number(item.promo_discount_cents || 0));
+    const finalBase = Math.max(0, basePrice - promoDiscount);
+    return finalBase + (item.addon_total_cents || 0);
+  };
 
   const myCartItems = useMemo(
     () => cart.filter((item) => item.guest_id === guest?.id),
@@ -479,6 +596,10 @@ const App: React.FC = () => {
 
   const myCartTotal = useMemo(
     () => myCartItems.reduce((acc, item) => acc + getCartItemUnitPrice(item) * item.qty, 0),
+    [myCartItems]
+  );
+  const myCartPromotionDiscount = useMemo(
+    () => myCartItems.reduce((acc, item) => acc + Math.max(0, Number(item.promo_discount_cents || 0)) * (item.qty || 0), 0),
     [myCartItems]
   );
 
@@ -529,7 +650,15 @@ const App: React.FC = () => {
 
     const approvalMode = (settings?.order_approval_mode || 'HOST') as 'HOST' | 'SELF';
     const requiresHostApproval = approvalMode === 'HOST' && !guest.is_host;
-    const total = myCartItems.reduce((acc, item) => acc + getCartItemUnitPrice(item) * item.qty, 0);
+    const subtotalBeforePromotion = myCartItems.reduce((acc, item) => {
+      const basePrice = Number(item.base_price_cents || item.product?.price_cents || 0);
+      return acc + (basePrice + Number(item.addon_total_cents || 0)) * item.qty;
+    }, 0);
+    const promotionDiscountTotal = myCartItems.reduce(
+      (acc, item) => acc + Math.max(0, Number(item.promo_discount_cents || 0)) * item.qty,
+      0
+    );
+    const total = Math.max(0, subtotalBeforePromotion - promotionDiscountTotal);
 
     const { data: order, error: orderError } = await supabase
       .from('orders')
@@ -542,10 +671,10 @@ const App: React.FC = () => {
         created_by_guest_id: guest.id,
         approved_by_guest_id: requiresHostApproval ? null : guest.id,
         approved_at: requiresHostApproval ? null : new Date().toISOString(),
-        subtotal_cents: total,
-        discount_mode: 'NONE',
-        discount_value: 0,
-        discount_cents: 0,
+        subtotal_cents: subtotalBeforePromotion,
+        discount_mode: promotionDiscountTotal > 0 ? 'AMOUNT' : 'NONE',
+        discount_value: promotionDiscountTotal,
+        discount_cents: promotionDiscountTotal,
         service_type: 'ON_TABLE',
         delivery_fee_cents: 0,
         total_cents: total,
@@ -559,26 +688,33 @@ const App: React.FC = () => {
       return;
     }
 
-    const items = myCartItems.map((item) => ({
-      order_id: order.id,
-      product_id: item.product_id,
-      name_snapshot: item.product?.name || 'Item',
-      unit_price_cents: getCartItemUnitPrice(item),
-      qty: item.qty,
-      note: (() => {
-        const lines: string[] = [];
-        if ((item.addon_names?.length || 0) > 0) {
-          lines.push(`Adicionais: ${item.addon_names?.join(', ')}`);
-        }
-        const observation = (item.observation || '').trim();
-        if (observation) {
-          lines.push(`Observacao: ${observation}`);
-        }
-        return lines.length > 0 ? lines.join('\n') : null;
-      })(),
-      added_by_name: item.guest_name || guest.name,
-      status: 'PENDING',
-    }));
+    const items = groupOrderItems(
+      myCartItems.map((item) => ({
+        order_id: order.id,
+        product_id: item.product_id,
+        name_snapshot: item.product?.name || 'Item',
+        original_unit_price_cents: Number(item.base_price_cents || item.product?.price_cents || 0),
+        unit_price_cents: getCartItemUnitPrice(item),
+        promo_name: item.promo_name || null,
+        promo_discount_type: item.promo_discount_type || null,
+        promo_discount_value: Number(item.promo_discount_value || 0),
+        promo_discount_cents: Number(item.promo_discount_cents || 0),
+        qty: item.qty,
+        note: (() => {
+          const lines: string[] = [];
+          if ((item.addon_names?.length || 0) > 0) {
+            lines.push(`Adicionais: ${item.addon_names?.join(', ')}`);
+          }
+          const observation = (item.observation || '').trim();
+          if (observation) {
+            lines.push(`Observacao: ${observation}`);
+          }
+          return lines.length > 0 ? lines.join('\n') : null;
+        })(),
+        added_by_name: item.guest_name || guest.name,
+        status: 'PENDING',
+      }))
+    );
 
     const { error: itemsError } = await supabase.from('order_items').insert(items);
     if (itemsError) {
@@ -608,11 +744,17 @@ const App: React.FC = () => {
     const addonIds = [...addonIdsRaw].sort();
     const selectedAddons = getProductAddons(product.id).filter(a => addonIds.includes(a.id));
     const addonTotal = selectedAddons.reduce((acc, a) => acc + a.price_cents, 0);
+    const pricing = getProductPricing(product);
     const observation = observationRaw.trim();
     const payload = {
       addon_ids: addonIds,
       addon_names: selectedAddons.map(a => a.name),
       addon_total_cents: addonTotal,
+      base_price_cents: pricing.originalUnitPriceCents,
+      promo_name: pricing.promoName,
+      promo_discount_type: pricing.promoDiscountType,
+      promo_discount_value: pricing.promoDiscountValue,
+      promo_discount_cents: pricing.discountCents,
       observation,
     };
     const note = addonIds.length > 0 || observation.length > 0 ? JSON.stringify(payload) : null;
@@ -639,7 +781,7 @@ const App: React.FC = () => {
   const handleResetPassword = async () => {
     const email = adminEmail.trim().toLowerCase();
     if (!email) {
-      alert("Por favor, insira seu e-mail corporativo no campo acima antes de clicar em recuperar senha.");
+      toast('Por favor, insira seu e-mail corporativo antes de recuperar a senha.', 'info');
       return;
     }
     
@@ -649,9 +791,78 @@ const App: React.FC = () => {
     });
     setIsLoading(false);
     
-    if (error) alert(error.message);
-    else alert("E-mail de redefinição de senha enviado! Verifique sua caixa de entrada.");
+    if (error) toast(error.message, 'error');
+    else toast('E-mail de redefinicao de senha enviado. Verifique sua caixa de entrada.', 'success');
   };
+
+  const getFeedbackDeviceToken = () => {
+    const key = 'feedback_device_token';
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
+    const generated =
+      (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`) || '';
+    localStorage.setItem(key, generated);
+    return generated;
+  };
+
+  const sanitizeFeedbackText = (value: string, maxLength = 400) =>
+    (value || '')
+      .replace(/<[^>]*>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, maxLength);
+
+  const handleSubmitFeedback = async () => {
+    if (!activeTable || !session) return;
+    if (ratingStars < 1 || ratingStars > 5) {
+      toast('Selecione de 1 a 5 estrelas.', 'error');
+      return;
+    }
+
+    const now = Date.now();
+    const lastSentAt = Number(localStorage.getItem('feedback_last_sent_at') || 0);
+    if (lastSentAt && now - lastSentAt < 3 * 60 * 1000) {
+      toast('Aguarde alguns minutos antes de enviar outra avaliacao.', 'info');
+      return;
+    }
+
+    setSendingRating(true);
+    const { error } = await supabase.rpc('create_store_feedback', {
+      p_stars: ratingStars,
+      p_comment: sanitizeFeedbackText(ratingComment, 400) || null,
+      p_customer_name: sanitizeFeedbackText(ratingName, 80) || null,
+      p_table_id: activeTable.id,
+      p_session_id: session.id,
+      p_order_id: null,
+      p_device_token: getFeedbackDeviceToken(),
+    });
+    setSendingRating(false);
+
+    if (error) {
+      toast(error.message || 'Falha ao enviar avaliacao.', 'error');
+      return;
+    }
+
+    localStorage.setItem('feedback_last_sent_at', String(now));
+    setShowRatingModal(false);
+    setRatingStars(0);
+    setRatingComment('');
+    setRatingName('');
+    toast('Avaliacao enviada. Obrigado!', 'success');
+  };
+
+  if (view === 'PUBLIC_RECEIPT') {
+    return (
+      <PublicReceipt
+        token={publicReceiptToken}
+        onBackHome={() => {
+          window.location.hash = '/';
+        }}
+      />
+    );
+  }
 
   if (view === 'LANDING') {
     return (
@@ -715,7 +926,7 @@ const App: React.FC = () => {
               const name = (form.elements.namedItem('name') as HTMLInputElement).value.trim();
               const email = (form.elements.namedItem('email') as HTMLInputElement).value.trim().toLowerCase();
               const password = (form.elements.namedItem('password') as HTMLInputElement).value;
-              const role = (form.elements.namedItem('role') as HTMLSelectElement).value as UserRole;
+              const role = (form.elements.namedItem('role') as HTMLInputElement).value as UserRole;
 
               // Evita conflito de estado caso ja exista sessao ativa no navegador.
               await supabase.auth.signOut();
@@ -764,6 +975,7 @@ const App: React.FC = () => {
               } else {
                 setTempRegisterStatus('Cadastro concluido com sucesso em auth.users e public.profiles.');
                 form.reset();
+                setTempRegisterRole('WAITER');
               }
             }}
             className="space-y-5"
@@ -782,11 +994,17 @@ const App: React.FC = () => {
             </div>
             <div className="space-y-2">
               <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Perfil</label>
-              <select name="role" defaultValue="WAITER" className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary transition-all font-bold">
-                <option value="ADMIN">ADMIN</option>
-                <option value="MANAGER">MANAGER</option>
-                <option value="WAITER">WAITER</option>
-              </select>
+              <CustomSelect
+                name="role"
+                value={tempRegisterRole}
+                onChange={(nextValue) => setTempRegisterRole(nextValue as UserRole)}
+                options={[
+                  { value: 'ADMIN', label: 'ADMIN' },
+                  { value: 'MANAGER', label: 'MANAGER' },
+                  { value: 'WAITER', label: 'WAITER' },
+                ]}
+                buttonClassName="p-4 font-bold text-sm"
+              />
             </div>
 
             <button
@@ -836,7 +1054,7 @@ const App: React.FC = () => {
               setAdminEmail(email);
               const { error } = await supabase.auth.signInWithPassword({ email, password });
               setIsLoading(false);
-              if (error) alert(error.message);
+              if (error) toast(error.message, 'error');
             }} className="space-y-6">
               <div className="space-y-2">
                 <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">E-MAIL CORPORATIVO</label>
@@ -900,7 +1118,7 @@ const App: React.FC = () => {
 
     const sidebarContent = (
       <>
-        <div className="space-y-10 flex-1">
+        <div className="space-y-10 flex-1 min-h-0 overflow-y-auto pr-1">
           {isWaiter ? (
             <div className="px-2">
               <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Atendimento</h3>
@@ -918,11 +1136,11 @@ const App: React.FC = () => {
                 <nav className="space-y-1">
                   <button onClick={() => openTab('ACTIVE_TABLES')} className={sidebarButtonClass('ACTIVE_TABLES')}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                    Mesas Ativas
+                    Pedidos
                   </button>
                   <button onClick={() => openTab('FINISHED_ORDERS')} className={sidebarButtonClass('FINISHED_ORDERS')}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
-                    Pedidos Finalizados
+                    Pedidos Finaliz...
                   </button>
                   <button onClick={() => openTab('TABLES')} className={sidebarButtonClass('TABLES')}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
@@ -956,6 +1174,18 @@ const App: React.FC = () => {
                       Equipe
                     </button>
                   )}
+                  {allowedTabs.includes('PROMOTIONS') && (
+                    <button onClick={() => openTab('PROMOTIONS')} className={sidebarButtonClass('PROMOTIONS')}>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41 11 3.83a2 2 0 0 0-2.83 0L3 9a2 2 0 0 0 0 2.83l9.59 9.58a2 2 0 0 0 2.82 0L21 15.83a2 2 0 0 0 0-2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+                      Promocoes
+                    </button>
+                  )}
+                  {allowedTabs.includes('RATINGS') && (
+                    <button onClick={() => openTab('RATINGS')} className={sidebarButtonClass('RATINGS')}>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m12 17.27 6.18 3.73-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+                      Avaliacoes
+                    </button>
+                  )}
                 </nav>
               </div>
             </>
@@ -979,6 +1209,7 @@ const App: React.FC = () => {
       <Layout
         isAdmin
         settings={settings}
+        showFooter={false}
         leadingAction={
           <button
             onClick={() => setAdminSidebarOpen((prev) => !prev)}
@@ -989,41 +1220,79 @@ const App: React.FC = () => {
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
           </button>
         }
+        actions={
+          <button
+            type="button"
+            onClick={() => setShowCalculator(true)}
+            className="px-3 py-2 rounded-lg border border-gray-200 bg-white text-gray-700 text-[9px] font-black uppercase tracking-widest"
+          >
+            Calculadora
+          </button>
+        }
       >
-        <div className="flex min-h-[92vh] relative">
-          <aside className={`hidden lg:flex flex-col shrink-0 border-r border-gray-200 bg-white overflow-hidden transition-all duration-300 ease-out ${adminSidebarOpen ? 'w-72 p-6' : 'w-0 p-0 border-r-0'}`}>
+        <div className="flex h-[calc(100vh-73px)] relative overflow-hidden">
+          <aside className={`hidden lg:flex flex-col shrink-0 h-full min-h-0 border-r border-gray-200 bg-white overflow-hidden transition-all duration-300 ease-out ${adminSidebarOpen ? 'w-72 p-6' : 'w-0 p-0 border-r-0'}`}>
             {adminSidebarOpen && sidebarContent}
           </aside>
 
-          <main className="flex-1 overflow-y-auto transition-all duration-300">
+          <main className="flex-1 h-full min-h-0 overflow-y-auto transition-all duration-300">
             <div className="p-4 sm:p-6 lg:p-8">
-              {adminTab === 'ACTIVE_TABLES' && <AdminOrders mode="ACTIVE" />}
-              {adminTab === 'FINISHED_ORDERS' && <AdminOrders mode="FINISHED" />}
+              {adminTab === 'ACTIVE_TABLES' && <AdminOrders mode="ACTIVE" settings={settings} />}
+              {adminTab === 'FINISHED_ORDERS' && <AdminOrders mode="FINISHED" settings={settings} />}
               {adminTab === 'MENU' && <AdminMenu />}
               {adminTab === 'TABLES' && <AdminTables settings={settings} />}
-              {adminTab === 'WAITER_MODULE' && <AdminWaiter profile={profile} settings={settings} />}
+              {adminTab === 'WAITER_MODULE' && <AdminWaiter profile={profile} />}
               {adminTab === 'COUNTER_MODULE' && <AdminCounter profile={profile} settings={settings} />}
               {adminTab === 'SETTINGS' && <AdminSettings settings={settings} onUpdate={fetchSettings} profile={profile} />}
               {adminTab === 'STAFF' && <AdminStaff profile={profile} />}
+              {adminTab === 'PROMOTIONS' && <AdminPromotions />}
+              {adminTab === 'RATINGS' && <AdminRatings />}
+
+              <footer className="mt-8 border-t border-gray-200 pt-4 text-center">
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">
+                  Dalison Messias - Uai Tech © {new Date().getFullYear()}
+                </p>
+                <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-500">
+                  Feito com amor
+                </p>
+              </footer>
             </div>
           </main>
 
-          <div className={`lg:hidden fixed inset-0 z-[95] ${adminSidebarOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}>
+          <div className={`lg:hidden fixed top-[73px] left-0 right-0 bottom-0 z-[120] ${adminSidebarOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}>
             <div onClick={() => setAdminSidebarOpen(false)} className={`absolute inset-0 bg-gray-900/55 transition-opacity duration-300 ${adminSidebarOpen ? 'opacity-100' : 'opacity-0'}`} />
-            <aside className={`absolute top-[73px] left-0 bottom-0 w-72 bg-white border-r border-gray-200 p-6 flex flex-col transition-transform duration-300 ease-out ${adminSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+            <aside className={`absolute top-0 left-0 bottom-0 w-72 bg-white border-r border-gray-200 p-6 flex flex-col transition-transform duration-300 ease-out ${adminSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
               {sidebarContent}
             </aside>
           </div>
         </div>
+        <CalculatorModal open={showCalculator} onClose={() => setShowCalculator(false)} title="Calculadora" />
       </Layout>
     );
   }
-  // Visualização Cliente (Mobile View)
+  // VisualizaÃ§Ã£o Cliente (Mobile View)
   return (
     <Layout 
       settings={settings}
       title={activeTable?.name}
-      actions={guest && <span className="bg-gray-50 text-gray-400 border border-gray-200 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest">{guest.name}</span>}
+      actions={
+        guest && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowRatingModal(true)}
+              className="p-2 rounded-lg border border-gray-200 bg-white text-amber-500"
+              aria-label="Avaliar loja"
+              title="Avaliar loja"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="m12 2 3.09 6.26L22 9.27l-5 4.88 1.18 6.88L12 17.77 5.82 21l1.18-6.88-5-4.88 6.91-1.01z" />
+              </svg>
+            </button>
+            <span className="bg-gray-50 text-gray-400 border border-gray-200 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest">{guest.name}</span>
+          </div>
+        )
+      }
     >
       {!guest ? (
         <div className="p-8 flex flex-col items-center justify-center min-h-[70vh] space-y-12">
@@ -1031,7 +1300,7 @@ const App: React.FC = () => {
              <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
           </div>
           <div className="text-center space-y-3">
-            <h2 className="text-3xl font-black text-gray-900 uppercase tracking-tighter leading-none italic">Sua Mesa Está Pronta</h2>
+            <h2 className="text-3xl font-black text-gray-900 uppercase tracking-tighter leading-none italic">Sua Mesa EstÃ¡ Pronta</h2>
             <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest leading-loose">Como deseja ser identificado(a) na {activeTable?.name}?</p>
           </div>
           <form onSubmit={(e) => {
@@ -1040,7 +1309,7 @@ const App: React.FC = () => {
             handleOpenTable(n);
           }} className="w-full space-y-5">
             <input name="un" type="text" placeholder="Seu Nome" required className="w-full p-4.5 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary text-center font-black text-lg placeholder:text-gray-200" />
-            <button className="w-full bg-primary text-white p-5 rounded-xl font-black uppercase tracking-widest text-base transition-transform active:scale-95">Abrir Cardápio</button>
+            <button className="w-full bg-primary text-white p-5 rounded-xl font-black uppercase tracking-widest text-base transition-transform active:scale-95">Abrir CardÃ¡pio</button>
           </form>
         </div>
       ) : (
@@ -1106,41 +1375,52 @@ const App: React.FC = () => {
                   <h3 className="text-lg font-black uppercase text-gray-800 tracking-tighter shrink-0 italic">{cat.name}</h3>
                   <div className="h-[1px] w-full bg-gray-100"></div>
                 </div>
-                <div className="grid gap-5">
+                <div className="space-y-3">
                   {products.filter(p => p.category_id === cat.id).map(p => {
                     const inCartQty = cart.filter(i => i.product_id === p.id && i.guest_id === guest.id).reduce((acc, i) => acc + i.qty, 0);
                     const hasAddons = getProductAddons(p.id).length > 0;
+                    const pricing = getProductPricing(p);
+                    const unitPrice = pricing.finalUnitPriceCents;
+                    const hasPromotion = pricing.hasPromotion;
+                    const promoBadge =
+                      pricing.promoDiscountType === 'PERCENT'
+                        ? `${pricing.promoDiscountValue}% OFF`
+                        : `- ${formatCurrency(pricing.discountCents)}`;
+
                     return (
-                      <div key={p.id} className="flex bg-white rounded-2xl p-3 gap-4 border border-gray-100 relative group transition-all">
-                        {(p.image_url || '').trim() ? (
-                          <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover bg-gray-50 border border-gray-50" />
-                        ) : (
-                          <div className="w-20 h-20 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0">
-                            <span className="text-[7px] font-black uppercase tracking-widest text-gray-300">Sem foto</span>
-                          </div>
-                        )}
-                        <div className="flex-1 flex flex-col justify-between py-1">
-                          <div>
-                            <h4 className="font-black text-gray-900 text-base leading-none tracking-tighter">{p.name}</h4>
-                            <p className="text-[8px] text-gray-400 mt-2 line-clamp-2 leading-relaxed font-black uppercase tracking-tight">{p.description}</p>
-                          </div>
-                          <div className="mt-2 space-y-2">
-                            <span className="block font-black text-primary text-lg tracking-tighter">{formatCurrency(p.price_cents)}</span>
+                      <div key={p.id} className="bg-white rounded-2xl p-3 border border-gray-100 transition-all">
+                        <div className="flex gap-3 items-start">
+                          {(p.image_url || '').trim() ? (
+                            <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover bg-gray-50 border border-gray-50 shrink-0" />
+                          ) : (
+                            <div className="w-20 h-20 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0">
+                              <span className="text-[7px] font-black uppercase tracking-widest text-gray-300">Sem foto</span>
+                            </div>
+                          )}
+
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <h4 className="font-black text-gray-900 text-base leading-none tracking-tighter truncate">{p.name}</h4>
+                                <p className="text-[10px] text-gray-500 mt-2 leading-relaxed font-bold line-clamp-2">{p.description}</p>
+                              </div>
+                              <div className="flex flex-col items-end shrink-0">
+                                {hasPromotion && (
+                                  <span className="px-2 py-1 rounded-full bg-primary/15 text-primary text-[9px] font-black uppercase tracking-widest mb-1">
+                                    Promocao • {promoBadge}
+                                  </span>
+                                )}
+                                {hasPromotion && (
+                                  <span className="text-[10px] font-black text-gray-400 line-through">{formatCurrency(p.price_cents)}</span>
+                                )}
+                                <span className="font-black text-primary text-lg tracking-tighter">{formatCurrency(unitPrice)}</span>
+                              </div>
+                            </div>
+
                             {session?.status === 'OPEN' && (
-                              <div className="w-full">
-                                {hasAddons ? (
-                                  <div className="flex flex-col items-start gap-1.5">
-                                    <button
-                                      onClick={() => openAddonSelector(p)}
-                                      disabled={hasOwnPendingApproval}
-                                      className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                      Adicionar
-                                    </button>
-                                    {inCartQty > 0 && <span className="text-[10px] font-black text-primary">{inCartQty} no carrinho</span>}
-                                  </div>
-                                ) : inCartQty > 0 ? (
-                                  <div className="flex flex-col items-start gap-1.5">
+                              <div className="mt-3 flex flex-wrap items-center gap-2 justify-between">
+                                <div className="flex items-center gap-2">
+                                  {!hasAddons && inCartQty > 0 && (
                                     <div className="inline-flex items-center gap-3 bg-gray-50 border border-gray-100 rounded-lg p-1 px-2.5">
                                       <button
                                         onClick={() => handleUpdateCart(p.id, -1)}
@@ -1158,32 +1438,28 @@ const App: React.FC = () => {
                                         +
                                       </button>
                                     </div>
-                                    <button
-                                      onClick={() => openAddonSelector(p)}
-                                      disabled={hasOwnPendingApproval}
-                                      className="text-[8px] font-black uppercase tracking-widest text-gray-500 underline disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                      Adicionar com observacao
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <div className="flex flex-col items-start gap-1.5">
-                                    <button
-                                      onClick={() => handleUpdateCart(p.id, 1)}
-                                      disabled={hasOwnPendingApproval}
-                                      className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[8px] font-black uppercase tracking-widest transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    >
-                                      Adicionar
-                                    </button>
-                                    <button
-                                      onClick={() => openAddonSelector(p)}
-                                      disabled={hasOwnPendingApproval}
-                                      className="text-[8px] font-black uppercase tracking-widest text-gray-500 underline disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                      Adicionar com observacao
-                                    </button>
-                                  </div>
-                                )}
+                                  )}
+                                  {inCartQty > 0 && (
+                                    <span className="text-[10px] font-black text-primary">{inCartQty} no carrinho</span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={() => (hasAddons ? openAddonSelector(p) : handleUpdateCart(p.id, 1))}
+                                    disabled={hasOwnPendingApproval}
+                                    className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  >
+                                    Comprar
+                                  </button>
+                                  <button
+                                    onClick={() => openAddonSelector(p)}
+                                    disabled={hasOwnPendingApproval}
+                                    className="text-[8px] font-black uppercase tracking-widest text-gray-500 underline disabled:opacity-40 disabled:cursor-not-allowed"
+                                  >
+                                    Obs/Adicional
+                                  </button>
+                                </div>
                               </div>
                             )}
                           </div>
@@ -1216,123 +1492,90 @@ const App: React.FC = () => {
           )}
 
           {showAddonSelector && pendingProduct && (
-            <div className="fixed inset-0 z-[90] bg-gray-900/70 backdrop-blur-sm flex items-end sm:items-center sm:justify-center p-0 sm:p-6">
-              <div className="bg-white w-full sm:max-w-2xl rounded-t-[28px] sm:rounded-[28px] max-h-[92dvh] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto p-5 sm:p-6 flex flex-col gap-6 border-t sm:border border-gray-100">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">{pendingProduct.name}</h3>
-                    <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                      {getProductAddons(pendingProduct.id).length === 0
-                        ? 'Observacao opcional para este item'
-                        : pendingProduct.addon_selection_mode === 'SINGLE'
-                          ? 'Adicionais opcionais: escolha 1 ou nenhum'
-                          : 'Adicionais opcionais: escolha quantos quiser ou nenhum'}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setShowAddonSelector(false);
-                      setPendingProduct(null);
-                      setSelectedAddonIds([]);
-                      setProductObservation('');
-                    }}
-                    className="text-gray-400 font-black"
-                  >
-                    Fechar
-                  </button>
-                </div>
-
-                <div className="flex flex-col gap-2">
-                  {getProductAddons(pendingProduct.id).length === 0 && (
-                    <p className="text-sm text-gray-400 font-bold">Sem adicionais para este produto.</p>
-                  )}
-                  {getProductAddons(pendingProduct.id).map((addon) => {
-                    const selected = selectedAddonIds.includes(addon.id);
-                    return (
-                      <button
-                        key={addon.id}
-                        type="button"
-                        onClick={() => toggleAddon(pendingProduct, addon.id)}
-                        className={`w-full flex items-center justify-between rounded-xl border p-3 ${selected ? 'border-primary bg-orange-50' : 'border-gray-200 bg-white'}`}
-                      >
-                        <span className="font-black text-sm text-gray-800">{addon.name}</span>
-                        <span className="font-black text-sm text-primary">+ {formatCurrency(addon.price_cents)}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className="flex flex-col gap-2">
-                  <label htmlFor="product-observation" className="text-[10px] text-gray-500 font-black uppercase tracking-widest">
-                    Observacao (opcional)
-                  </label>
-                  <textarea
-                    id="product-observation"
-                    rows={3}
-                    value={productObservation}
-                    onChange={(e) => setProductObservation(e.target.value)}
-                    placeholder="Ex.: sem cebola, molho separado..."
-                    maxLength={180}
-                    className="w-full rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-700 outline-none focus:border-primary"
-                  />
-                </div>
-
+            <AppModal
+              open={showAddonSelector}
+              onClose={closeAddonSelector}
+              title={pendingProduct.name}
+              size="md"
+              zIndex={90}
+              footer={
                 <button
                   type="button"
                   onClick={async () => {
                     await handleAddProductWithAddons(pendingProduct, selectedAddonIds, productObservation);
-                    setShowAddonSelector(false);
-                    setPendingProduct(null);
-                    setSelectedAddonIds([]);
-                    setProductObservation('');
+                    closeAddonSelector();
                   }}
                   className="w-full bg-gray-900 text-white py-4 rounded-xl font-black uppercase tracking-widest text-[11px]"
                 >
-                  {selectedAddonIds.length === 0 ? 'Adicionar sem adicional' : 'Adicionar ao Carrinho'}
+                  {selectedAddonIds.length === 0 ? 'Comprar' : 'Comprar com adicionais'}
                 </button>
+              }
+            >
+              <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mb-5">
+                {getProductAddons(pendingProduct.id).length === 0
+                  ? 'Observacao opcional para este item'
+                  : pendingProduct.addon_selection_mode === 'SINGLE'
+                    ? 'Adicionais opcionais: escolha 1 ou nenhum'
+                    : 'Adicionais opcionais: escolha quantos quiser ou nenhum'}
+              </p>
+
+              <div className="flex flex-col gap-2">
+                {getProductAddons(pendingProduct.id).length === 0 && (
+                  <p className="text-sm text-gray-400 font-bold">Sem adicionais para este produto.</p>
+                )}
+                {getProductAddons(pendingProduct.id).map((addon) => {
+                  const selected = selectedAddonIds.includes(addon.id);
+                  return (
+                    <button
+                      key={addon.id}
+                      type="button"
+                      onClick={() => toggleAddon(pendingProduct, addon.id)}
+                      className={`w-full flex items-center justify-between rounded-xl border p-3 ${selected ? 'border-primary bg-orange-50' : 'border-gray-200 bg-white'}`}
+                    >
+                      <span className="font-black text-sm text-gray-800">{addon.name}</span>
+                      <span className="font-black text-sm text-primary">+ {formatCurrency(addon.price_cents)}</span>
+                    </button>
+                  );
+                })}
               </div>
-            </div>
+
+              <div className="flex flex-col gap-2 mt-5">
+                <label htmlFor="product-observation" className="text-[10px] text-gray-500 font-black uppercase tracking-widest">
+                  Observacao (opcional)
+                </label>
+                <textarea
+                  id="product-observation"
+                  rows={3}
+                  value={productObservation}
+                  onChange={(e) => setProductObservation(e.target.value)}
+                  placeholder="Ex.: sem cebola, molho separado..."
+                  maxLength={180}
+                  className="w-full rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-700 outline-none focus:border-primary"
+                />
+              </div>
+            </AppModal>
           )}
 
           {showCart && (
-            <div className="fixed inset-0 z-[100] bg-gray-900/60 backdrop-blur-sm flex items-end sm:items-center sm:justify-center p-0 sm:p-6">
-              <div className="bg-white w-full sm:max-w-3xl rounded-t-[32px] sm:rounded-[32px] max-h-[92dvh] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto p-5 sm:p-8 flex flex-col gap-6 sm:gap-8 animate-in slide-in-from-bottom duration-300 border-t sm:border border-gray-100">
-                <div className="flex justify-between items-center border-b border-gray-50 pb-5">
-                   <div>
-                    <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900 italic">Meu Carrinho</h3>
-                    <p className="text-[8px] text-gray-400 font-black uppercase tracking-[0.2em] mt-1.5 italic">Itens que voce vai enviar agora</p>
-                   </div>
-                  <button onClick={() => setShowCart(false)} className="bg-gray-50 p-3 rounded-lg text-gray-400">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-                  </button>
+            <AppModal
+              open={showCart}
+              onClose={() => setShowCart(false)}
+              title={
+                <div>
+                  <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900 italic">Meu Carrinho</h3>
+                  <p className="text-[8px] text-gray-400 font-black uppercase tracking-[0.2em] mt-1.5 italic">Itens que voce vai enviar agora</p>
                 </div>
-                <div className="flex flex-col gap-4">
-                  {myCartItems.map(item => (
-                    <div key={item.id} className="flex justify-between items-center border-b border-gray-50 pb-4 last:border-0 last:pb-0">
-                      <div className="flex gap-4 items-center">
-                        <div className="w-9 h-9 bg-gray-50 border border-gray-100 rounded-lg flex items-center justify-center font-black text-primary text-sm italic">{item.qty}x</div>
-                        <div className="flex flex-col">
-                          <p className="font-black text-sm text-gray-800 tracking-tight leading-none">{item.product?.name}</p>
-                          <p className="text-[8px] text-gray-400 uppercase font-black tracking-widest mt-1.5 flex items-center gap-1.5 italic opacity-70">
-                             Por {item.guest_name}
-                          </p>
-                          {(item.addon_names?.length || 0) > 0 && (
-                            <p className="text-[8px] text-primary uppercase font-black tracking-widest mt-1">
-                              + {item.addon_names?.join(', ')}
-                            </p>
-                          )}
-                          {!!(item.observation || '').trim() && (
-                            <p className="text-[8px] text-gray-500 font-black tracking-wide mt-1">
-                              Obs: {item.observation}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <span className="font-black text-gray-900 text-base tracking-tighter italic">{formatCurrency(getCartItemUnitPrice(item) * item.qty)}</span>
+              }
+              size="lg"
+              zIndex={100}
+              footer={
+                <div className="pt-1 flex flex-col gap-4">
+                  {myCartPromotionDiscount > 0 && (
+                    <div className="flex justify-between items-baseline font-black">
+                      <span className="text-gray-400 text-[8px] uppercase tracking-[0.3em] font-black italic">Descontos de Promocao</span>
+                      <span className="text-emerald-600 text-sm tracking-widest">- {formatCurrency(myCartPromotionDiscount)}</span>
                     </div>
-                  ))}
-                </div>
-                <div className="pt-6 border-t-2 border-gray-50 flex flex-col gap-6">
+                  )}
                   <div className="flex justify-between items-baseline font-black">
                     <span className="text-gray-400 text-[8px] uppercase tracking-[0.3em] font-black italic">Total do Meu Pedido</span>
                     <span className="text-primary text-3xl tracking-tighter italic">{formatCurrency(myCartTotal)}</span>
@@ -1340,13 +1583,122 @@ const App: React.FC = () => {
                   <button
                     onClick={handleSendMyCart}
                     disabled={isLoading || myCartItems.length === 0 || hasOwnPendingApproval}
-                    className="w-full bg-primary text-white py-5 rounded-xl font-black text-base uppercase tracking-widest transition-transform active:scale-95 italic disabled:opacity-60"
+                    className="w-full bg-primary text-white py-4 rounded-xl font-black text-base uppercase tracking-widest transition-transform active:scale-95 italic disabled:opacity-60"
                   >
                     {isLoading ? 'Enviando...' : hasOwnPendingApproval ? 'Aguardando Aceite' : 'Finalizar e Enviar'}
                   </button>
                 </div>
+              }
+            >
+              <div className="flex flex-col gap-4">
+                {myCartItems.map((item) => (
+                  <div key={item.id} className="flex justify-between items-center border-b border-gray-50 pb-4 last:border-0 last:pb-0">
+                    <div className="flex gap-4 items-center">
+                      <div className="w-9 h-9 bg-gray-50 border border-gray-100 rounded-lg flex items-center justify-center font-black text-primary text-sm italic">{item.qty}x</div>
+                      <div className="flex flex-col">
+                        <p className="font-black text-sm text-gray-800 tracking-tight leading-none">{item.product?.name}</p>
+                        <p className="text-[8px] text-gray-400 uppercase font-black tracking-widest mt-1.5 flex items-center gap-1.5 italic opacity-70">
+                          Por {item.guest_name}
+                        </p>
+                        {(item.addon_names?.length || 0) > 0 && (
+                          <p className="text-[8px] text-primary uppercase font-black tracking-widest mt-1">
+                            + {item.addon_names?.join(', ')}
+                          </p>
+                        )}
+                        {Number(item.promo_discount_cents || 0) > 0 && (
+                          <p className="text-[8px] text-emerald-600 uppercase font-black tracking-widest mt-1">
+                            Promocao: -{formatCurrency(Number(item.promo_discount_cents || 0))}
+                          </p>
+                        )}
+                        {!!(item.observation || '').trim() && (
+                          <p className="text-[8px] text-gray-500 font-black tracking-wide mt-1">
+                            Obs: {item.observation}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <span className="font-black text-gray-900 text-base tracking-tighter italic">{formatCurrency(getCartItemUnitPrice(item) * item.qty)}</span>
+                  </div>
+                ))}
               </div>
-            </div>
+            </AppModal>
+          )}
+
+          {showRatingModal && (
+            <AppModal
+              open={showRatingModal}
+              onClose={() => setShowRatingModal(false)}
+              title="Avaliar Loja"
+              size="sm"
+              zIndex={130}
+              footer={
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowRatingModal(false)}
+                    className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSubmitFeedback}
+                    disabled={sendingRating}
+                    className="flex-1 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-50"
+                  >
+                    {sendingRating ? 'Enviando...' : 'Enviar Avaliacao'}
+                  </button>
+                </div>
+              }
+            >
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Nota (obrigatorio)</p>
+                  <div className="flex items-center gap-2">
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <button
+                        key={star}
+                        type="button"
+                        onClick={() => setRatingStars(star)}
+                        className={`w-10 h-10 rounded-xl border flex items-center justify-center ${
+                          star <= ratingStars
+                            ? 'bg-amber-50 border-amber-200 text-amber-500'
+                            : 'bg-white border-gray-200 text-gray-300'
+                        }`}
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                          <path d="m12 17.27 6.18 3.73-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+                        </svg>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Nome/apelido (opcional)</label>
+                  <input
+                    value={ratingName}
+                    onChange={(e) => setRatingName(e.target.value)}
+                    maxLength={80}
+                    className="w-full p-3 rounded-xl border border-gray-200 font-bold"
+                    placeholder="Seu nome"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Comentario (opcional)</label>
+                  <textarea
+                    value={ratingComment}
+                    onChange={(e) => setRatingComment(e.target.value)}
+                    maxLength={400}
+                    rows={4}
+                    className="w-full p-3 rounded-xl border border-gray-200 font-bold"
+                    placeholder="Conte para a gente como foi sua experiencia..."
+                  />
+                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 text-right">
+                    {ratingComment.length}/400
+                  </p>
+                </div>
+              </div>
+            </AppModal>
           )}
         </div>
       )}
@@ -1355,4 +1707,3 @@ const App: React.FC = () => {
 };
 
 export default App;
-

@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { formatCurrency, supabase } from '../services/supabase';
-import { printKitchenTicket } from '../services/kitchenPrint';
-import { Order, OrderItem, Product, ProductAddon, Profile, Session, StoreSettings } from '../types';
+import { buildLineItemKey, groupOrderItems } from '../services/orderItemGrouping';
+import { Order, OrderItem, Product, ProductAddon, Profile, Promotion, Session } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
+import AppModal from './ui/AppModal';
+import { applyPromotionToPrice, resolvePromotionForProduct } from '../services/promotions';
 
 type SessionWithDetails = Session & {
   table?: { id: string; name: string; table_type?: string; status?: string; token?: string } | null;
@@ -14,7 +16,12 @@ type WaiterDraftItem = {
   product_id: string;
   product_name: string;
   qty: number;
+  base_price_cents: number;
   unit_price_cents: number;
+  promo_name: string | null;
+  promo_discount_type: 'AMOUNT' | 'PERCENT' | null;
+  promo_discount_value: number;
+  promo_discount_cents: number;
   addon_names: string[];
   addon_total_cents: number;
   observation: string;
@@ -22,7 +29,6 @@ type WaiterDraftItem = {
 
 interface AdminWaiterProps {
   profile: Profile | null;
-  settings: StoreSettings | null;
 }
 
 const toId = () => Math.random().toString(36).slice(2);
@@ -48,7 +54,7 @@ const makeItemNote = (addonNames: string[], observation: string) => {
   return lines.length > 0 ? lines.join('\n') : null;
 };
 
-const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
+const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile }) => {
   const { toast } = useFeedback();
   const [sessions, setSessions] = useState<SessionWithDetails[]>([]);
   const [search, setSearch] = useState('');
@@ -57,6 +63,7 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [addons, setAddons] = useState<ProductAddon[]>([]);
+  const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [productSearch, setProductSearch] = useState('');
   const [draftItems, setDraftItems] = useState<WaiterDraftItem[]>([]);
 
@@ -67,7 +74,6 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
   const [pendingAddonIds, setPendingAddonIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [creatingVirtual, setCreatingVirtual] = useState(false);
-  const [finalizing, setFinalizing] = useState(false);
 
   const isWaiter = profile?.role === 'WAITER';
 
@@ -93,15 +99,17 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
   };
 
   const fetchCatalog = async () => {
-    const [catRes, prodRes, addonRes] = await Promise.all([
+    const [catRes, prodRes, addonRes, promoRes] = await Promise.all([
       supabase.from('categories').select('id,name').eq('active', true).order('sort_order'),
       supabase.from('products').select('*').eq('active', true).eq('out_of_stock', false).order('name'),
       supabase.from('product_addons').select('*').eq('active', true).order('name'),
+      supabase.from('promotions').select('*, promotion_products(product_id)').eq('active', true).order('created_at', { ascending: false }),
     ]);
 
     if (catRes.data) setCategories(catRes.data as { id: string; name: string }[]);
     if (prodRes.data) setProducts(prodRes.data as Product[]);
     if (addonRes.data) setAddons(addonRes.data as ProductAddon[]);
+    if (promoRes.data) setPromotions(promoRes.data as Promotion[]);
   };
 
   useEffect(() => {
@@ -142,11 +150,6 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
       .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   }, [selectedSession]);
 
-  const waiterUnprintedOrders = useMemo(
-    () => visibleOrders.filter((order) => order.origin === 'WAITER' && !order.printed_at),
-    [visibleOrders]
-  );
-
   const isVirtualSession = (session: SessionWithDetails | null) => {
     if (!session) return false;
     const token = (session.table?.token || '').toLowerCase();
@@ -170,6 +173,10 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
   );
 
   const getAddonsByProduct = (productId: string) => addons.filter((addon) => addon.product_id === productId);
+  const getProductPricing = (product: Product) => {
+    const promotion = resolvePromotionForProduct(product.id, promotions);
+    return applyPromotionToPrice(product.price_cents || 0, promotion);
+  };
 
   const openAddModal = (product: Product) => {
     setPendingProduct(product);
@@ -183,17 +190,47 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
     if (!pendingProduct) return;
     const selectedAddons = getAddonsByProduct(pendingProduct.id).filter((addon) => pendingAddonIds.includes(addon.id));
     const addonTotal = selectedAddons.reduce((acc, addon) => acc + addon.price_cents, 0);
+    const pricing = getProductPricing(pendingProduct);
+    const itemNote = makeItemNote(selectedAddons.map((addon) => addon.name), pendingObservation);
     const item: WaiterDraftItem = {
       id: toId(),
       product_id: pendingProduct.id,
       product_name: pendingProduct.name,
       qty: Math.max(1, pendingQty),
-      unit_price_cents: (pendingProduct.price_cents || 0) + addonTotal,
+      base_price_cents: pricing.originalUnitPriceCents,
+      unit_price_cents: pricing.finalUnitPriceCents + addonTotal,
+      promo_name: pricing.promoName,
+      promo_discount_type: pricing.promoDiscountType,
+      promo_discount_value: pricing.promoDiscountValue,
+      promo_discount_cents: pricing.discountCents,
       addon_names: selectedAddons.map((addon) => addon.name),
       addon_total_cents: addonTotal,
       observation: pendingObservation.trim(),
     };
-    setDraftItems((prev) => [...prev, item]);
+    setDraftItems((prev) => {
+      const itemKey = `${item.product_id}::${buildLineItemKey({
+        name_snapshot: item.product_name,
+        unit_price_cents: item.unit_price_cents,
+        note: itemNote,
+      })}`;
+      const existingIndex = prev.findIndex((entry) => {
+        const entryKey = `${entry.product_id}::${buildLineItemKey({
+          name_snapshot: entry.product_name,
+          unit_price_cents: entry.unit_price_cents,
+          note: makeItemNote(entry.addon_names, entry.observation),
+        })}`;
+        return entryKey === itemKey;
+      });
+      if (existingIndex < 0) return [...prev, item];
+      return prev.map((entry, index) =>
+        index === existingIndex
+          ? {
+              ...entry,
+              qty: entry.qty + item.qty,
+            }
+          : entry
+      );
+    });
     setShowAddModal(false);
   };
 
@@ -203,14 +240,34 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
     setSaving(true);
     const rootOrderId = visibleOrders.find((order) => !order.parent_order_id)?.id || visibleOrders[0]?.id || null;
 
-    const payloadItems = draftItems.map((item) => ({
+    const payloadItems = groupOrderItems(
+      draftItems.map((item) => ({
+        product_id: item.product_id,
+        name_snapshot: item.product_name,
+        original_unit_price_cents: Math.max(0, Number(item.base_price_cents || 0) + Number(item.addon_total_cents || 0)),
+        unit_price_cents: item.unit_price_cents,
+        promo_name: item.promo_name,
+        promo_discount_type: item.promo_discount_type,
+        promo_discount_value: item.promo_discount_value,
+        promo_discount_cents: item.promo_discount_cents,
+        qty: item.qty,
+        note: makeItemNote(item.addon_names, item.observation),
+        added_by_name: profile.name || 'Garcom',
+        status: 'PENDING',
+      }))
+    ).map((item) => ({
       product_id: item.product_id,
-      name_snapshot: item.product_name,
+      name_snapshot: item.name_snapshot,
+      original_unit_price_cents: (item as any).original_unit_price_cents,
       unit_price_cents: item.unit_price_cents,
+      promo_name: (item as any).promo_name,
+      promo_discount_type: (item as any).promo_discount_type,
+      promo_discount_value: (item as any).promo_discount_value,
+      promo_discount_cents: (item as any).promo_discount_cents,
       qty: item.qty,
-      note: makeItemNote(item.addon_names, item.observation),
-      added_by_name: profile.name || 'Garcom',
-      status: 'PENDING',
+      note: item.note,
+      added_by_name: item.added_by_name,
+      status: item.status,
     }));
 
     const { data: orderId, error } = await supabase.rpc('create_staff_order', {
@@ -223,6 +280,9 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
       p_customer_name: null,
       p_customer_phone: null,
       p_general_note: null,
+      p_service_type: 'ON_TABLE',
+      p_delivery_address: null,
+      p_delivery_fee_cents: 0,
       p_discount_mode: 'NONE',
       p_discount_value: 0,
       p_items: payloadItems,
@@ -265,91 +325,6 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
     toast(`Mesa virtual criada: sessao #${String(sessionId).slice(0, 6)}.`, 'success');
   };
 
-  const handleFinalizeSession = async () => {
-    if (!selectedSession) return;
-    setFinalizing(true);
-
-    const { error } = await supabase.rpc('finalize_session_with_history', {
-      p_session_id: selectedSession.id,
-    });
-    setFinalizing(false);
-
-    if (error) {
-      toast(`Erro ao finalizar mesa: ${error.message}`, 'error');
-      return;
-    }
-
-    setSelectedSessionId(null);
-    setDraftItems([]);
-    await fetchSessions();
-    toast('Mesa finalizada e encerrada.', 'success');
-  };
-
-  const markOrdersPrinted = async (sessionId: string, orderIds: string[]) => {
-    if (orderIds.length === 0) {
-      toast('Nao ha pedidos para imprimir neste filtro.', 'info');
-      return;
-    }
-
-    const { error } = await supabase.rpc('mark_orders_printed', {
-      p_session_id: sessionId,
-      p_order_ids: orderIds,
-    });
-
-    if (error) {
-      toast(`Impresso, mas falhou ao marcar como impresso: ${error.message}`, 'error');
-      return;
-    }
-    fetchSessions();
-  };
-
-  const printOrders = async (orders: (Order & { items?: OrderItem[] })[], filterLabel: string) => {
-    if (!selectedSession || orders.length === 0) {
-      toast('Nao ha pedidos para imprimir neste filtro.', 'info');
-      return;
-    }
-
-    const result = await printKitchenTicket({
-      storeName: settings?.store_name || 'Parada do Lanche',
-      tableName: selectedSession.table?.name || 'Mesa',
-      filterLabel,
-      openedAt: selectedSession.created_at,
-      closedAt: selectedSession.closed_at || null,
-      totalCents: orders.reduce((acc, order) => acc + (order.total_cents || 0), 0),
-      orders: orders.map((order) => ({
-        id: order.id,
-        created_at: order.created_at,
-        total_cents: order.total_cents || 0,
-        approval_label:
-          order.approval_status === 'PENDING_APPROVAL'
-            ? 'Aguardando aceite'
-            : order.approval_status === 'REJECTED'
-              ? 'Rejeitado'
-              : 'Confirmado',
-        items: (order.items || []).map((item) => ({
-          name_snapshot: item.name_snapshot,
-          qty: item.qty || 0,
-          unit_price_cents: item.unit_price_cents || 0,
-          note: item.note || '',
-          added_by_name: item.added_by_name || profile?.name || 'Garcom',
-        })),
-      })),
-    });
-
-    if (result.status === 'error') {
-      toast(`Nao foi possivel iniciar a impressao: ${result.message}`, 'error');
-      return;
-    }
-    if (result.status === 'cancelled') {
-      toast('Impressao cancelada. Nenhum cupom foi marcado como impresso.', 'info');
-      return;
-    }
-
-    await markOrdersPrinted(
-      selectedSession.id,
-      orders.map((order) => order.id)
-    );
-  };
 
   if (!isWaiter) {
     return (
@@ -438,22 +413,26 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
       </div>
 
       {selectedSession && (
-        <div className="fixed inset-0 z-[210] bg-gray-900/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6">
-          <div className="w-full max-w-7xl bg-white rounded-t-[28px] sm:rounded-[30px] border border-gray-200 p-5 sm:p-8 max-h-[calc(100dvh-1.5rem)] sm:max-h-[calc(100dvh-3rem)] overflow-y-auto space-y-6">
-            <div className="flex items-center justify-between border-b border-gray-100 pb-4">
-              <div>
-                <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900">{selectedSession.table?.name || 'Mesa'}</h3>
-                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                  Sessao #{selectedSession.id.slice(0, 6)} - Aberta em {new Date(selectedSession.created_at).toLocaleTimeString('pt-BR')}
-                </p>
-                {isVirtualSession(selectedSession) && (
-                  <span className="inline-flex mt-2 px-2 py-1 rounded-full border border-indigo-100 bg-indigo-50 text-indigo-700 text-[8px] font-black uppercase tracking-widest">
-                    Mesa virtual criada pelo garcom
-                  </span>
-                )}
-              </div>
-              <button onClick={() => setSelectedSessionId(null)} className="text-gray-400 font-black">Fechar</button>
+        <AppModal
+          open={!!selectedSession}
+          onClose={() => setSelectedSessionId(null)}
+          size="2xl"
+          zIndex={210}
+          bodyClassName="space-y-6"
+          title={
+            <div>
+              <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900">{selectedSession.table?.name || 'Mesa'}</h3>
+              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
+                Sessao #{selectedSession.id.slice(0, 6)} - Aberta em {new Date(selectedSession.created_at).toLocaleTimeString('pt-BR')}
+              </p>
+              {isVirtualSession(selectedSession) && (
+                <span className="inline-flex mt-2 px-2 py-1 rounded-full border border-indigo-100 bg-indigo-50 text-indigo-700 text-[8px] font-black uppercase tracking-widest">
+                  Mesa virtual criada pelo garcom
+                </span>
+              )}
             </div>
+          }
+        >
 
             <div className="grid lg:grid-cols-2 gap-6">
               <section className="border border-gray-100 rounded-2xl p-4 space-y-3">
@@ -472,11 +451,10 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
                           {order.origin || 'CUSTOMER'}
                         </span>
                       </div>
-                      {(order.items || []).map((item) => (
-                        <div key={item.id} className="flex justify-between items-start gap-2 border-t border-gray-50 pt-2">
+                      {groupOrderItems(order.items || []).map((item, index) => (
+                        <div key={`${order.id}-${item.id || index}`} className="flex justify-between items-start gap-2 border-t border-gray-50 pt-2">
                           <div>
                             <p className="text-sm font-black text-gray-700">{item.qty}x {item.name_snapshot}</p>
-                            <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">Pedido por {item.added_by_name}</p>
                             {item.note && <p className="text-[10px] text-gray-500 font-black mt-1 whitespace-pre-line">{item.note}</p>}
                           </div>
                           <span className="font-black text-gray-800">{formatCurrency((item.qty || 0) * (item.unit_price_cents || 0))}</span>
@@ -507,7 +485,17 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
                         </p>
                       </div>
                       <div className="flex items-center gap-3">
-                        <span className="font-black text-gray-900">{formatCurrency(product.price_cents)}</span>
+                        {(() => {
+                          const pricing = getProductPricing(product);
+                          return (
+                            <div className="text-right">
+                              {pricing.hasPromotion && (
+                                <p className="text-[10px] text-gray-400 line-through font-black">{formatCurrency(product.price_cents)}</p>
+                              )}
+                              <span className="font-black text-gray-900">{formatCurrency(pricing.finalUnitPriceCents)}</span>
+                            </div>
+                          );
+                        })()}
                         <button
                           onClick={() => openAddModal(product)}
                           className="px-3 py-2 rounded-lg bg-gray-900 text-white text-[9px] font-black uppercase tracking-widest"
@@ -530,6 +518,11 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
                           {item.addon_names.length > 0 && (
                             <p className="text-[10px] text-primary font-black uppercase tracking-widest mt-1">
                               + {item.addon_names.join(', ')}
+                            </p>
+                          )}
+                          {item.promo_discount_cents > 0 && (
+                            <p className="text-[10px] text-emerald-600 font-black uppercase tracking-widest mt-1">
+                              Promocao: -{formatCurrency(item.promo_discount_cents)}
                             </p>
                           )}
                           {!!item.observation && <p className="text-[10px] text-gray-500 font-black mt-1">Obs: {item.observation}</p>}
@@ -561,47 +554,33 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
               </section>
             </div>
 
-            <div className="border-t border-gray-100 pt-4 flex flex-wrap justify-end gap-2">
-              {isVirtualSession(selectedSession) && (
-                <button
-                  onClick={handleFinalizeSession}
-                  disabled={finalizing}
-                  className="px-4 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {finalizing ? 'Finalizando...' : 'Finalizar mesa'}
-                </button>
-              )}
-              <button
-                onClick={() => printOrders(waiterUnprintedOrders, 'Somente itens novos do garcom')}
-                disabled={waiterUnprintedOrders.length === 0}
-                className="px-4 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Imprimir novos itens
-              </button>
-              <button
-                onClick={() => printOrders(visibleOrders, 'Todos os pedidos da mesa')}
-                disabled={visibleOrders.length === 0}
-                className="px-4 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Imprimir tudo
-              </button>
-            </div>
-          </div>
-        </div>
+        </AppModal>
       )}
 
       {showAddModal && pendingProduct && (
-        <div className="fixed inset-0 z-[220] bg-gray-900/70 backdrop-blur-sm flex items-end sm:items-center justify-center p-3 sm:p-6">
-          <div className="w-full max-w-lg bg-white rounded-t-[28px] sm:rounded-[28px] border border-gray-200 p-5 sm:p-6 space-y-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">{pendingProduct.name}</h3>
-                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                  {formatCurrency(pendingProduct.price_cents)}
-                </p>
-              </div>
-              <button onClick={() => setShowAddModal(false)} className="text-gray-400 font-black">Fechar</button>
+        <AppModal
+          open={showAddModal && !!pendingProduct}
+          onClose={() => setShowAddModal(false)}
+          size="sm"
+          zIndex={220}
+          title={
+            <div>
+              <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">{pendingProduct.name}</h3>
+              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
+                {formatCurrency(getProductPricing(pendingProduct).finalUnitPriceCents)}
+              </p>
             </div>
+          }
+          footer={
+            <button
+              onClick={addDraftItem}
+              className="w-full bg-gray-900 text-white py-3 rounded-xl text-[10px] font-black uppercase tracking-widest"
+            >
+              Adicionar aos novos itens
+            </button>
+          }
+          bodyClassName="space-y-5"
+        >
 
             <div className="space-y-2">
               <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Quantidade</label>
@@ -633,7 +612,7 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
                                 e.target.checked ? [...prev, addon.id] : prev.filter((id) => id !== addon.id)
                               )
                             }
-                            className="w-4 h-4 accent-primary"
+                            aria-label={`Selecionar adicional ${addon.name}`}
                           />
                         </div>
                       </label>
@@ -653,15 +632,7 @@ const AdminWaiter: React.FC<AdminWaiterProps> = ({ profile, settings }) => {
                 placeholder="Ex.: sem cebola, molho separado..."
               />
             </div>
-
-            <button
-              onClick={addDraftItem}
-              className="w-full bg-gray-900 text-white py-3 rounded-xl text-[10px] font-black uppercase tracking-widest"
-            >
-              Adicionar aos novos itens
-            </button>
-          </div>
-        </div>
+        </AppModal>
       )}
     </div>
   );
