@@ -217,7 +217,7 @@ const PublicReceipt: React.FC<PublicReceiptProps> = ({ token, onBackHome }) => {
         <div className="rounded-2xl border border-gray-200 bg-white p-4 flex items-center justify-between gap-3">
           <div>
             <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Cupom Fiscal Digital</p>
-            <h1 className="text-xl font-black uppercase tracking-tighter text-gray-900">UaiTech</h1>
+            <img src="https://obeoiqjwqchwedeupngc.supabase.co/storage/v1/object/public/assets/logos/logo-uaitech.png" alt="Logo da loja" class="ticket-store-logo" />
           </div>
           {onBackHome && (
             <button

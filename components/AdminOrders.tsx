@@ -459,6 +459,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
 
         return {
           storeName: 'Parada do Lanche',
+          storeImageUrl: settings?.logo_url || null,
           orderId: order.id,
           ticketType,
           openedAt: order.created_at || session.created_at,

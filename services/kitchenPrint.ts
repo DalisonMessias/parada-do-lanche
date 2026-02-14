@@ -15,6 +15,7 @@ export type KitchenPrintItem = {
 
 export type KitchenPrintTicket = {
   storeName: string;
+  storeImageUrl?: string | null;
   orderId: string;
   ticketType: KitchenPrintTicketType;
   openedAt?: string | null;
@@ -248,11 +249,12 @@ const renderTicketCore = (ticket: KitchenPrintTicket, qrDataUrl?: string) => {
   const statusLabel = (ticket.statusLabel || '').trim() || 'Confirmado';
   const showServiceFee = ticket.ticketType === 'MESA' && (ticket.serviceFeeCents || 0) > 0;
   const showDeliveryFee = ticket.ticketType === 'ENTREGA' && (ticket.deliveryFeeCents || 0) > 0;
+  const storeImageUrl = escapeHtml((ticket.storeImageUrl || '').trim());
 
   return `
     <section class="ticket-sheet">
       <header class="ticket-header">
-      <img src="${ticket.storeImageUrl || ''};" className="w-full aspect-video rounded-2xl object-cover bg-gray-50 border border-gray-50" />
+        ${storeImageUrl ? `<img src="${storeImageUrl}" alt="Logo da loja" class="ticket-store-logo" />` : ''}
         <p class="ticket-store-name">${escapeHtml(ticket.storeName || 'Parada do Lanche')}</p>
       </header>
 
@@ -359,6 +361,14 @@ export const kitchenTicketStyles = `
     font-weight: 900;
     letter-spacing: 0.02em;
     word-break: break-word;
+  }
+  .ticket-store-logo {
+    width: 20mm;
+    max-width: 100%;
+    height: 20mm;
+    object-fit: contain;
+    margin: 0 auto 1.2mm;
+    display: block;
   }
   .ticket-store-subtitle {
     margin: 0.5mm 0 0;
