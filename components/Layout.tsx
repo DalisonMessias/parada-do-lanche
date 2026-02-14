@@ -39,36 +39,46 @@ const Layout: React.FC<LayoutProps> = ({
     : wide
       ? 'w-full max-w-6xl mx-auto bg-white border-x border-gray-100'
       : 'max-w-md mx-auto bg-white border-x border-gray-100';
+  const headerClass = isAdmin
+    ? 'fixed top-0 left-0 right-0 z-[120] bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between'
+    : 'sticky top-0 z-50 bg-white border-b border-gray-200 px-3 py-3 sm:px-6 sm:py-4 flex items-center justify-between';
+  const logoClass = isAdmin ? 'h-10 w-auto object-contain' : 'h-8 w-auto object-contain shrink-0';
+  const titleClass = isAdmin
+    ? 'text-lg font-black text-gray-900 uppercase tracking-tighter leading-none'
+    : 'text-base sm:text-lg font-black text-gray-900 uppercase tracking-tighter leading-none truncate max-w-[116px] sm:max-w-[180px]';
+  const subtitleClass = isAdmin
+    ? 'text-[8px] font-bold uppercase tracking-[0.2em] leading-none mt-1'
+    : 'text-[7px] sm:text-[8px] font-bold uppercase tracking-[0.2em] leading-none mt-1';
 
   return (
     <div className={`min-h-screen flex flex-col bg-gray-50 relative overflow-x-hidden ${shellClass}`} style={{ '--primary': primaryColor } as any}>
-      <header className={`${isAdmin ? 'fixed top-0 left-0 right-0 z-[120]' : 'sticky top-0 z-50'} bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between`}>
-        <div className="flex items-center gap-4">
+      <header className={headerClass}>
+        <div className="flex items-center gap-3 min-w-0">
           {leadingAction}
           {showBackButton && (
             <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors text-gray-400">
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
             </button>
           )}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             {settings?.logo_url ? (
-              <img src={settings.logo_url} className="h-10 object-cover" />
+              <img src={settings.logo_url} className={logoClass} />
             ) : (
               <div className="w-9 h-9 rounded-lg flex items-center justify-center text-white font-black text-lg" style={{ backgroundColor: primaryColor }}>
                 {storeName.substring(0, 2).toUpperCase()}
               </div>
             )}
-            <div className="flex flex-col">
-              <h1 className="text-lg font-black text-gray-900 uppercase tracking-tighter leading-none">
+            <div className="flex flex-col min-w-0">
+              <h1 className={titleClass}>
                 {title || storeName}
               </h1>
-              <p className="text-[8px] font-bold uppercase tracking-[0.2em] leading-none mt-1" style={{ color: primaryColor }}>
+              <p className={subtitleClass} style={{ color: primaryColor }}>
                 {isAdmin ? 'Gestao Interna' : 'Menu Digital'}
               </p>
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-3">
+        <div className={`flex items-center ${isAdmin ? 'gap-3' : 'gap-2'} shrink-0`}>
           <button
             onClick={() => window.location.reload()}
             className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-400"

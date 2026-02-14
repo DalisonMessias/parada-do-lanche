@@ -1,5 +1,5 @@
 ﻿
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import { supabase, formatCurrency } from './services/supabase';
 import { groupOrderItems } from './services/orderItemGrouping';
 import { AppView, Table, Session, Guest, CartItem, Category, Product, ProductAddon, StoreSettings, Profile, UserRole, Order, Promotion } from './types';
@@ -104,6 +104,10 @@ const App: React.FC = () => {
   const [ratingComment, setRatingComment] = useState('');
   const [ratingName, setRatingName] = useState('');
   const [sendingRating, setSendingRating] = useState(false);
+  const [ratingSummary, setRatingSummary] = useState<{ average: number; count: number }>({
+    average: 0,
+    count: 0,
+  });
   const [pendingProduct, setPendingProduct] = useState<Product | null>(null);
   const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>([]);
   const [productObservation, setProductObservation] = useState('');
@@ -978,6 +982,35 @@ const App: React.FC = () => {
       .trim()
       .slice(0, maxLength);
 
+  const fetchStoreRatingSummary = useCallback(async () => {
+    const { data, error } = await supabase.from('store_feedback').select('stars');
+    if (error || !data) return;
+
+    const stars = data
+      .map((row: any) => Number(row?.stars || 0))
+      .filter((value) => Number.isFinite(value) && value >= 1 && value <= 5);
+
+    const count = stars.length;
+    const average = count > 0 ? stars.reduce((acc, value) => acc + value, 0) / count : 0;
+    setRatingSummary({ average, count });
+  }, []);
+
+  useEffect(() => {
+    if (view !== 'CUSTOMER_MENU') return;
+
+    fetchStoreRatingSummary();
+    const channel = supabase
+      .channel('store_feedback_summary')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'store_feedback' }, () => {
+        fetchStoreRatingSummary();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [view, fetchStoreRatingSummary]);
+
   const handleSubmitFeedback = async () => {
     if (!activeTable || !session) return;
     if (ratingStars < 1 || ratingStars > 5) {
@@ -1014,6 +1047,7 @@ const App: React.FC = () => {
     setRatingStars(0);
     setRatingComment('');
     setRatingName('');
+    fetchStoreRatingSummary();
     toast('Avaliacao enviada. Obrigado!', 'success');
   };
 
@@ -1454,7 +1488,17 @@ const App: React.FC = () => {
                 <path d="m12 2 3.09 6.26L22 9.27l-5 4.88 1.18 6.88L12 17.77 5.82 21l1.18-6.88-5-4.88 6.91-1.01z" />
               </svg>
             </button>
-            <span className="bg-gray-50 text-gray-400 border border-gray-200 px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest">{guest.name}</span>
+            <div className="px-2.5 py-1 rounded-lg border border-gray-200 bg-white text-right leading-tight min-w-[74px]">
+              <p className="text-[9px] font-black text-amber-500">
+                {ratingSummary.count > 0 ? ratingSummary.average.toFixed(1).replace('.', ',') : '--'} ★
+              </p>
+              <p className="text-[7px] font-black uppercase tracking-widest text-gray-400">
+                {ratingSummary.count} aval.
+              </p>
+            </div>
+            <span className="bg-gray-50 text-gray-500 border border-gray-200 px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-widest max-w-[82px] truncate">
+              {(guest.name || '').split(' ')[0] || guest.name}
+            </span>
           </div>
         )
       }
