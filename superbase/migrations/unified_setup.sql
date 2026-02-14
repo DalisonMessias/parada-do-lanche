@@ -820,6 +820,35 @@ begin
   end loop;
 end $$;
 
+-- Garante que as tabelas criticas estejam na publicacao realtime do Supabase.
+do $$
+begin
+  begin
+    execute 'alter publication supabase_realtime add table public.sessions';
+  exception
+    when duplicate_object then null;
+    when undefined_object then null;
+  end;
+  begin
+    execute 'alter publication supabase_realtime add table public.orders';
+  exception
+    when duplicate_object then null;
+    when undefined_object then null;
+  end;
+  begin
+    execute 'alter publication supabase_realtime add table public.order_items';
+  exception
+    when duplicate_object then null;
+    when undefined_object then null;
+  end;
+  begin
+    execute 'alter publication supabase_realtime add table public.cart_items';
+  exception
+    when duplicate_object then null;
+    when undefined_object then null;
+  end;
+end $$;
+
 create or replace function public.get_or_create_open_session(p_table_id uuid)
 returns uuid
 language plpgsql

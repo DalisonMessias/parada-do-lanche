@@ -213,7 +213,26 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, fetchSessions)
       .subscribe();
 
+    const intervalId = window.setInterval(() => {
+      fetchSessions();
+    }, 5000);
+
+    const handleFocus = () => {
+      fetchSessions();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchSessions();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       supabase.removeChannel(channel);
     };
   }, [mode]);

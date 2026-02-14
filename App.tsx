@@ -121,6 +121,10 @@ const App: React.FC = () => {
   const [user, setUser] = useState<any>(null);
   const swRegistrationRef = useRef<ServiceWorkerRegistration | null>(null);
   const lastNotificationRef = useRef<string>('');
+  const adminKnownOrderIdsRef = useRef<Set<string>>(new Set());
+  const adminLatestOrderCreatedAtRef = useRef<string | null>(null);
+  const adminOrdersSeededRef = useRef(false);
+  const adminOrdersWatcherUserIdRef = useRef<string | null>(null);
   const { toast, confirm } = useFeedback();
 
   useEffect(() => {
@@ -435,30 +439,123 @@ const App: React.FC = () => {
   }, [session?.id]);
 
   useEffect(() => {
-    if (view !== 'ADMIN_DASHBOARD' || !user) return;
+    if (view !== 'ADMIN_DASHBOARD' || !user?.id) return;
+
+    if (adminOrdersWatcherUserIdRef.current !== user.id) {
+      adminOrdersWatcherUserIdRef.current = user.id;
+      adminKnownOrderIdsRef.current = new Set();
+      adminLatestOrderCreatedAtRef.current = null;
+      adminOrdersSeededRef.current = false;
+    }
+
+    let active = true;
+
+    const getOrderTypeLabel = (order: any) =>
+      order?.service_type === 'ENTREGA'
+        ? 'Entrega'
+        : order?.service_type === 'RETIRADA'
+          ? 'Retirada'
+          : order?.origin === 'BALCAO'
+            ? 'Balcao'
+            : 'Mesa';
+
+    const registerOrderForAdmin = async (order: any, shouldNotify: boolean) => {
+      const orderId = String(order?.id || '').trim();
+      if (!orderId) return;
+      if (adminKnownOrderIdsRef.current.has(orderId)) return;
+
+      adminKnownOrderIdsRef.current.add(orderId);
+
+      if (!shouldNotify) return;
+      const shortId = orderId.slice(0, 6) || '----';
+      await pushLocalNotification(
+        'Novo pedido recebido',
+        `${getOrderTypeLabel(order)} • Pedido #${shortId}`,
+        `admin-new-order-${orderId}`
+      );
+    };
+
+    const seedAdminOrders = async () => {
+      const { data, error } = await supabase
+        .from('orders')
+        .select('id,service_type,origin,created_at')
+        .order('created_at', { ascending: false })
+        .limit(80);
+
+      if (!active || error) return;
+
+      const sorted = [...(data || [])].sort(
+        (a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime()
+      );
+      sorted.forEach((row: any) => {
+        if (row?.id) adminKnownOrderIdsRef.current.add(String(row.id));
+      });
+      const latest = sorted[sorted.length - 1];
+      adminLatestOrderCreatedAtRef.current = latest?.created_at || null;
+      adminOrdersSeededRef.current = true;
+    };
+
+    const pollNewAdminOrders = async () => {
+      if (!active) return;
+
+      let query = supabase
+        .from('orders')
+        .select('id,service_type,origin,created_at')
+        .order('created_at', { ascending: true })
+        .limit(80);
+
+      if (adminLatestOrderCreatedAtRef.current) {
+        query = query.gt('created_at', adminLatestOrderCreatedAtRef.current);
+      }
+
+      const { data, error } = await query;
+      if (!active || error || !data || data.length === 0) return;
+
+      for (const row of data as any[]) {
+        if (row?.created_at) {
+          adminLatestOrderCreatedAtRef.current = row.created_at;
+        }
+        await registerOrderForAdmin(row, adminOrdersSeededRef.current);
+      }
+    };
+
+    seedAdminOrders().then(() => {
+      if (!active) return;
+      pollNewAdminOrders();
+    });
 
     const channel = supabase
       .channel(`admin_global_orders_${user.id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'orders' }, async (payload) => {
         const order = payload.new as any;
-        const type =
-          order?.service_type === 'ENTREGA'
-            ? 'Entrega'
-            : order?.service_type === 'RETIRADA'
-              ? 'Retirada'
-              : order?.origin === 'BALCAO'
-                ? 'Balcao'
-                : 'Mesa';
-        const shortId = String(order?.id || '').slice(0, 6) || '----';
-        await pushLocalNotification(
-          'Novo pedido recebido',
-          `${type} • Pedido #${shortId}`,
-          `admin-new-order-${order?.id || shortId}`
-        );
+        if (order?.created_at) {
+          adminLatestOrderCreatedAtRef.current = order.created_at;
+        }
+        await registerOrderForAdmin(order, adminOrdersSeededRef.current);
       })
       .subscribe();
 
+    const intervalId = window.setInterval(() => {
+      pollNewAdminOrders();
+    }, 5000);
+
+    const handleFocus = () => {
+      pollNewAdminOrders();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        pollNewAdminOrders();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
+      active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       supabase.removeChannel(channel);
     };
   }, [view, user?.id, settings?.notification_sound_enabled, settings?.notification_sound_url]);
