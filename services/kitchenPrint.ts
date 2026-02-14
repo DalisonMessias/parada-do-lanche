@@ -1,6 +1,7 @@
 import { DeliveryAddress } from '../types';
 import { groupOrderItems } from './orderItemGrouping';
 import { formatCurrency } from './supabase';
+import QRCode from 'qrcode';
 
 export type KitchenPrintTicketType = 'MESA' | 'BALCAO' | 'RETIRADA' | 'ENTREGA';
 
@@ -83,6 +84,23 @@ const getQrUrl = (data: string) =>
 
 const getQrFallbackUrl = (data: string) =>
   `https://quickchart.io/qr?size=240&text=${encodeURIComponent(data)}`;
+
+const generateQrDataUrl = async (data: string) => {
+  if (!data.trim()) return '';
+  try {
+    return await QRCode.toDataURL(data, {
+      width: 240,
+      margin: 0,
+      errorCorrectionLevel: 'M',
+      color: {
+        dark: '#000000',
+        light: '#FFFFFF',
+      },
+    });
+  } catch {
+    return '';
+  }
+};
 
 export const buildReceiptUrlFromToken = (token: string, origin?: string) => {
   const cleanToken = (token || '').trim();
@@ -192,15 +210,19 @@ const renderItems = (ticket: KitchenPrintTicket) => {
     .join('');
 };
 
-const renderQrBlock = (ticket: KitchenPrintTicket) => {
+const renderQrBlock = (ticket: KitchenPrintTicket, qrDataUrl?: string) => {
   const eligibleType = ticket.ticketType === 'ENTREGA' || ticket.ticketType === 'RETIRADA';
   if (!eligibleType) return '';
 
   const receiptUrl = resolveReceiptUrl(ticket);
   if (!receiptUrl) return '';
 
-  const qrUrl = getQrUrl(receiptUrl);
+  const safeQrDataUrl = (qrDataUrl || '').trim();
+  const qrUrl = safeQrDataUrl || getQrUrl(receiptUrl);
   const fallbackQrUrl = getQrFallbackUrl(receiptUrl);
+  const onErrorAttr = safeQrDataUrl
+    ? ''
+    : ` onerror="this.onerror=null;this.src='${fallbackQrUrl}';"`;
 
   return `
     <div class="ticket-separator"></div>
@@ -210,14 +232,14 @@ const renderQrBlock = (ticket: KitchenPrintTicket) => {
         class="ticket-qr-image"
         src="${qrUrl}"
         alt="QR Code Cupom Fiscal Digital"
-        onerror="this.onerror=null;this.src='${fallbackQrUrl}';"
+        ${onErrorAttr}
       />
       <p class="ticket-qr-text">Aponte a camera para acessar e baixar seu cupom.</p>
     </div>
   `;
 };
 
-const renderTicketCore = (ticket: KitchenPrintTicket) => {
+const renderTicketCore = (ticket: KitchenPrintTicket, qrDataUrl?: string) => {
   const typeLabel = getTypeLabel(ticket.ticketType);
   const orderIdLabel = normalizeShortId(ticket.orderId);
   const openedAt = formatDateTime(ticket.openedAt);
@@ -306,7 +328,7 @@ const renderTicketCore = (ticket: KitchenPrintTicket) => {
         </div>
       </section>
 
-      ${renderQrBlock(ticket)}
+      ${renderQrBlock(ticket, qrDataUrl)}
 
       <footer class="ticket-footer">UaiTech</footer>
     </section>
@@ -474,12 +496,16 @@ export const kitchenTicketStyles = `
   }
 `;
 
-export const renderKitchenTicketMarkup = (ticket: KitchenPrintTicket) => renderTicketCore(ticket);
+export const renderKitchenTicketMarkup = (ticket: KitchenPrintTicket, qrDataUrl?: string) =>
+  renderTicketCore(ticket, qrDataUrl);
 
-export const renderKitchenTicketDocument = (payload: KitchenPrintPayload) => {
+export const renderKitchenTicketDocument = (payload: KitchenPrintPayload, qrDataUrlByIndex?: Map<number, string>) => {
   const tickets = payload.tickets || [];
   const ticketsHtml = tickets
-    .map((ticket, index) => `${index > 0 ? '<div class="ticket-page-break"></div>' : ''}${renderKitchenTicketMarkup(ticket)}`)
+    .map((ticket, index) => {
+      const qrDataUrl = qrDataUrlByIndex?.get(index);
+      return `${index > 0 ? '<div class="ticket-page-break"></div>' : ''}${renderKitchenTicketMarkup(ticket, qrDataUrl)}`;
+    })
     .join('');
 
   return `<!doctype html>
@@ -495,13 +521,76 @@ export const renderKitchenTicketDocument = (payload: KitchenPrintPayload) => {
 </html>`;
 };
 
+const buildQrDataUrlByIndex = async (tickets: KitchenPrintTicket[]) => {
+  const entries = await Promise.all(
+    tickets.map(async (ticket, index) => {
+      const eligibleType = ticket.ticketType === 'ENTREGA' || ticket.ticketType === 'RETIRADA';
+      if (!eligibleType) return null;
+      const receiptUrl = resolveReceiptUrl(ticket);
+      if (!receiptUrl) return null;
+
+      const qrDataUrl = await generateQrDataUrl(receiptUrl);
+      if (!qrDataUrl) return null;
+      return [index, qrDataUrl] as const;
+    })
+  );
+
+  const qrMap = new Map<number, string>();
+  entries.forEach((entry) => {
+    if (entry) qrMap.set(entry[0], entry[1]);
+  });
+
+  return qrMap;
+};
+
+const waitForPrintWindowAssets = async (win: Window, timeoutMs = 3500) => {
+  await new Promise<void>((resolve) => {
+    let resolved = false;
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
+      resolve();
+    };
+
+    const timer = window.setTimeout(finish, timeoutMs);
+    const images = Array.from(win.document.images || []);
+    if (images.length === 0) {
+      window.clearTimeout(timer);
+      finish();
+      return;
+    }
+
+    let pending = 0;
+    const settleOne = () => {
+      pending -= 1;
+      if (pending <= 0) {
+        window.clearTimeout(timer);
+        finish();
+      }
+    };
+
+    images.forEach((img) => {
+      if (img.complete && img.naturalWidth > 0) return;
+      pending += 1;
+      img.addEventListener('load', settleOne, { once: true });
+      img.addEventListener('error', settleOne, { once: true });
+    });
+
+    if (pending === 0) {
+      window.clearTimeout(timer);
+      finish();
+    }
+  });
+};
+
 export const printKitchenTicket = async (payload: KitchenPrintPayload): Promise<KitchenPrintResult> => {
   const tickets = payload.tickets || [];
   if (tickets.length === 0) {
     return { status: 'error', message: 'Nao ha cupons para imprimir.' };
   }
 
-  const html = renderKitchenTicketDocument(payload);
+  const qrDataUrlByIndex = await buildQrDataUrlByIndex(tickets);
+  const html = renderKitchenTicketDocument(payload, qrDataUrlByIndex);
   const win = window.open('', '_blank', 'width=560,height=920');
   if (!win) {
     return { status: 'error', message: 'Nao foi possivel abrir a janela de impressao.' };
@@ -530,7 +619,7 @@ export const printKitchenTicket = async (payload: KitchenPrintPayload): Promise<
     win.addEventListener('afterprint', handleAfterPrint, { once: true });
   }
 
-  await new Promise((resolve) => window.setTimeout(resolve, 200));
+  await waitForPrintWindowAssets(win);
 
   try {
     win.focus();
