@@ -23,6 +23,9 @@ const AdminPromotions = lazy(() => import('./components/AdminPromotions'));
 const AdminRatings = lazy(() => import('./components/AdminRatings'));
 const AdminPerformance = lazy(() => import('./components/AdminPerformance'));
 const PublicReceipt = lazy(() => import('./components/PublicReceipt'));
+const AdminPlan = lazy(() => import('./components/AdminPlan'));
+const PublicPlanPayment = lazy(() => import('./components/PublicPlanPayment'));
+const Maintenance = lazy(() => import('./components/Maintenance'));
 
 type AdminTab =
   | 'ACTIVE_TABLES'
@@ -36,6 +39,7 @@ type AdminTab =
   | 'RATINGS'
   | 'WAITER_MODULE'
   | 'COUNTER_MODULE'
+  | 'ADMIN_PLAN'
   | 'NOT_FOUND';
 
 const PROMOTIONS_TAB_ID = '__PROMOTIONS__';
@@ -54,6 +58,7 @@ const TAB_SLUGS: Record<AdminTab, string> = {
   RATINGS: 'avaliacoes',
   WAITER_MODULE: 'garcom',
   COUNTER_MODULE: 'balcao',
+  ADMIN_PLAN: 'plano',
   NOT_FOUND: '404',
 };
 
@@ -83,6 +88,7 @@ const getAllowedAdminTabs = (
     tabs.push('STAFF');
     tabs.push('PROMOTIONS');
     tabs.push('RATINGS');
+    tabs.push('ADMIN_PLAN');
   }
   return tabs;
 };
@@ -113,6 +119,7 @@ const App: React.FC = () => {
   const adminAccessKey = ((import.meta as any).env?.VITE_ADMIN_ACCESS_KEY || '').trim();
   const tempRegisterEnabled = ((import.meta as any).env?.VITE_ENABLE_TEMP_REGISTER || '').trim().toLowerCase() === 'true';
   const adminPath = adminAccessKey ? `/admin/${adminAccessKey}` : '/admin';
+  const planPaymentRoute = '/V7B2X-QP9MW-L4N1R-Z6K0J-H3S5D';
   const [view, setView] = useState<AppView>('LANDING');
   const [publicReceiptToken, setPublicReceiptToken] = useState('');
   const [activeTable, setActiveTable] = useState<Table | null>(null);
@@ -247,6 +254,42 @@ const App: React.FC = () => {
     fetchSettings();
   }, []);
 
+  // Check Plan Status (Lazy Update)
+  useEffect(() => {
+    if (!settings) return;
+
+    const checkPlanStatus = async () => {
+      const status = settings.plan_status || 'PAID';
+      const dueDateStr = settings.plan_current_due_date;
+      if (!dueDateStr) return;
+
+      const now = new Date();
+
+      // Parse due date to local time set to 23:59:59
+      const parts = dueDateStr.split('-');
+      const dueDateEndOfDay = new Date(
+        parseInt(parts[0], 10),
+        parseInt(parts[1], 10) - 1,
+        parseInt(parts[2], 10),
+        23, 59, 59, 999
+      );
+
+      if (now > dueDateEndOfDay && (status === 'PAID' || status === 'OPEN')) {
+        // Update to OVERDUE
+        // We do this optimistically and silently
+        await supabase.from('settings').update({ plan_status: 'OVERDUE' }).eq('id', 1);
+        setSettings(prev => prev ? ({ ...prev, plan_status: 'OVERDUE' }) : null);
+      } else if (now <= dueDateEndOfDay && status === 'OVERDUE') {
+        // Auto-correct: If it's OVERDUE but we are still within the due day, revert to OPEN.
+        // This fixes the issue where previous logic might have marked it prematurely.
+        await supabase.from('settings').update({ plan_status: 'OPEN' }).eq('id', 1);
+        setSettings(prev => prev ? ({ ...prev, plan_status: 'OPEN' }) : null);
+      }
+    };
+
+    checkPlanStatus();
+  }, [settings?.id, settings?.plan_current_due_date, settings?.plan_status]);
+
   useEffect(() => {
     const media = window.matchMedia('(min-width: 1024px)');
     const update = () => setIsDesktopAdmin(media.matches);
@@ -322,16 +365,28 @@ const App: React.FC = () => {
             setShowCart(false);
           }
           setView('CUSTOMER_MENU');
+        } else {
+          // Token da mesa inválido ou mesa não encontrada
+          setView('NOT_FOUND');
         }
       } else if (path === '/cadastro-temp') {
         setPublicReceiptToken('');
         setView(tempRegisterEnabled ? 'TEMP_REGISTER' : 'LANDING');
+      } else if (path === planPaymentRoute) {
+        setPublicReceiptToken('');
+        setView('PUBLIC_PLAN_PAYMENT');
       } else if (path.startsWith('/admin')) {
         setPublicReceiptToken('');
         const clean = path.replace(/^\//, '');
         const segments = clean.split('/');
-        const providedKey = segments[1] || '';
-        const providedTabSlug = segments[2] || '';
+        let providedKey = segments[1] || '';
+        let providedTabSlug = segments[2] || '';
+
+        // Check if providedKey is actually a tab slug (e.g. /admin/plano or /admin/pedidos)
+        if (providedKey && (SLUG_TO_TAB[providedKey.toLowerCase()] || providedKey === 'plano')) {
+          providedTabSlug = providedKey;
+          providedKey = '';
+        }
 
         if (adminAccessKey && providedKey !== adminAccessKey) {
           window.history.replaceState({}, '', '/');
@@ -1414,6 +1469,35 @@ const App: React.FC = () => {
     );
   }
 
+  // BLOCKING & NEW VIEWS LOGIC
+  const planStatus = settings?.plan_status || 'PAID';
+  const isSuspended = planStatus === 'OVERDUE' || planStatus === 'SUSPENDED';
+
+  if (view === 'PUBLIC_PLAN_PAYMENT') {
+    return <PublicPlanPayment />;
+  }
+
+
+
+  // Blocking Logic
+  if (isSuspended) {
+    const isPublicView = view === 'CUSTOMER_MENU' || view === 'LANDING' || view === 'TEMP_REGISTER' || view === 'PUBLIC_RECEIPT';
+    if (isPublicView) {
+      return <Maintenance />;
+    }
+
+    if (view === 'ADMIN_DASHBOARD') {
+      // Enforce Plan View for Admin Dashboard if suspended
+      return (
+        <Layout isAdmin settings={settings} showFooter={false}>
+          <Suspense fallback={lazyFallback}>
+            <AdminPlan />
+          </Suspense>
+        </Layout>
+      );
+    }
+  }
+
   if (view === 'TEMP_REGISTER') {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6 lg:p-12">
@@ -1620,495 +1704,422 @@ const App: React.FC = () => {
       );
     }
 
-    const role = profile?.role || 'WAITER';
-    const isWaiter = role === 'WAITER';
-    const canAccessCounter = settings?.enable_counter_module !== false;
-    const allowedTabs = getAllowedAdminTabs(role, canAccessCounter);
+    if (view === 'ADMIN_DASHBOARD' || (adminTab === 'ADMIN_PLAN' && view !== 'PUBLIC_PLAN_PAYMENT')) {
+      const role = profile?.role || 'WAITER';
+      const isWaiter = role === 'WAITER';
+      const canAccessCounter = settings?.enable_counter_module !== false;
+      const allowedTabs = getAllowedAdminTabs(role, canAccessCounter);
 
-    const openTab = (tab: AdminTab) => {
-      if (!allowedTabs.includes(tab)) return;
+      const openTab = (tab: AdminTab) => {
+        if (!allowedTabs.includes(tab)) return;
 
-      const path = window.location.pathname;
-      const clean = path.replace(/^\//, '');
-      const segments = clean.split('/');
-      const providedKey = segments[1] || adminAccessKey || '';
-      const slug = TAB_SLUGS[tab];
+        const path = window.location.pathname;
+        const clean = path.replace(/^\//, '');
+        const segments = clean.split('/');
+        let providedKey = segments[1] || adminAccessKey || '';
 
-      const newPath = providedKey ? `/admin/${providedKey}/${slug}` : `/admin/${slug}`;
-      window.history.pushState({}, '', newPath);
+        // If the found key is actually a slug, ignore it as a key
+        if (providedKey && (Object.values(TAB_SLUGS).includes(providedKey) || providedKey === 'plano')) {
+          providedKey = adminAccessKey || '';
+        }
 
-      setAdminTab(tab);
-      if (!isDesktopAdmin) {
-        setAdminSidebarOpen(false);
-      }
-    };
+        const slug = TAB_SLUGS[tab];
 
-    const sidebarButtonClass = (tab: AdminTab) =>
-      `w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border ${adminTab === tab
-        ? 'bg-primary text-white border-primary font-black'
-        : 'text-gray-500 font-bold hover:bg-gray-50 border-transparent'
-      }`;
+        const newPath = providedKey ? `/admin/${providedKey}/${slug}` : `/admin/${slug}`;
+        window.history.pushState({}, '', newPath);
 
-    const sidebarContent = (
-      <>
-        <div className="space-y-10 flex-1 min-h-0 overflow-y-auto pr-1">
-          {isWaiter ? (
-            <div className="px-2">
-              <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Atendimento</h3>
-              <nav className="space-y-1">
-                <button onClick={() => openTab('WAITER_MODULE')} className={sidebarButtonClass('WAITER_MODULE')}>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7h18" /><path d="M6 7V4" /><path d="M18 7V4" /><path d="M8 11h8" /><path d="M12 11v9" /></svg>
-                  Garcom
-                </button>
-              </nav>
-            </div>
-          ) : (
-            <>
+        setAdminTab(tab);
+        if (!isDesktopAdmin) {
+          setAdminSidebarOpen(false);
+        }
+      };
+
+      const sidebarButtonClass = (tab: AdminTab) =>
+        `w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border ${adminTab === tab
+          ? 'bg-primary text-white border-primary font-black'
+          : 'text-gray-500 font-bold hover:bg-gray-50 border-transparent'
+        }`;
+
+      const sidebarContent = (
+        <>
+          <div className="space-y-10 flex-1 min-h-0 overflow-y-auto pr-1">
+            {isWaiter ? (
               <div className="px-2">
-                <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Operacao</h3>
+                <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Atendimento</h3>
                 <nav className="space-y-1">
-                  <button onClick={() => openTab('ACTIVE_TABLES')} className={sidebarButtonClass('ACTIVE_TABLES')}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
-                    Pedidos
+                  <button onClick={() => openTab('WAITER_MODULE')} className={sidebarButtonClass('WAITER_MODULE')}>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7h18" /><path d="M6 7V4" /><path d="M18 7V4" /><path d="M8 11h8" /><path d="M12 11v9" /></svg>
+                    Garcom
                   </button>
-                  <button onClick={() => openTab('FINISHED_ORDERS')} className={sidebarButtonClass('FINISHED_ORDERS')}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" /><path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" /></svg>
-                    Pedidos Finaliz...
-                  </button>
-                  <button onClick={() => openTab('PERFORMANCE')} className={sidebarButtonClass('PERFORMANCE')}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="3" x2="3" y2="21" /><line x1="21" y1="21" x2="3" y2="21" /><path d="m7 14 4-4 3 3 5-6" /></svg>
-                    Desempenho
-                  </button>
-                  <button onClick={() => openTab('TABLES')} className={sidebarButtonClass('TABLES')}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" /></svg>
-                    Mesas & QR
-                  </button>
-                  {allowedTabs.includes('COUNTER_MODULE') && (
-                    <button onClick={() => openTab('COUNTER_MODULE')} className={sidebarButtonClass('COUNTER_MODULE')}>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="14" rx="2" /><path d="M8 20h8" /><path d="M12 18v2" /></svg>
-                      Balcao
-                    </button>
-                  )}
                 </nav>
               </div>
+            ) : (
+              <>
+                <div className="px-2">
+                  <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Operacao</h3>
+                  <nav className="space-y-1">
+                    <button onClick={() => openTab('ACTIVE_TABLES')} className={sidebarButtonClass('ACTIVE_TABLES')}>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
+                      Pedidos
+                    </button>
+                    <button onClick={() => openTab('FINISHED_ORDERS')} className={sidebarButtonClass('FINISHED_ORDERS')}>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" /><path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" /></svg>
+                      Pedidos Finaliz...
+                    </button>
+                    <button onClick={() => openTab('PERFORMANCE')} className={sidebarButtonClass('PERFORMANCE')}>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="3" x2="3" y2="21" /><line x1="21" y1="21" x2="3" y2="21" /><path d="m7 14 4-4 3 3 5-6" /></svg>
+                      Desempenho
+                    </button>
+                    <button onClick={() => openTab('TABLES')} className={sidebarButtonClass('TABLES')}>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" /></svg>
+                      Mesas & QR
+                    </button>
+                    {allowedTabs.includes('COUNTER_MODULE') && (
+                      <button onClick={() => openTab('COUNTER_MODULE')} className={sidebarButtonClass('COUNTER_MODULE')}>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="14" rx="2" /><path d="M8 20h8" /><path d="M12 18v2" /></svg>
+                        Balcao
+                      </button>
+                    )}
+                  </nav>
+                </div>
 
-              <div className="px-2">
-                <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Conteudo</h3>
-                <nav className="space-y-1">
-                  <button onClick={() => openTab('MENU')} className={sidebarButtonClass('MENU')}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" /><line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" /><line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" /><line x1="2" y1="14" x2="6" y2="14" /><line x1="10" y1="8" x2="14" y2="8" /><line x1="18" y1="16" x2="22" y2="16" /></svg>
-                    Cardapio
-                  </button>
-                  {allowedTabs.includes('SETTINGS') && (
-                    <button onClick={() => openTab('SETTINGS')} className={sidebarButtonClass('SETTINGS')}>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
-                      Configuracoes
+                <div className="px-2">
+                  <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Conteudo</h3>
+                  <nav className="space-y-1">
+                    <button onClick={() => openTab('MENU')} className={sidebarButtonClass('MENU')}>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" /><line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" /><line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" /><line x1="2" y1="14" x2="6" y2="14" /><line x1="10" y1="8" x2="14" y2="8" /><line x1="18" y1="16" x2="22" y2="16" /></svg>
+                      Cardapio
                     </button>
-                  )}
-                  {allowedTabs.includes('STAFF') && (
-                    <button onClick={() => openTab('STAFF')} className={sidebarButtonClass('STAFF')}>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-                      Equipe
-                    </button>
-                  )}
-                  {allowedTabs.includes('PROMOTIONS') && (
-                    <button onClick={() => openTab('PROMOTIONS')} className={sidebarButtonClass('PROMOTIONS')}>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41 11 3.83a2 2 0 0 0-2.83 0L3 9a2 2 0 0 0 0 2.83l9.59 9.58a2 2 0 0 0 2.82 0L21 15.83a2 2 0 0 0 0-2.82z" /><line x1="7" y1="7" x2="7.01" y2="7" /></svg>
-                      Promocoes
-                    </button>
-                  )}
-                  {allowedTabs.includes('RATINGS') && (
-                    <button onClick={() => openTab('RATINGS')} className={sidebarButtonClass('RATINGS')}>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m12 17.27 6.18 3.73-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" /></svg>
-                      Avaliacoes
-                    </button>
-                  )}
-                </nav>
+                    {allowedTabs.includes('SETTINGS') && (
+                      <button onClick={() => openTab('SETTINGS')} className={sidebarButtonClass('SETTINGS')}>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+                        Configuracoes
+                      </button>
+                    )}
+                    {allowedTabs.includes('STAFF') && (
+                      <button onClick={() => openTab('STAFF')} className={sidebarButtonClass('STAFF')}>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                        Equipe
+                      </button>
+                    )}
+                    {allowedTabs.includes('ADMIN_PLAN') && (
+                      <button onClick={() => openTab('ADMIN_PLAN')} className={sidebarButtonClass('ADMIN_PLAN')}>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /></svg>
+                        Meu Plano
+                      </button>
+                    )}
+                    {allowedTabs.includes('PROMOTIONS') && (
+                      <button onClick={() => openTab('PROMOTIONS')} className={sidebarButtonClass('PROMOTIONS')}>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41 11 3.83a2 2 0 0 0-2.83 0L3 9a2 2 0 0 0 0 2.83l9.59 9.58a2 2 0 0 0 2.82 0L21 15.83a2 2 0 0 0 0-2.82z" /><line x1="7" y1="7" x2="7.01" y2="7" /></svg>
+                        Promocoes
+                      </button>
+                    )}
+                    {allowedTabs.includes('RATINGS') && (
+                      <button onClick={() => openTab('RATINGS')} className={sidebarButtonClass('RATINGS')}>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m12 17.27 6.18 3.73-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" /></svg>
+                        Avaliacoes
+                      </button>
+                    )}
+                  </nav>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="pt-6 border-t border-gray-100 space-y-4">
+            <div className="px-2 flex items-center gap-3">
+              <div className="w-9 h-9 bg-gray-50 border border-gray-100 rounded-lg flex items-center justify-center font-black text-gray-400 uppercase text-[10px]">{profile?.name?.charAt(0)}</div>
+              <div className="flex flex-col">
+                <span className="text-xs font-black text-gray-800 truncate max-w-[100px] leading-tight">{profile?.name}</span>
+                <span className="text-[7px] font-black text-primary uppercase tracking-widest">{role}</span>
               </div>
-            </>
-          )}
-        </div>
-
-        <div className="pt-6 border-t border-gray-100 space-y-4">
-          <div className="px-2 flex items-center gap-3">
-            <div className="w-9 h-9 bg-gray-50 border border-gray-100 rounded-lg flex items-center justify-center font-black text-gray-400 uppercase text-[10px]">{profile?.name?.charAt(0)}</div>
-            <div className="flex flex-col">
-              <span className="text-xs font-black text-gray-800 truncate max-w-[100px] leading-tight">{profile?.name}</span>
-              <span className="text-[7px] font-black text-primary uppercase tracking-widest">{role}</span>
             </div>
+            <button onClick={() => supabase.auth.signOut()} className="w-full py-2.5 text-[8px] font-black text-red-400 uppercase tracking-widest hover:bg-red-50 rounded-lg transition-all">Sair</button>
           </div>
-          <button onClick={() => supabase.auth.signOut()} className="w-full py-2.5 text-[8px] font-black text-red-400 uppercase tracking-widest hover:bg-red-50 rounded-lg transition-all">Sair</button>
-        </div>
-      </>
-    );
+        </>
+      );
 
-    return (
-      <Layout
-        isAdmin
-        settings={settings}
-        showFooter={false}
-        leadingAction={
-          <button
-            onClick={() => setAdminSidebarOpen((prev) => !prev)}
-            className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-500 border border-gray-200"
-            title={adminSidebarOpen ? 'Fechar menu lateral' : 'Abrir menu lateral'}
-            aria-label={adminSidebarOpen ? 'Fechar menu lateral' : 'Abrir menu lateral'}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
-          </button>
-        }
-        actions={
-          <button
-            type="button"
-            onClick={() => setShowCalculator(true)}
-            className="px-3 py-2 rounded-lg border border-gray-200 bg-white text-gray-700 text-[9px] font-black uppercase tracking-widest"
-          >
-            Calculadora
-          </button>
-        }
-      >
-        <div className="flex h-[calc(100vh-73px)] relative overflow-hidden">
-          <aside className={`hidden lg:flex flex-col shrink-0 h-full min-h-0 border-r border-gray-200 bg-white overflow-hidden transition-all duration-300 ease-out ${adminSidebarOpen ? 'w-72 p-6' : 'w-0 p-0 border-r-0'}`}>
-            {adminSidebarOpen && sidebarContent}
-          </aside>
 
-          <main className="flex-1 h-full min-h-0 overflow-y-auto transition-all duration-300">
-            <div className="p-4 sm:p-6 lg:p-8">
-              <Suspense fallback={lazyFallback}>
-                {adminTab === 'ACTIVE_TABLES' && <AdminOrders mode="ACTIVE" settings={settings} profile={profile} />}
-                {adminTab === 'FINISHED_ORDERS' && <AdminOrders mode="FINISHED" settings={settings} profile={profile} />}
-                {adminTab === 'PERFORMANCE' && <AdminPerformance profile={profile} />}
-                {adminTab === 'MENU' && <AdminMenu />}
-                {adminTab === 'TABLES' && <AdminTables settings={settings} />}
-                {adminTab === 'WAITER_MODULE' && <AdminWaiter profile={profile} />}
-                {adminTab === 'COUNTER_MODULE' && <AdminCounter profile={profile} settings={settings} />}
-                {adminTab === 'SETTINGS' && <AdminSettings settings={settings} onUpdate={fetchSettings} profile={profile} />}
-                {adminTab === 'STAFF' && <AdminStaff profile={profile} />}
-                {adminTab === 'PROMOTIONS' && <AdminPromotions />}
-                {adminTab === 'RATINGS' && <AdminRatings />}
-              </Suspense>
-
-              <footer className="mt-8 border-t border-gray-200 pt-4 text-center">
-                <img src={UAITECH_LOGO_URL} alt="Logo UaiTech" className="h-5 w-auto mx-auto" />
-                <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-400">
-                  © {new Date().getFullYear()}
-                </p>
-                <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-500">
-                  Dalison Messias
-                </p>
-              </footer>
-            </div>
-          </main>
-
-          <div className={`lg:hidden fixed top-[73px] left-0 right-0 bottom-0 z-[120] ${adminSidebarOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}>
-            <div onClick={() => setAdminSidebarOpen(false)} className={`absolute inset-0 bg-gray-900/55 transition-opacity duration-300 ${adminSidebarOpen ? 'opacity-100' : 'opacity-0'}`} />
-            <aside className={`absolute top-0 left-0 bottom-0 w-72 bg-white border-r border-gray-200 p-6 flex flex-col transition-transform duration-300 ease-out ${adminSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-              {sidebarContent}
-            </aside>
-          </div>
-        </div>
-        <CalculatorModal open={showCalculator} onClose={() => setShowCalculator(false)} title="Calculadora" />
-      </Layout>
-    );
-  }
-  // NOT_FOUND View
-  if (view === 'NOT_FOUND') {
-    return (
-      <Layout isAdmin={false} settings={settings} showFooter={false}>
-        <div className="min-h-[70vh] flex flex-col items-center justify-center p-6 text-center space-y-6">
-          <div className="w-24 h-24 bg-red-50 text-red-500 rounded-3xl flex items-center justify-center mb-4">
-            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
-          </div>
-          <h1 className="text-4xl font-black text-gray-900 uppercase tracking-tighter">404</h1>
-          <p className="text-gray-500 font-bold max-w-sm">Ops! A pagina que voce esta procurando nao foi encontrada ou foi movida.</p>
-          <button
-            onClick={() => window.history.pushState({}, '', '/')}
-            className="px-8 py-4 bg-gray-900 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-gray-800 transition-all active:scale-[0.98] shadow-xl"
-          >
-            Voltar ao Inicio
-          </button>
-        </div>
-      </Layout>
-    );
-  }
-
-  // Visualizacao Cliente (Mobile View)
-  return (
-    <Layout
-      settings={settings}
-      title={activeTable?.name}
-      actions={
-        guest && (
-          <div className="flex items-center gap-2">
+      return (
+        <Layout
+          isAdmin
+          settings={settings}
+          showFooter={false}
+          leadingAction={
+            <button
+              onClick={() => setAdminSidebarOpen((prev) => !prev)}
+              className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-500 border border-gray-200"
+              title={adminSidebarOpen ? 'Fechar menu lateral' : 'Abrir menu lateral'}
+              aria-label={adminSidebarOpen ? 'Fechar menu lateral' : 'Abrir menu lateral'}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
+            </button>
+          }
+          actions={
             <button
               type="button"
-              onClick={() => setShowRatingModal(true)}
-              className="p-2 rounded-lg border border-gray-200 bg-white text-amber-500"
-              aria-label="Avaliar loja"
-              title="Avaliar loja"
+              onClick={() => setShowCalculator(true)}
+              className="px-3 py-2 rounded-lg border border-gray-200 bg-white text-gray-700 text-[9px] font-black uppercase tracking-widest"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                <path d="m12 2 3.09 6.26L22 9.27l-5 4.88 1.18 6.88L12 17.77 5.82 21l1.18-6.88-5-4.88 6.91-1.01z" />
-              </svg>
+              Calculadora
             </button>
-            <div className="px-2.5 py-1 rounded-lg border border-gray-200 bg-white text-right leading-tight min-w-[74px]">
-              <p className="text-[9px] font-black text-amber-500">
-                {ratingSummary.count > 0 ? ratingSummary.average.toFixed(1).replace('.', ',') : '--'} ★
-              </p>
-              <p className="text-[7px] font-black uppercase tracking-widest text-gray-400">
-                {ratingSummary.count} aval.
-              </p>
+          }
+        >
+          <div className="flex h-[calc(100vh-73px)] relative overflow-hidden">
+            <aside className={`hidden lg:flex flex-col shrink-0 h-full min-h-0 border-r border-gray-200 bg-white overflow-hidden transition-all duration-300 ease-out ${adminSidebarOpen ? 'w-72 p-6' : 'w-0 p-0 border-r-0'}`}>
+              {adminSidebarOpen && sidebarContent}
+            </aside>
+
+            <main className="flex-1 h-full min-h-0 overflow-y-auto transition-all duration-300">
+              <div className="p-4 sm:p-6 lg:p-8">
+                <Suspense fallback={lazyFallback}>
+                  {adminTab === 'ACTIVE_TABLES' && <AdminOrders mode="ACTIVE" settings={settings} profile={profile} />}
+                  {adminTab === 'FINISHED_ORDERS' && <AdminOrders mode="FINISHED" settings={settings} profile={profile} />}
+                  {adminTab === 'PERFORMANCE' && <AdminPerformance profile={profile} />}
+                  {adminTab === 'MENU' && <AdminMenu />}
+                  {adminTab === 'TABLES' && <AdminTables settings={settings} />}
+                  {adminTab === 'WAITER_MODULE' && <AdminWaiter profile={profile} />}
+                  {adminTab === 'COUNTER_MODULE' && <AdminCounter profile={profile} settings={settings} />}
+                  {adminTab === 'SETTINGS' && <AdminSettings settings={settings} onUpdate={fetchSettings} profile={profile} />}
+                  {adminTab === 'STAFF' && <AdminStaff profile={profile} />}
+                  {adminTab === 'PROMOTIONS' && <AdminPromotions />}
+                  {adminTab === 'RATINGS' && <AdminRatings />}
+                  {adminTab === 'ADMIN_PLAN' && <AdminPlan />}
+                </Suspense>
+
+                <footer className="mt-8 border-t border-gray-200 pt-4 text-center">
+                  <img src={UAITECH_LOGO_URL} alt="Logo UaiTech" className="h-5 w-auto mx-auto" />
+                  <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-400">
+                    © {new Date().getFullYear()}
+                  </p>
+                  <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-500">
+                    Dalison Messias
+                  </p>
+                </footer>
+              </div>
+            </main>
+
+            <div className={`lg:hidden fixed top-[73px] left-0 right-0 bottom-0 z-[120] ${adminSidebarOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}>
+              <div onClick={() => setAdminSidebarOpen(false)} className={`absolute inset-0 bg-gray-900/55 transition-opacity duration-300 ${adminSidebarOpen ? 'opacity-100' : 'opacity-0'}`} />
+              <aside className={`absolute top-0 left-0 bottom-0 w-72 bg-white border-r border-gray-200 p-6 flex flex-col transition-transform duration-300 ease-out ${adminSidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+                {sidebarContent}
+              </aside>
             </div>
-            <span className="bg-gray-50 text-gray-500 border border-gray-200 px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-widest max-w-[82px] truncate">
-              {(guest.name || '').split(' ')[0] || guest.name}
-            </span>
           </div>
-        )
-      }
-    >
-      {!guest ? (
-        <div className="p-8 flex flex-col items-center justify-center min-h-[70vh] space-y-12">
-          <div className="w-16 h-16 bg-gray-50 border border-gray-100 rounded-[22px] flex items-center justify-center text-primary">
-            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>
+          <CalculatorModal open={showCalculator} onClose={() => setShowCalculator(false)} title="Calculadora" />
+        </Layout>
+      );
+    }
+
+    // NOT_FOUND View
+    if (view === 'NOT_FOUND') {
+      return (
+        <Layout isAdmin={false} settings={settings} showFooter={false} wide>
+          <div className="min-h-[85vh] p-6 lg:p-10 flex items-center justify-center">
+            <section className="w-full bg-white border border-gray-200 rounded-[28px] p-8 lg:p-12 text-center space-y-8 shadow-[0_12px_35px_rgba(15,23,42,0.06)]">
+              <div className="w-20 h-20 lg:w-24 lg:h-24 mx-auto bg-red-50 border border-red-100 rounded-2xl lg:rounded-3xl flex items-center justify-center text-red-500">
+                <svg xmlns="http://www.w3.org/2000/svg" width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="12" y1="8" x2="12" y2="12" />
+                  <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+              </div>
+
+              <div className="space-y-4">
+                <h1 className="text-4xl lg:text-6xl font-black text-gray-900 uppercase tracking-tighter leading-none">404</h1>
+                <p className="text-sm lg:text-base text-gray-500 font-bold leading-relaxed max-w-xl mx-auto">
+                  Ops! A pagina que voce esta procurando nao foi encontrada ou foi movida.
+                </p>
+              </div>
+
+              <button
+                onClick={() => {
+                  // Prioridade 1: Se está logado como admin, volta para o painel
+                  if (user) {
+                    const path = window.location.pathname;
+                    if (path.startsWith('/admin')) {
+                      // Já está em admin, volta para a raiz do admin
+                      const segments = path.replace(/^\//, '').split('/');
+                      const providedKey = segments[1] || '';
+                      if (adminAccessKey && providedKey === adminAccessKey) {
+                        window.history.pushState({}, '', `/admin/${adminAccessKey}`);
+                      } else {
+                        window.history.pushState({}, '', '/admin');
+                      }
+                    } else {
+                      window.history.pushState({}, '', '/admin');
+                    }
+                  }
+                  // Prioridade 2: Se tem mesa e sessão ativa, volta para o cardápio da mesa
+                  else if (activeTable?.token && session) {
+                    window.history.pushState({}, '', `/m/${activeTable.token}`);
+                  }
+                  // Prioridade 3: Senão, vai para a página inicial
+                  else {
+                    window.history.pushState({}, '', '/');
+                  }
+                }}
+                className="px-8 py-4 bg-gray-900 hover:bg-gray-800 text-white rounded-2xl font-black uppercase tracking-widest text-xs lg:text-sm shadow-[0_8px_18px_rgba(15,23,42,0.22)] hover:shadow-[0_10px_24px_rgba(15,23,42,0.28)] transition-all active:scale-[0.99]"
+              >
+                Voltar {user ? 'ao Painel' : (activeTable && session ? 'ao Cardapio' : 'ao Inicio')}
+              </button>
+
+              <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.18em]">
+                Se voce acredita que isto e um erro, entre em contato com o suporte.
+              </p>
+            </section>
           </div>
-          <div className="text-center space-y-3">
-            <h2 className="text-3xl font-black text-gray-900 uppercase tracking-tighter leading-none italic">Sua Mesa Esta Pronta</h2>
-            <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest leading-loose">Como deseja ser identificado(a) na {activeTable?.name}?</p>
+        </Layout>
+      );
+    }
+
+    // Visualizacao Cliente (Mobile View)
+    return (
+      <Layout
+        settings={settings}
+        title={activeTable?.name}
+        actions={
+          guest && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowRatingModal(true)}
+                className="p-2 rounded-lg border border-gray-200 bg-white text-amber-500"
+                aria-label="Avaliar loja"
+                title="Avaliar loja"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="m12 2 3.09 6.26L22 9.27l-5 4.88 1.18 6.88L12 17.77 5.82 21l1.18-6.88-5-4.88 6.91-1.01z" />
+                </svg>
+              </button>
+              <div className="px-2.5 py-1 rounded-lg border border-gray-200 bg-white text-right leading-tight min-w-[74px]">
+                <p className="text-[9px] font-black text-amber-500">
+                  {ratingSummary.count > 0 ? ratingSummary.average.toFixed(1).replace('.', ',') : '--'} ★
+                </p>
+                <p className="text-[7px] font-black uppercase tracking-widest text-gray-400">
+                  {ratingSummary.count} aval.
+                </p>
+              </div>
+              <span className="bg-gray-50 text-gray-500 border border-gray-200 px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-widest max-w-[82px] truncate">
+                {(guest.name || '').split(' ')[0] || guest.name}
+              </span>
+            </div>
+          )
+        }
+      >
+        {!guest ? (
+          <div className="p-8 flex flex-col items-center justify-center min-h-[70vh] space-y-12">
+            <div className="w-16 h-16 bg-gray-50 border border-gray-100 rounded-[22px] flex items-center justify-center text-primary">
+              <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>
+            </div>
+            <div className="text-center space-y-3">
+              <h2 className="text-3xl font-black text-gray-900 uppercase tracking-tighter leading-none italic">Sua Mesa Esta Pronta</h2>
+              <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest leading-loose">Como deseja ser identificado(a) na {activeTable?.name}?</p>
+            </div>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const n = (e.currentTarget.elements.namedItem('un') as HTMLInputElement).value;
+              handleOpenTable(n);
+            }} className="w-full space-y-5">
+              <input name="un" type="text" placeholder="Seu Nome" required className="w-full p-4.5 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary text-center font-black text-lg placeholder:text-gray-200" />
+              <button className="w-full bg-primary text-white p-5 rounded-xl font-black uppercase tracking-widest text-base transition-transform active:scale-95">Abrir Cardapio</button>
+            </form>
           </div>
-          <form onSubmit={(e) => {
-            e.preventDefault();
-            const n = (e.currentTarget.elements.namedItem('un') as HTMLInputElement).value;
-            handleOpenTable(n);
-          }} className="w-full space-y-5">
-            <input name="un" type="text" placeholder="Seu Nome" required className="w-full p-4.5 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary text-center font-black text-lg placeholder:text-gray-200" />
-            <button className="w-full bg-primary text-white p-5 rounded-xl font-black uppercase tracking-widest text-base transition-transform active:scale-95">Abrir Cardapio</button>
-          </form>
-        </div>
-      ) : (
-        <div className="pb-32">
-          <div className="sticky top-[69px] z-40 bg-white border-b border-gray-100">
-            <div className="p-3.5 space-y-3">
-              <input
-                value={customerSearchTerm}
-                onChange={(e) => setCustomerSearchTerm(e.target.value)}
-                placeholder="Buscar produtos..."
-                className="w-full p-3 rounded-xl border border-gray-200 bg-white text-sm font-bold outline-none focus:border-primary"
-              />
-              <div className="flex gap-2 overflow-x-auto no-scrollbar">
-                <button
-                  onClick={() => setSelectedCategory(null)}
-                  className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${!selectedCategory ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
-                    }`}
-                >
-                  Todos
-                </button>
-                <button
-                  onClick={() => setSelectedCategory(PROMOTIONS_TAB_ID)}
-                  className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${showPromotionsOnly ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
-                    }`}
-                >
-                  Promocoes
-                </button>
-                {categories.map((c) => (
+        ) : (
+          <div className="pb-32">
+            <div className="sticky top-[69px] z-40 bg-white border-b border-gray-100">
+              <div className="p-3.5 space-y-3">
+                <input
+                  value={customerSearchTerm}
+                  onChange={(e) => setCustomerSearchTerm(e.target.value)}
+                  placeholder="Buscar produtos..."
+                  className="w-full p-3 rounded-xl border border-gray-200 bg-white text-sm font-bold outline-none focus:border-primary"
+                />
+                <div className="flex gap-2 overflow-x-auto no-scrollbar">
                   <button
-                    key={c.id}
-                    onClick={() => setSelectedCategory(c.id)}
-                    className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest whitespace-nowrap transition-all shrink-0 border ${selectedCategory === c.id ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
+                    onClick={() => setSelectedCategory(null)}
+                    className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${!selectedCategory ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
                       }`}
                   >
-                    {c.name}
+                    Todos
                   </button>
-                ))}
+                  <button
+                    onClick={() => setSelectedCategory(PROMOTIONS_TAB_ID)}
+                    className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${showPromotionsOnly ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
+                      }`}
+                  >
+                    Promocoes
+                  </button>
+                  {categories.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => setSelectedCategory(c.id)}
+                      className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest whitespace-nowrap transition-all shrink-0 border ${selectedCategory === c.id ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
+                        }`}
+                    >
+                      {c.name}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
-          </div>
 
-          <div className="p-4 space-y-8">
-            {pendingApprovalOrders.length > 0 && (
-              <section className="bg-amber-50 border border-amber-100 rounded-2xl p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-black text-amber-800 uppercase tracking-widest">Aguardando Aceite</h3>
-                  <span className="text-[9px] text-amber-700 font-black uppercase tracking-widest">
-                    {pendingApprovalOrders.length} pedido(s)
-                  </span>
-                </div>
-                {pendingApprovalOrders.map((order) => (
-                  <div key={order.id} className="bg-white border border-amber-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <p className="font-black text-gray-800">Pedido #{order.id.slice(0, 6)}</p>
-                      <p className="text-[9px] text-gray-500 font-black uppercase tracking-widest mt-1">
-                        {new Date(order.created_at).toLocaleTimeString()} | {formatCurrency(order.total_cents)}
-                      </p>
-                    </div>
-                    {guest.is_host ? (
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => handleApprovePendingOrder(order, true)}
-                          className="px-3 py-2 rounded-lg bg-green-600 text-white text-[9px] font-black uppercase tracking-widest"
-                        >
-                          Aceitar
-                        </button>
-                        <button
-                          onClick={() => handleApprovePendingOrder(order, false)}
-                          className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600 text-[9px] font-black uppercase tracking-widest"
-                        >
-                          Rejeitar
-                        </button>
-                      </div>
-                    ) : (
-                      <p className="text-[9px] text-amber-700 font-black uppercase tracking-widest">Aguardando responsavel</p>
-                    )}
+            <div className="p-4 space-y-8">
+              {pendingApprovalOrders.length > 0 && (
+                <section className="bg-amber-50 border border-amber-100 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-sm font-black text-amber-800 uppercase tracking-widest">Aguardando Aceite</h3>
+                    <span className="text-[9px] text-amber-700 font-black uppercase tracking-widest">
+                      {pendingApprovalOrders.length} pedido(s)
+                    </span>
                   </div>
-                ))}
-              </section>
-            )}
-
-            {hasOwnPendingApproval && (
-              <section className="bg-amber-50 border border-amber-100 rounded-2xl p-4">
-                <p className="text-[10px] text-amber-700 font-black uppercase tracking-widest">
-                  Pedido pendente de aceite. Aguarde para editar ou enviar novamente.
-                </p>
-              </section>
-            )}
-
-            {featuredProducts.length > 0 && (
-              <section className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <h3 className="text-lg font-black uppercase text-gray-800 tracking-tighter shrink-0 italic">Produtos em Destaque</h3>
-                  <div className="h-[1px] w-full bg-gray-100"></div>
-                </div>
-                <div className="space-y-3">
-                  {featuredProducts.map((p) => {
-                    const inCartQty = cart.filter((i) => i.product_id === p.id && i.guest_id === guest.id).reduce((acc, i) => acc + i.qty, 0);
-                    const hasAddons = getProductAddons(p.id).length > 0;
-                    const pricing = getProductPricing(p);
-                    const unitPrice = pricing.finalUnitPriceCents;
-                    const hasPromotion = pricing.hasPromotion;
-                    const promoBadge =
-                      pricing.promoDiscountType === 'PERCENT'
-                        ? `${pricing.promoDiscountValue}% OFF`
-                        : `- ${formatCurrency(pricing.discountCents)}`;
-
-                    return (
-                      <div key={`featured-${p.id}`} className="bg-white rounded-2xl p-3 border border-primary/20 transition-all">
-                        <div className="flex gap-3 items-start">
-                          {(p.image_url || '').trim() ? (
-                            <button
-                              type="button"
-                              onClick={() => setPreviewImage({ url: p.image_url, name: p.name })}
-                              className="shrink-0 rounded-xl overflow-hidden border border-gray-50 bg-gray-50"
-                            >
-                              <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover shrink-0 cursor-zoom-in" />
-                            </button>
-                          ) : (
-                            <div className="w-20 h-20 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0">
-                              <span className="text-[7px] font-black uppercase tracking-widest text-gray-300">Sem foto</span>
-                            </div>
-                          )}
-
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <h4 className="font-black text-gray-900 text-base leading-none tracking-tighter truncate">{p.name}</h4>
-                                <p className="text-[10px] text-gray-500 mt-2 leading-relaxed font-bold line-clamp-2">{p.description}</p>
-                              </div>
-                              <div className="flex flex-col items-end shrink-0">
-                                <span className="px-2 py-1 rounded-full bg-primary/15 text-primary text-[9px] font-black uppercase tracking-widest mb-1">
-                                  Destaque
-                                </span>
-                                {hasPromotion && (
-                                  <span className="px-2 py-1 rounded-full bg-primary/15 text-primary text-[9px] font-black uppercase tracking-widest mb-1">
-                                    Promocao • {promoBadge}
-                                  </span>
-                                )}
-                                {hasPromotion && (
-                                  <span className="text-[10px] font-black text-gray-400 line-through">{formatCurrency(p.price_cents)}</span>
-                                )}
-                                <span className="font-black text-primary text-lg tracking-tighter">{formatCurrency(unitPrice)}</span>
-                              </div>
-                            </div>
-
-                            {session?.status === 'OPEN' && (
-                              <div className="mt-3 flex flex-wrap items-center gap-2 justify-between">
-                                <div className="flex items-center gap-2">
-                                  {!hasAddons && inCartQty > 0 && (
-                                    <div className="inline-flex items-center gap-3 bg-gray-50 border border-gray-100 rounded-lg p-1 px-2.5">
-                                      <button
-                                        onClick={() => handleUpdateCart(p.id, -1)}
-                                        disabled={hasOwnPendingApproval}
-                                        className="text-lg font-black text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed"
-                                      >
-                                        -
-                                      </button>
-                                      <span className="text-xs font-black w-3 text-center text-gray-900">{inCartQty}</span>
-                                      <button
-                                        onClick={() => handleUpdateCart(p.id, 1)}
-                                        disabled={hasOwnPendingApproval}
-                                        className="text-lg font-black text-primary disabled:opacity-40 disabled:cursor-not-allowed"
-                                      >
-                                        +
-                                      </button>
-                                    </div>
-                                  )}
-                                  {inCartQty > 0 && (
-                                    <span className="text-[10px] font-black text-primary">{inCartQty} no carrinho</span>
-                                  )}
-                                </div>
-
-                                <div className="flex items-center gap-2">
-                                  <button
-                                    onClick={() => (hasAddons ? openAddonSelector(p) : handleUpdateCart(p.id, 1))}
-                                    disabled={hasOwnPendingApproval}
-                                    className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-                                  >
-                                    Adicionar
-                                  </button>
-                                  <button
-                                    onClick={() => openAddonSelector(p)}
-                                    disabled={hasOwnPendingApproval}
-                                    className="text-[8px] font-black uppercase tracking-widest text-gray-500 underline disabled:opacity-40 disabled:cursor-not-allowed"
-                                  >
-                                    Obs/Adicional
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
+                  {pendingApprovalOrders.map((order) => (
+                    <div key={order.id} className="bg-white border border-amber-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="font-black text-gray-800">Pedido #{order.id.slice(0, 6)}</p>
+                        <p className="text-[9px] text-gray-500 font-black uppercase tracking-widest mt-1">
+                          {new Date(order.created_at).toLocaleTimeString()} | {formatCurrency(order.total_cents)}
+                        </p>
                       </div>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
+                      {guest.is_host ? (
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleApprovePendingOrder(order, true)}
+                            className="px-3 py-2 rounded-lg bg-green-600 text-white text-[9px] font-black uppercase tracking-widest"
+                          >
+                            Aceitar
+                          </button>
+                          <button
+                            onClick={() => handleApprovePendingOrder(order, false)}
+                            className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600 text-[9px] font-black uppercase tracking-widest"
+                          >
+                            Rejeitar
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="text-[9px] text-amber-700 font-black uppercase tracking-widest">Aguardando responsavel</p>
+                      )}
+                    </div>
+                  ))}
+                </section>
+              )}
 
-            {visibleMenuCategories.map((cat) => {
-              let categoryProducts = products.filter(
-                (p) => p.category_id === cat.id && filteredProductIds.has(p.id)
-              );
-              if (showPromotionsOnly) {
-                categoryProducts = categoryProducts.filter((p) => promotionProductIds.has(p.id));
-              }
-              if (!showPromotionsOnly && !selectedCategoryId && featuredProducts.length > 0) {
-                categoryProducts = categoryProducts.filter((p) => !Boolean(p.is_featured));
-              }
+              {hasOwnPendingApproval && (
+                <section className="bg-amber-50 border border-amber-100 rounded-2xl p-4">
+                  <p className="text-[10px] text-amber-700 font-black uppercase tracking-widest">
+                    Pedido pendente de aceite. Aguarde para editar ou enviar novamente.
+                  </p>
+                </section>
+              )}
 
-              if (categoryProducts.length === 0) return null;
-
-              categoryProducts = [...categoryProducts].sort((a, b) => {
-                const featuredDiff = Number(Boolean(b.is_featured)) - Number(Boolean(a.is_featured));
-                if (featuredDiff !== 0) return featuredDiff;
-                return (a.name || '').localeCompare(b.name || '', 'pt-BR');
-              });
-
-              return (
-                <div key={cat.id} className="space-y-6">
+              {featuredProducts.length > 0 && (
+                <section className="space-y-4">
                   <div className="flex items-center gap-3">
-                    <h3 className="text-lg font-black uppercase text-gray-800 tracking-tighter shrink-0 italic">{cat.name}</h3>
+                    <h3 className="text-lg font-black uppercase text-gray-800 tracking-tighter shrink-0 italic">Produtos em Destaque</h3>
                     <div className="h-[1px] w-full bg-gray-100"></div>
                   </div>
                   <div className="space-y-3">
-                    {categoryProducts.map((p) => {
+                    {featuredProducts.map((p) => {
                       const inCartQty = cart.filter((i) => i.product_id === p.id && i.guest_id === guest.id).reduce((acc, i) => acc + i.qty, 0);
                       const hasAddons = getProductAddons(p.id).length > 0;
                       const pricing = getProductPricing(p);
@@ -2120,7 +2131,7 @@ const App: React.FC = () => {
                           : `- ${formatCurrency(pricing.discountCents)}`;
 
                       return (
-                        <div key={p.id} className="bg-white rounded-2xl p-3 border border-gray-100 transition-all">
+                        <div key={`featured-${p.id}`} className="bg-white rounded-2xl p-3 border border-primary/20 transition-all">
                           <div className="flex gap-3 items-start">
                             {(p.image_url || '').trim() ? (
                               <button
@@ -2143,6 +2154,9 @@ const App: React.FC = () => {
                                   <p className="text-[10px] text-gray-500 mt-2 leading-relaxed font-bold line-clamp-2">{p.description}</p>
                                 </div>
                                 <div className="flex flex-col items-end shrink-0">
+                                  <span className="px-2 py-1 rounded-full bg-primary/15 text-primary text-[9px] font-black uppercase tracking-widest mb-1">
+                                    Destaque
+                                  </span>
                                   {hasPromotion && (
                                     <span className="px-2 py-1 rounded-full bg-primary/15 text-primary text-[9px] font-black uppercase tracking-widest mb-1">
                                       Promocao • {promoBadge}
@@ -2206,281 +2220,409 @@ const App: React.FC = () => {
                       );
                     })}
                   </div>
-                </div>
-              );
-            })}
+                </section>
+              )}
 
-            {showPromotionsOnly && visibleMenuCategories.length === 0 && (
-              <div className="bg-white border border-gray-100 rounded-2xl p-5 text-center">
-                <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest">
-                  Nenhum item em promocao para hoje.
-                </p>
-              </div>
-            )}
+              {visibleMenuCategories.map((cat) => {
+                let categoryProducts = products.filter(
+                  (p) => p.category_id === cat.id && filteredProductIds.has(p.id)
+                );
+                if (showPromotionsOnly) {
+                  categoryProducts = categoryProducts.filter((p) => promotionProductIds.has(p.id));
+                }
+                if (!showPromotionsOnly && !selectedCategoryId && featuredProducts.length > 0) {
+                  categoryProducts = categoryProducts.filter((p) => !Boolean(p.is_featured));
+                }
 
-            {!showPromotionsOnly && visibleMenuCategories.length === 0 && (
-              <div className="bg-white border border-gray-100 rounded-2xl p-5 text-center">
-                <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest">
-                  Nenhum produto encontrado para essa busca.
-                </p>
-              </div>
-            )}
-          </div>
+                if (categoryProducts.length === 0) return null;
 
-          {session?.status === 'OPEN' && myCartItems.length > 0 && (
-            <div className="fixed bottom-0 left-0 right-0 p-5 bg-white border-t border-gray-100 z-50">
-              <button onClick={() => setShowCart(true)} className="w-full max-w-md mx-auto bg-gray-900 text-white p-4 rounded-xl flex justify-between items-center transition-transform active:scale-95">
-                <div className="flex items-center gap-4">
-                  <div className="w-9 h-9 bg-primary rounded-lg flex items-center justify-center text-xs font-black text-white italic">
-                    {myCartItems.reduce((a, b) => a + b.qty, 0)}
-                  </div>
-                  <div className="text-left">
-                    <span className="block font-black text-[9px] uppercase tracking-[0.2em] leading-none mb-1 italic">Meu Carrinho</span>
-                    <span className="text-[7px] text-gray-500 font-black uppercase tracking-widest">{myCartItems.length} item(ns) seus</span>
-                  </div>
-                </div>
-                <div className="flex flex-col items-end">
-                  <span className="font-black text-primary text-lg tracking-tighter leading-none italic">{formatCurrency(myCartTotal)}</span>
-                </div>
-              </button>
-            </div>
-          )}
+                categoryProducts = [...categoryProducts].sort((a, b) => {
+                  const featuredDiff = Number(Boolean(b.is_featured)) - Number(Boolean(a.is_featured));
+                  if (featuredDiff !== 0) return featuredDiff;
+                  return (a.name || '').localeCompare(b.name || '', 'pt-BR');
+                });
 
-          {showAddonSelector && pendingProduct && (
-            <AppModal
-              open={showAddonSelector}
-              onClose={closeAddonSelector}
-              title={pendingProduct.name}
-              size="md"
-              zIndex={90}
-              footer={
-                <button
-                  type="button"
-                  onClick={async () => {
-                    await handleAddProductWithAddons(pendingProduct, selectedAddonIds, productObservation);
-                    closeAddonSelector();
-                  }}
-                  className="w-full bg-gray-900 text-white py-4 rounded-xl font-black uppercase tracking-widest text-[11px]"
-                >
-                  {selectedAddonIds.length === 0 ? 'Adicionar' : 'Adicionar com adicionais'}
-                </button>
-              }
-            >
-              <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mb-5">
-                {getProductAddons(pendingProduct.id).length === 0
-                  ? 'Observacao opcional para este item'
-                  : pendingProduct.addon_selection_mode === 'SINGLE'
-                    ? 'Adicionais opcionais: escolha 1 ou nenhum'
-                    : 'Adicionais opcionais: escolha quantos quiser ou nenhum'}
-              </p>
-
-              <div className="flex flex-col gap-2">
-                {getProductAddons(pendingProduct.id).length === 0 && (
-                  <p className="text-sm text-gray-400 font-bold">Sem adicionais para este produto.</p>
-                )}
-                {getProductAddons(pendingProduct.id).map((addon) => {
-                  const selected = selectedAddonIds.includes(addon.id);
-                  return (
-                    <button
-                      key={addon.id}
-                      type="button"
-                      onClick={() => toggleAddon(pendingProduct, addon.id)}
-                      className={`w-full flex items-center justify-between rounded-xl border p-3 ${selected ? 'border-primary bg-orange-50' : 'border-gray-200 bg-white'}`}
-                    >
-                      <span className="font-black text-sm text-gray-800">{addon.name}</span>
-                      <span className="font-black text-sm text-primary">+ {formatCurrency(addon.price_cents)}</span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex flex-col gap-2 mt-5">
-                <label htmlFor="product-observation" className="text-[10px] text-gray-500 font-black uppercase tracking-widest">
-                  Observacao (opcional)
-                </label>
-                <textarea
-                  id="product-observation"
-                  rows={3}
-                  value={productObservation}
-                  onChange={(e) => setProductObservation(e.target.value)}
-                  placeholder="Ex.: sem cebola, molho separado..."
-                  maxLength={180}
-                  className="w-full rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-700 outline-none focus:border-primary"
-                />
-              </div>
-            </AppModal>
-          )}
-
-          {previewImage && (
-            <AppModal
-              open={Boolean(previewImage)}
-              onClose={() => setPreviewImage(null)}
-              title={previewImage.name}
-              size="md"
-              zIndex={105}
-              footer={
-                <button
-                  type="button"
-                  onClick={() => setPreviewImage(null)}
-                  className="w-full py-3 rounded-xl border border-gray-200 text-[10px] font-black uppercase tracking-widest text-gray-700"
-                >
-                  Fechar
-                </button>
-              }
-            >
-              <div className="rounded-2xl overflow-hidden border border-gray-200 bg-gray-50">
-                <img src={previewImage.url} alt={previewImage.name} className="w-full h-auto object-contain max-h-[70vh]" />
-              </div>
-            </AppModal>
-          )}
-
-          {showCart && (
-            <AppModal
-              open={showCart}
-              onClose={() => setShowCart(false)}
-              title={
-                <div>
-                  <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900 italic">Meu Carrinho</h3>
-                  <p className="text-[8px] text-gray-400 font-black uppercase tracking-[0.2em] mt-1.5 italic">Itens que voce vai enviar agora</p>
-                </div>
-              }
-              size="lg"
-              zIndex={100}
-              footer={
-                <div className="pt-1 flex flex-col gap-4">
-                  {myCartPromotionDiscount > 0 && (
-                    <div className="flex justify-between items-baseline font-black">
-                      <span className="text-gray-400 text-[8px] uppercase tracking-[0.3em] font-black italic">Descontos de Promocao</span>
-                      <span className="text-emerald-600 text-sm tracking-widest">- {formatCurrency(myCartPromotionDiscount)}</span>
+                return (
+                  <div key={cat.id} className="space-y-6">
+                    <div className="flex items-center gap-3">
+                      <h3 className="text-lg font-black uppercase text-gray-800 tracking-tighter shrink-0 italic">{cat.name}</h3>
+                      <div className="h-[1px] w-full bg-gray-100"></div>
                     </div>
-                  )}
-                  <div className="flex justify-between items-baseline font-black">
-                    <span className="text-gray-400 text-[8px] uppercase tracking-[0.3em] font-black italic">Total do Meu Pedido</span>
-                    <span className="text-primary text-3xl tracking-tighter italic">{formatCurrency(myCartTotal)}</span>
-                  </div>
-                  <button
-                    onClick={handleSendMyCart}
-                    disabled={isLoading || myCartItems.length === 0 || hasOwnPendingApproval}
-                    className="w-full bg-primary text-white py-4 rounded-xl font-black text-base uppercase tracking-widest transition-transform active:scale-95 italic disabled:opacity-60"
-                  >
-                    {isLoading ? 'Enviando...' : hasOwnPendingApproval ? 'Aguardando Aceite' : 'Finalizar e Enviar'}
-                  </button>
-                </div>
-              }
-            >
-              <div className="flex flex-col gap-4">
-                {myCartItems.map((item) => (
-                  <div key={item.id} className="flex justify-between items-center border-b border-gray-50 pb-4 last:border-0 last:pb-0">
-                    <div className="flex gap-4 items-center">
-                      <div className="w-9 h-9 bg-gray-50 border border-gray-100 rounded-lg flex items-center justify-center font-black text-primary text-sm italic">{item.qty}x</div>
-                      <div className="flex flex-col">
-                        <p className="font-black text-sm text-gray-800 tracking-tight leading-none">{item.product?.name}</p>
-                        <p className="text-[8px] text-gray-400 uppercase font-black tracking-widest mt-1.5 flex items-center gap-1.5 italic opacity-70">
-                          Por {item.guest_name}
-                        </p>
-                        {(item.addon_names?.length || 0) > 0 && (
-                          <p className="text-[8px] text-primary uppercase font-black tracking-widest mt-1">
-                            + {item.addon_names?.join(', ')}
-                          </p>
-                        )}
-                        {Number(item.promo_discount_cents || 0) > 0 && (
-                          <p className="text-[8px] text-emerald-600 uppercase font-black tracking-widest mt-1">
-                            Promocao: -{formatCurrency(Number(item.promo_discount_cents || 0))}
-                          </p>
-                        )}
-                        {!!(item.observation || '').trim() && (
-                          <p className="text-[8px] text-gray-500 font-black tracking-wide mt-1">
-                            Obs: {item.observation}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <span className="font-black text-gray-900 text-base tracking-tighter italic">{formatCurrency(getCartItemUnitPrice(item) * item.qty)}</span>
-                  </div>
-                ))}
-              </div>
-            </AppModal>
-          )}
+                    <div className="space-y-3">
+                      {categoryProducts.map((p) => {
+                        const inCartQty = cart.filter((i) => i.product_id === p.id && i.guest_id === guest.id).reduce((acc, i) => acc + i.qty, 0);
+                        const hasAddons = getProductAddons(p.id).length > 0;
+                        const pricing = getProductPricing(p);
+                        const unitPrice = pricing.finalUnitPriceCents;
+                        const hasPromotion = pricing.hasPromotion;
+                        const promoBadge =
+                          pricing.promoDiscountType === 'PERCENT'
+                            ? `${pricing.promoDiscountValue}% OFF`
+                            : `- ${formatCurrency(pricing.discountCents)}`;
 
-          {showRatingModal && (
-            <AppModal
-              open={showRatingModal}
-              onClose={() => setShowRatingModal(false)}
-              title="Avaliar Loja"
-              size="sm"
-              zIndex={130}
-              footer={
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowRatingModal(false)}
-                    className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSubmitFeedback}
-                    disabled={sendingRating}
-                    className="flex-1 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-50"
-                  >
-                    {sendingRating ? 'Enviando...' : 'Enviar Avaliacao'}
-                  </button>
-                </div>
-              }
-            >
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Nota (obrigatorio)</p>
-                  <div className="flex items-center gap-2">
-                    {[1, 2, 3, 4, 5].map((star) => (
-                      <button
-                        key={star}
-                        type="button"
-                        onClick={() => setRatingStars(star)}
-                        className={`w-10 h-10 rounded-xl border flex items-center justify-center ${star <= ratingStars
-                          ? 'bg-amber-50 border-amber-200 text-amber-500'
-                          : 'bg-white border-gray-200 text-gray-300'
-                          }`}
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                          <path d="m12 17.27 6.18 3.73-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
-                        </svg>
-                      </button>
-                    ))}
+                        return (
+                          <div key={p.id} className="bg-white rounded-2xl p-3 border border-gray-100 transition-all">
+                            <div className="flex gap-3 items-start">
+                              {(p.image_url || '').trim() ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewImage({ url: p.image_url, name: p.name })}
+                                  className="shrink-0 rounded-xl overflow-hidden border border-gray-50 bg-gray-50"
+                                >
+                                  <img src={p.image_url} className="w-20 h-20 rounded-xl object-cover shrink-0 cursor-zoom-in" />
+                                </button>
+                              ) : (
+                                <div className="w-20 h-20 rounded-xl bg-gray-50 border border-gray-100 flex items-center justify-center shrink-0">
+                                  <span className="text-[7px] font-black uppercase tracking-widest text-gray-300">Sem foto</span>
+                                </div>
+                              )}
+
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <h4 className="font-black text-gray-900 text-base leading-none tracking-tighter truncate">{p.name}</h4>
+                                    <p className="text-[10px] text-gray-500 mt-2 leading-relaxed font-bold line-clamp-2">{p.description}</p>
+                                  </div>
+                                  <div className="flex flex-col items-end shrink-0">
+                                    {hasPromotion && (
+                                      <span className="px-2 py-1 rounded-full bg-primary/15 text-primary text-[9px] font-black uppercase tracking-widest mb-1">
+                                        Promocao • {promoBadge}
+                                      </span>
+                                    )}
+                                    {hasPromotion && (
+                                      <span className="text-[10px] font-black text-gray-400 line-through">{formatCurrency(p.price_cents)}</span>
+                                    )}
+                                    <span className="font-black text-primary text-lg tracking-tighter">{formatCurrency(unitPrice)}</span>
+                                  </div>
+                                </div>
+
+                                {session?.status === 'OPEN' && (
+                                  <div className="mt-3 flex flex-wrap items-center gap-2 justify-between">
+                                    <div className="flex items-center gap-2">
+                                      {!hasAddons && inCartQty > 0 && (
+                                        <div className="inline-flex items-center gap-3 bg-gray-50 border border-gray-100 rounded-lg p-1 px-2.5">
+                                          <button
+                                            onClick={() => handleUpdateCart(p.id, -1)}
+                                            disabled={hasOwnPendingApproval}
+                                            className="text-lg font-black text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                                          >
+                                            -
+                                          </button>
+                                          <span className="text-xs font-black w-3 text-center text-gray-900">{inCartQty}</span>
+                                          <button
+                                            onClick={() => handleUpdateCart(p.id, 1)}
+                                            disabled={hasOwnPendingApproval}
+                                            className="text-lg font-black text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+                                          >
+                                            +
+                                          </button>
+                                        </div>
+                                      )}
+                                      {inCartQty > 0 && (
+                                        <span className="text-[10px] font-black text-primary">{inCartQty} no carrinho</span>
+                                      )}
+                                    </div>
+
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        onClick={() => (hasAddons ? openAddonSelector(p) : handleUpdateCart(p.id, 1))}
+                                        disabled={hasOwnPendingApproval}
+                                        className="bg-gray-900 text-white px-4 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-transform active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                                      >
+                                        Adicionar
+                                      </button>
+                                      <button
+                                        onClick={() => openAddonSelector(p)}
+                                        disabled={hasOwnPendingApproval}
+                                        className="text-[8px] font-black uppercase tracking-widest text-gray-500 underline disabled:opacity-40 disabled:cursor-not-allowed"
+                                      >
+                                        Obs/Adicional
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Nome/apelido (opcional)</label>
-                  <input
-                    value={ratingName}
-                    onChange={(e) => setRatingName(e.target.value)}
-                    maxLength={80}
-                    className="w-full p-3 rounded-xl border border-gray-200 font-bold"
-                    placeholder="Seu nome"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Comentario (opcional)</label>
-                  <textarea
-                    value={ratingComment}
-                    onChange={(e) => setRatingComment(e.target.value)}
-                    maxLength={400}
-                    rows={4}
-                    className="w-full p-3 rounded-xl border border-gray-200 font-bold"
-                    placeholder="Conte para a gente como foi sua experiencia..."
-                  />
-                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 text-right">
-                    {ratingComment.length}/400
+                );
+              })}
+
+              {showPromotionsOnly && visibleMenuCategories.length === 0 && (
+                <div className="bg-white border border-gray-100 rounded-2xl p-5 text-center">
+                  <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest">
+                    Nenhum item em promocao para hoje.
                   </p>
                 </div>
+              )}
+
+              {!showPromotionsOnly && visibleMenuCategories.length === 0 && (
+                <div className="bg-white border border-gray-100 rounded-2xl p-5 text-center">
+                  <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest">
+                    Nenhum produto encontrado para essa busca.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {session?.status === 'OPEN' && myCartItems.length > 0 && (
+              <div className="fixed bottom-0 left-0 right-0 p-5 bg-white border-t border-gray-100 z-50">
+                <button onClick={() => setShowCart(true)} className="w-full max-w-md mx-auto bg-gray-900 text-white p-4 rounded-xl flex justify-between items-center transition-transform active:scale-95">
+                  <div className="flex items-center gap-4">
+                    <div className="w-9 h-9 bg-primary rounded-lg flex items-center justify-center text-xs font-black text-white italic">
+                      {myCartItems.reduce((a, b) => a + b.qty, 0)}
+                    </div>
+                    <div className="text-left">
+                      <span className="block font-black text-[9px] uppercase tracking-[0.2em] leading-none mb-1 italic">Meu Carrinho</span>
+                      <span className="text-[7px] text-gray-500 font-black uppercase tracking-widest">{myCartItems.length} item(ns) seus</span>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end">
+                    <span className="font-black text-primary text-lg tracking-tighter leading-none italic">{formatCurrency(myCartTotal)}</span>
+                  </div>
+                </button>
               </div>
-            </AppModal>
-          )}
-        </div>
-      )}
-    </Layout>
-  );
-};
+            )}
+
+            {showAddonSelector && pendingProduct && (
+              <AppModal
+                open={showAddonSelector}
+                onClose={closeAddonSelector}
+                title={pendingProduct.name}
+                size="md"
+                zIndex={90}
+                footer={
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await handleAddProductWithAddons(pendingProduct, selectedAddonIds, productObservation);
+                      closeAddonSelector();
+                    }}
+                    className="w-full bg-gray-900 text-white py-4 rounded-xl font-black uppercase tracking-widest text-[11px]"
+                  >
+                    {selectedAddonIds.length === 0 ? 'Adicionar' : 'Adicionar com adicionais'}
+                  </button>
+                }
+              >
+                <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest mb-5">
+                  {getProductAddons(pendingProduct.id).length === 0
+                    ? 'Observacao opcional para este item'
+                    : pendingProduct.addon_selection_mode === 'SINGLE'
+                      ? 'Adicionais opcionais: escolha 1 ou nenhum'
+                      : 'Adicionais opcionais: escolha quantos quiser ou nenhum'}
+                </p>
+
+                <div className="flex flex-col gap-2">
+                  {getProductAddons(pendingProduct.id).length === 0 && (
+                    <p className="text-sm text-gray-400 font-bold">Sem adicionais para este produto.</p>
+                  )}
+                  {getProductAddons(pendingProduct.id).map((addon) => {
+                    const selected = selectedAddonIds.includes(addon.id);
+                    return (
+                      <button
+                        key={addon.id}
+                        type="button"
+                        onClick={() => toggleAddon(pendingProduct, addon.id)}
+                        className={`w-full flex items-center justify-between rounded-xl border p-3 ${selected ? 'border-primary bg-orange-50' : 'border-gray-200 bg-white'}`}
+                      >
+                        <span className="font-black text-sm text-gray-800">{addon.name}</span>
+                        <span className="font-black text-sm text-primary">+ {formatCurrency(addon.price_cents)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex flex-col gap-2 mt-5">
+                  <label htmlFor="product-observation" className="text-[10px] text-gray-500 font-black uppercase tracking-widest">
+                    Observacao (opcional)
+                  </label>
+                  <textarea
+                    id="product-observation"
+                    rows={3}
+                    value={productObservation}
+                    onChange={(e) => setProductObservation(e.target.value)}
+                    placeholder="Ex.: sem cebola, molho separado..."
+                    maxLength={180}
+                    className="w-full rounded-xl border border-gray-200 bg-white p-3 text-sm text-gray-700 outline-none focus:border-primary"
+                  />
+                </div>
+              </AppModal>
+            )}
+
+            {previewImage && (
+              <AppModal
+                open={Boolean(previewImage)}
+                onClose={() => setPreviewImage(null)}
+                title={previewImage.name}
+                size="md"
+                zIndex={105}
+                footer={
+                  <button
+                    type="button"
+                    onClick={() => setPreviewImage(null)}
+                    className="w-full py-3 rounded-xl border border-gray-200 text-[10px] font-black uppercase tracking-widest text-gray-700"
+                  >
+                    Fechar
+                  </button>
+                }
+              >
+                <div className="rounded-2xl overflow-hidden border border-gray-200 bg-gray-50">
+                  <img src={previewImage.url} alt={previewImage.name} className="w-full h-auto object-contain max-h-[70vh]" />
+                </div>
+              </AppModal>
+            )}
+
+            {showCart && (
+              <AppModal
+                open={showCart}
+                onClose={() => setShowCart(false)}
+                title={
+                  <div>
+                    <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900 italic">Meu Carrinho</h3>
+                    <p className="text-[8px] text-gray-400 font-black uppercase tracking-[0.2em] mt-1.5 italic">Itens que voce vai enviar agora</p>
+                  </div>
+                }
+                size="lg"
+                zIndex={100}
+                footer={
+                  <div className="pt-1 flex flex-col gap-4">
+                    {myCartPromotionDiscount > 0 && (
+                      <div className="flex justify-between items-baseline font-black">
+                        <span className="text-gray-400 text-[8px] uppercase tracking-[0.3em] font-black italic">Descontos de Promocao</span>
+                        <span className="text-emerald-600 text-sm tracking-widest">- {formatCurrency(myCartPromotionDiscount)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between items-baseline font-black">
+                      <span className="text-gray-400 text-[8px] uppercase tracking-[0.3em] font-black italic">Total do Meu Pedido</span>
+                      <span className="text-primary text-3xl tracking-tighter italic">{formatCurrency(myCartTotal)}</span>
+                    </div>
+                    <button
+                      onClick={handleSendMyCart}
+                      disabled={isLoading || myCartItems.length === 0 || hasOwnPendingApproval}
+                      className="w-full bg-primary text-white py-4 rounded-xl font-black text-base uppercase tracking-widest transition-transform active:scale-95 italic disabled:opacity-60"
+                    >
+                      {isLoading ? 'Enviando...' : hasOwnPendingApproval ? 'Aguardando Aceite' : 'Finalizar e Enviar'}
+                    </button>
+                  </div>
+                }
+              >
+                <div className="flex flex-col gap-4">
+                  {myCartItems.map((item) => (
+                    <div key={item.id} className="flex justify-between items-center border-b border-gray-50 pb-4 last:border-0 last:pb-0">
+                      <div className="flex gap-4 items-center">
+                        <div className="w-9 h-9 bg-gray-50 border border-gray-100 rounded-lg flex items-center justify-center font-black text-primary text-sm italic">{item.qty}x</div>
+                        <div className="flex flex-col">
+                          <p className="font-black text-sm text-gray-800 tracking-tight leading-none">{item.product?.name}</p>
+                          <p className="text-[8px] text-gray-400 uppercase font-black tracking-widest mt-1.5 flex items-center gap-1.5 italic opacity-70">
+                            Por {item.guest_name}
+                          </p>
+                          {(item.addon_names?.length || 0) > 0 && (
+                            <p className="text-[8px] text-primary uppercase font-black tracking-widest mt-1">
+                              + {item.addon_names?.join(', ')}
+                            </p>
+                          )}
+                          {Number(item.promo_discount_cents || 0) > 0 && (
+                            <p className="text-[8px] text-emerald-600 uppercase font-black tracking-widest mt-1">
+                              Promocao: -{formatCurrency(Number(item.promo_discount_cents || 0))}
+                            </p>
+                          )}
+                          {!!(item.observation || '').trim() && (
+                            <p className="text-[8px] text-gray-500 font-black tracking-wide mt-1">
+                              Obs: {item.observation}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <span className="font-black text-gray-900 text-base tracking-tighter italic">{formatCurrency(getCartItemUnitPrice(item) * item.qty)}</span>
+                    </div>
+                  ))}
+                </div>
+              </AppModal>
+            )}
+
+            {showRatingModal && (
+              <AppModal
+                open={showRatingModal}
+                onClose={() => setShowRatingModal(false)}
+                title="Avaliar Loja"
+                size="sm"
+                zIndex={130}
+                footer={
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowRatingModal(false)}
+                      className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSubmitFeedback}
+                      disabled={sendingRating}
+                      className="flex-1 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-50"
+                    >
+                      {sendingRating ? 'Enviando...' : 'Enviar Avaliacao'}
+                    </button>
+                  </div>
+                }
+              >
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">Nota (obrigatorio)</p>
+                    <div className="flex items-center gap-2">
+                      {[1, 2, 3, 4, 5].map((star) => (
+                        <button
+                          key={star}
+                          type="button"
+                          onClick={() => setRatingStars(star)}
+                          className={`w-10 h-10 rounded-xl border flex items-center justify-center ${star <= ratingStars
+                            ? 'bg-amber-50 border-amber-200 text-amber-500'
+                            : 'bg-white border-gray-200 text-gray-300'
+                            }`}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="m12 17.27 6.18 3.73-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />
+                          </svg>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Nome/apelido (opcional)</label>
+                    <input
+                      value={ratingName}
+                      onChange={(e) => setRatingName(e.target.value)}
+                      maxLength={80}
+                      className="w-full p-3 rounded-xl border border-gray-200 font-bold"
+                      placeholder="Seu nome"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Comentario (opcional)</label>
+                    <textarea
+                      value={ratingComment}
+                      onChange={(e) => setRatingComment(e.target.value)}
+                      maxLength={400}
+                      rows={4}
+                      className="w-full p-3 rounded-xl border border-gray-200 font-bold"
+                      placeholder="Conte para a gente como foi sua experiencia..."
+                    />
+                    <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 text-right">
+                      {ratingComment.length}/400
+                    </p>
+                  </div>
+                </div>
+              </AppModal>
+            )}
+          </div>
+        )}
+      </Layout>
+    );
+  };
+}
 
 export default App;

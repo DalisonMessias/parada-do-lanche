@@ -6,7 +6,7 @@ export type OrderApprovalMode = 'HOST' | 'SELF';
 export type OrderOrigin = 'CUSTOMER' | 'WAITER' | 'BALCAO';
 export type DiscountMode = 'NONE' | 'AMOUNT' | 'PERCENT';
 export type TableType = 'DINING' | 'COUNTER';
-export type ServiceType = 'ON_TABLE' | 'RETIRADA' | 'ENTREGA';
+export type ServiceType = 'ON_TABLE' | 'RETIRADA' | 'ENTREGA' | 'CONSUMO_LOCAL';
 export type WaiterFeeMode = 'PERCENT' | 'FIXED';
 export type PixKeyType = 'cpf' | 'cnpj' | 'phone' | 'email' | 'random';
 export type PromotionScope = 'GLOBAL' | 'PRODUCT';
@@ -43,6 +43,12 @@ export interface StoreSettings {
   enable_waiter_fee?: boolean;
   waiter_fee_mode?: WaiterFeeMode;
   waiter_fee_value?: number;
+  plan_name?: string;
+  plan_price?: number;
+  plan_due_day?: number;
+  plan_current_due_date?: string;
+  plan_status?: 'PAID' | 'OPEN' | 'OVERDUE' | 'SUSPENDED';
+  plan_paid_at?: string;
   updated_at?: string | null;
 }
 
@@ -209,4 +215,4 @@ export interface OrderItem {
   added_by_name: string;
 }
 
-export type AppView = 'LANDING' | 'CUSTOMER_MENU' | 'ADMIN_LOGIN' | 'ADMIN_DASHBOARD' | 'TEMP_REGISTER' | 'PUBLIC_RECEIPT';
+export type AppView = 'LANDING' | 'CUSTOMER_MENU' | 'ADMIN_LOGIN' | 'ADMIN_DASHBOARD' | 'TEMP_REGISTER' | 'PUBLIC_RECEIPT' | 'ADMIN_PLAN' | 'PUBLIC_PLAN_PAYMENT' | 'MAINTENANCE';

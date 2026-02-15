@@ -48,6 +48,7 @@ type PublicReceiptResponse = {
 const mapTicketType = (serviceType?: string | null): KitchenPrintTicket['ticketType'] => {
   if (serviceType === 'ENTREGA') return 'ENTREGA';
   if (serviceType === 'RETIRADA') return 'RETIRADA';
+  if (serviceType === 'CONSUMO_LOCAL') return 'BALCAO';
   return 'BALCAO';
 };
 

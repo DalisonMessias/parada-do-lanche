@@ -37,7 +37,7 @@ const Layout: React.FC<LayoutProps> = ({
   const shellClass = isAdmin
     ? 'w-full'
     : wide
-      ? 'w-full max-w-6xl mx-auto bg-white border-x border-gray-100'
+      ? 'w-full mx-auto bg-white border-x border-gray-100'
       : 'max-w-md mx-auto bg-white border-x border-gray-100';
   const headerClass = isAdmin
     ? 'fixed top-0 left-0 right-0 z-[120] bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between'

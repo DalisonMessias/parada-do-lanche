@@ -429,7 +429,7 @@ create table if not exists public.orders (
   customer_name text,
   customer_phone text,
   general_note text,
-  service_type text not null default 'ON_TABLE' check (service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA')),
+  service_type text not null default 'ON_TABLE' check (service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA', 'CONSUMO_LOCAL')),
   delivery_address jsonb,
   delivery_fee_cents integer not null default 0,
   created_by_guest_id uuid references public.session_guests(id) on delete set null,
@@ -520,7 +520,7 @@ set
   discount_value = greatest(coalesce(discount_value, 0), 0),
   discount_cents = greatest(coalesce(discount_cents, 0), 0),
   service_type = case
-    when service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA') then service_type
+    when service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA', 'CONSUMO_LOCAL') then service_type
     when (case when origin in ('CUSTOMER', 'WAITER', 'BALCAO') then origin else 'CUSTOMER' end) = 'BALCAO'
       then 'RETIRADA'
     else 'ON_TABLE'
@@ -554,7 +554,7 @@ begin
   ) then
     alter table public.orders
       add constraint orders_service_type_check
-      check (service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA'));
+      check (service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA', 'CONSUMO_LOCAL'));
   end if;
 end $$;
 
@@ -2000,7 +2000,7 @@ begin
     else 'NONE'
   end;
   v_service_type := case
-    when p_service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA') then p_service_type
+    when p_service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA', 'CONSUMO_LOCAL') then p_service_type
     else null
   end;
 

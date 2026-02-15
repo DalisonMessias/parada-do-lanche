@@ -122,6 +122,7 @@ const approvalClass: Record<string, string> = {
 const serviceTypeLabel = (serviceType?: string | null) => {
   if (serviceType === 'ENTREGA') return 'Entrega';
   if (serviceType === 'RETIRADA') return 'Retirada';
+  if (serviceType === 'CONSUMO_LOCAL') return 'Consumo Local';
   return 'Mesa';
 };
 
