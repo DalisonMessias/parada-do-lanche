@@ -1900,7 +1900,7 @@ begin
   where oi.order_id = v_order.id;
 
   return jsonb_build_object(
-    'store_name', 'Parada do Lanche',
+    'store_name', 'UaiTech',
     'order', jsonb_build_object(
       'id', v_order.id,
       'session_id', v_order.session_id,
@@ -2578,9 +2578,9 @@ begin
     v_timezone := 'UTC';
   end if;
 
-  v_period := upper(coalesce(p_period, 'WEEK'));
-  if v_period not in ('WEEK', 'MONTH', 'CUSTOM') then
-    v_period := 'WEEK';
+  v_period := upper(coalesce(p_period, 'DAY'));
+  if v_period not in ('DAY', 'WEEK', 'MONTH', 'CUSTOM') then
+    v_period := 'DAY';
   end if;
 
   v_order_type := upper(coalesce(p_order_type, 'ALL'));
@@ -2597,6 +2597,9 @@ begin
   if v_period = 'CUSTOM' then
     v_from := coalesce(p_from, v_today);
     v_to := coalesce(p_to, v_today);
+  elsif v_period = 'DAY' then
+    v_from := v_today;
+    v_to := v_today;
   elsif v_period = 'MONTH' then
     v_from := date_trunc('month', v_today::timestamp)::date;
     v_to := (date_trunc('month', v_today::timestamp) + interval '1 month - 1 day')::date;
@@ -3081,3 +3084,10 @@ on storage.objects
 for delete
 to authenticated
 using (bucket_id = 'assets');
+
+
+-- Migration to add store_name to settings table
+ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS store_name text NOT NULL DEFAULT 'Parada do Lanche';
+
+-- Update existing row if it exists
+UPDATE public.settings SET store_name = 'Parada do Lanche' WHERE id = 1 AND (store_name IS NULL OR store_name = '');

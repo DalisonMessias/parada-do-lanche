@@ -43,6 +43,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
   const [waiterFeeFixedMasked, setWaiterFeeFixedMasked] = useState('R$ 0,00');
   const [savedPixKeyValue, setSavedPixKeyValue] = useState('');
   const [formData, setFormData] = useState({
+    store_name: 'UaiTech',
     logo_url: '',
     order_approval_mode: 'HOST' as 'HOST' | 'SELF',
     has_thermal_printer: false,
@@ -78,6 +79,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
       const pixValueMasked = maskPixInput(pixType, settings.pix_key_value || '');
 
       setFormData({
+        store_name: settings.store_name || 'UaiTech',
         logo_url: settings.logo_url || '',
         order_approval_mode: (settings.order_approval_mode || 'HOST') as 'HOST' | 'SELF',
         has_thermal_printer: settings.has_thermal_printer === true,
@@ -239,7 +241,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
       <div className="flex items-center justify-center min-h-[60vh] p-8">
         <div className="text-center space-y-6">
           <div className="w-16 h-16 bg-gray-50 border border-gray-200 rounded-2xl flex items-center justify-center mx-auto text-gray-300">
-            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
           </div>
           <div>
             <h2 className="text-2xl font-black uppercase tracking-tighter text-gray-900 leading-none">Acesso Restrito</h2>
@@ -259,9 +261,20 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
             <p className="text-[10px] text-gray-400 font-black uppercase tracking-[0.2em] mt-2 italic">Parametros gerais da loja e identidade visual</p>
           </div>
         </div>
-        
+
         <form onSubmit={handleSubmit} className="space-y-10">
           <div className="grid md:grid-cols-2 gap-10">
+            <div className="space-y-2 md:col-span-2">
+              <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">NOME DA LOJA</label>
+              <input
+                type="text"
+                value={formData.store_name}
+                onChange={(e) => setFormData({ ...formData, store_name: e.target.value })}
+                placeholder="Ex: UaiTech"
+                className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
+                required
+              />
+            </div>
             <div className="space-y-2 md:col-span-2">
               <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">MODO DE ACEITE DA MESA</label>
               <CustomSelect
@@ -398,11 +411,10 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
                     key={option.value}
                     type="button"
                     onClick={() => handlePixTypeChange(option.value)}
-                    className={`py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${
-                      formData.pix_key_type === option.value
+                    className={`py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${formData.pix_key_type === option.value
                         ? 'bg-gray-900 text-white border-gray-900'
                         : 'bg-white text-gray-600 border-gray-200'
-                    }`}
+                      }`}
                   >
                     {option.label}
                   </button>
@@ -512,7 +524,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
             <div className="grid md:grid-cols-12 gap-10 items-start">
               <div className="md:col-span-4 relative group aspect-square">
                 <div className="w-full h-full bg-gray-50 rounded-[32px] border-2 border-dashed border-gray-200 flex flex-col items-center justify-center gap-4 hover:bg-gray-100 transition-all cursor-pointer overflow-hidden relative">
-                  {formData.logo_url ? <img src={formData.logo_url} className="w-full h-full object-contain p-6" /> : <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-300"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>}
+                  {formData.logo_url ? <img src={formData.logo_url} className="w-full h-full object-contain p-6" /> : <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-300"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>}
                   <input type="file" accept="image/*" onChange={handleFileUpload} className="absolute inset-0 opacity-0 cursor-pointer" disabled={uploading} />
                   {uploading && <div className="absolute inset-0 bg-white/80 backdrop-blur-sm flex items-center justify-center"><div className="w-8 h-8 border-[3px] border-primary border-t-transparent rounded-full animate-spin"></div></div>}
                 </div>
@@ -526,7 +538,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
                 </div>
                 {formData.logo_url && (
                   <button type="button" onClick={() => setFormData(prev => ({ ...prev, logo_url: '' }))} className="flex items-center gap-2 text-red-400 hover:text-red-600 font-black text-[9px] uppercase tracking-widest transition-colors italic">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
                     Descartar Imagem
                   </button>
                 )}
@@ -544,36 +556,36 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
               <div className="space-y-2">
                 <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Fundo do adesivo</label>
                 <div className="flex gap-4 items-center">
-                  <input type="color" value={formData.sticker_bg_color} onChange={e => setFormData({...formData, sticker_bg_color: e.target.value})} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
-                  <input value={formData.sticker_bg_color} onChange={e => setFormData({...formData, sticker_bg_color: e.target.value})} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
+                  <input type="color" value={formData.sticker_bg_color} onChange={e => setFormData({ ...formData, sticker_bg_color: e.target.value })} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
+                  <input value={formData.sticker_bg_color} onChange={e => setFormData({ ...formData, sticker_bg_color: e.target.value })} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
                 </div>
               </div>
               <div className="space-y-2">
                 <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Texto principal</label>
                 <div className="flex gap-4 items-center">
-                  <input type="color" value={formData.sticker_text_color} onChange={e => setFormData({...formData, sticker_text_color: e.target.value})} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
-                  <input value={formData.sticker_text_color} onChange={e => setFormData({...formData, sticker_text_color: e.target.value})} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
+                  <input type="color" value={formData.sticker_text_color} onChange={e => setFormData({ ...formData, sticker_text_color: e.target.value })} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
+                  <input value={formData.sticker_text_color} onChange={e => setFormData({ ...formData, sticker_text_color: e.target.value })} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
                 </div>
               </div>
               <div className="space-y-2">
                 <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Borda do adesivo</label>
                 <div className="flex gap-4 items-center">
-                  <input type="color" value={formData.sticker_border_color} onChange={e => setFormData({...formData, sticker_border_color: e.target.value})} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
-                  <input value={formData.sticker_border_color} onChange={e => setFormData({...formData, sticker_border_color: e.target.value})} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
+                  <input type="color" value={formData.sticker_border_color} onChange={e => setFormData({ ...formData, sticker_border_color: e.target.value })} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
+                  <input value={formData.sticker_border_color} onChange={e => setFormData({ ...formData, sticker_border_color: e.target.value })} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
                 </div>
               </div>
               <div className="space-y-2">
                 <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Texto secundario</label>
                 <div className="flex gap-4 items-center">
-                  <input type="color" value={formData.sticker_muted_text_color} onChange={e => setFormData({...formData, sticker_muted_text_color: e.target.value})} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
-                  <input value={formData.sticker_muted_text_color} onChange={e => setFormData({...formData, sticker_muted_text_color: e.target.value})} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
+                  <input type="color" value={formData.sticker_muted_text_color} onChange={e => setFormData({ ...formData, sticker_muted_text_color: e.target.value })} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
+                  <input value={formData.sticker_muted_text_color} onChange={e => setFormData({ ...formData, sticker_muted_text_color: e.target.value })} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
                 </div>
               </div>
               <div className="space-y-2 md:col-span-2">
                 <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Borda do QR principal</label>
                 <div className="flex gap-4 items-center">
-                  <input type="color" value={formData.sticker_qr_frame_color} onChange={e => setFormData({...formData, sticker_qr_frame_color: e.target.value})} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
-                  <input value={formData.sticker_qr_frame_color} onChange={e => setFormData({...formData, sticker_qr_frame_color: e.target.value})} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
+                  <input type="color" value={formData.sticker_qr_frame_color} onChange={e => setFormData({ ...formData, sticker_qr_frame_color: e.target.value })} className="w-14 h-14 rounded-xl border border-gray-200 p-1 cursor-pointer bg-white" />
+                  <input value={formData.sticker_qr_frame_color} onChange={e => setFormData({ ...formData, sticker_qr_frame_color: e.target.value })} className="flex-1 p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-mono font-black" />
                 </div>
               </div>
             </div>
@@ -583,7 +595,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
                 <StickerCard
                   tableName="MESA 01"
                   logoUrl={formData.logo_url}
-                  storeName="Parada do Lanche"
+                  storeName={formData.store_name}
                   stickerTheme={stickerTheme}
                   menuQrUrl={getQrUrl(buildMenuUrl())}
                   menuQrFallbackUrl={getQrFallbackUrl(buildMenuUrl())}

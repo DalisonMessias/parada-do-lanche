@@ -1,6 +1,6 @@
 {
-  "name": "Parada do Lanche - Cardápio Digital",
-  "description": "Sistema de cardápio digital colaborativo para a Parada do Lanche com QR Codes por mesa, carrinhos multiusuário e monitor de pedidos em tempo real.",
+  "name": "UaiTech - Cardápio Digital",
+  "description": "Sistema de cardápio digital colaborativo para a UaiTech com QR Codes por mesa, carrinhos multiusuário e monitor de pedidos em tempo real.",
   "requestFramePermissions": [
     "camera",
     "microphone",

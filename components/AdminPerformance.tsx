@@ -19,7 +19,7 @@ import { OrderStatus, Profile } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
 import CustomSelect, { CustomSelectOption } from './ui/CustomSelect';
 
-type PeriodFilter = 'WEEK' | 'MONTH' | 'CUSTOM';
+type PeriodFilter = 'DAY' | 'WEEK' | 'MONTH' | 'CUSTOM';
 type OrderTypeFilter = 'ALL' | 'MESA' | 'ENTREGA' | 'RETIRADA';
 type StatusFilter = 'ALL' | OrderStatus;
 
@@ -89,6 +89,7 @@ interface AdminPerformanceProps {
 }
 
 const PERIOD_OPTIONS: CustomSelectOption[] = [
+  { value: 'DAY', label: 'Hoje' },
   { value: 'WEEK', label: 'Semana atual' },
   { value: 'MONTH', label: 'Mes atual' },
   { value: 'CUSTOM', label: 'Personalizado' },
@@ -117,7 +118,7 @@ const TYPE_COLORS: Record<TypeDistributionPoint['type'], string> = {
 };
 
 const emptyPayload: PerformancePayload = {
-  period: 'WEEK',
+  period: 'DAY',
   from: '',
   to: '',
   filters: {
@@ -217,7 +218,7 @@ const normalizePayload = (raw: any): PerformancePayload => {
   });
 
   return {
-    period: (raw?.period || 'WEEK') as PeriodFilter,
+    period: (raw?.period || 'DAY') as PeriodFilter,
     from: String(raw?.from || ''),
     to: String(raw?.to || ''),
     filters: {
@@ -278,7 +279,7 @@ const formatDelta = (value: number) => {
 
 const AdminPerformance: React.FC<AdminPerformanceProps> = ({ profile }) => {
   const { toast } = useFeedback();
-  const [period, setPeriod] = useState<PeriodFilter>('WEEK');
+  const [period, setPeriod] = useState<PeriodFilter>('DAY');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState(getTodayInputDate());
   const [orderType, setOrderType] = useState<OrderTypeFilter>('ALL');
@@ -352,7 +353,7 @@ const AdminPerformance: React.FC<AdminPerformanceProps> = ({ profile }) => {
           <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Periodo</label>
           <CustomSelect
             value={period}
-            onChange={(nextValue) => setPeriod((nextValue as PeriodFilter) || 'WEEK')}
+            onChange={(nextValue) => setPeriod((nextValue as PeriodFilter) || 'DAY')}
             options={PERIOD_OPTIONS}
             buttonClassName="p-3 text-sm"
           />

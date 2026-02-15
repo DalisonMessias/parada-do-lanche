@@ -10,7 +10,7 @@ self.addEventListener('message', async (event) => {
   const data = event.data || {};
   if (data.type !== 'SHOW_NOTIFICATION') return;
 
-  const title = data.title || 'Parada do Lanche';
+  const title = data.title || 'Novo Pedido';
   const body = data.body || '';
   const tag = data.tag || 'pl-general';
 

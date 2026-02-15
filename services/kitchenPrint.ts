@@ -259,7 +259,7 @@ const renderTicketCore = (ticket: KitchenPrintTicket, qrDataUrl?: string) => {
     <section class="ticket-sheet">
       <header class="ticket-header">
         ${storeImageUrl ? `<img src="${storeImageUrl}" alt="Logo da loja" class="ticket-store-logo" />` : ''}
-        <p class="ticket-store-name">${escapeHtml(ticket.storeName || 'Parada do Lanche')}</p>
+        <p class="ticket-store-name">${escapeHtml(ticket.storeName || 'Loja')}</p>
       </header>
 
       <section class="ticket-meta">
@@ -276,11 +276,10 @@ const renderTicketCore = (ticket: KitchenPrintTicket, qrDataUrl?: string) => {
           <span>${toStrongLabel('Fechamento')}</span>
           <span class="ticket-value">${escapeHtml(closedAt)}</span>
         </div>
-        ${
-          ticket.ticketType === 'MESA'
-            ? renderFieldRow('Mesa', ticket.tableName || 'Mesa')
-            : ''
-        }
+        ${ticket.ticketType === 'MESA'
+      ? renderFieldRow('Mesa', ticket.tableName || 'Mesa')
+      : ''
+    }
       </section>
 
       <div class="ticket-separator"></div>
@@ -307,26 +306,24 @@ const renderTicketCore = (ticket: KitchenPrintTicket, qrDataUrl?: string) => {
           <span>${toStrongLabel('Subtotal')}</span>
           <span class="ticket-value-strong">${formatCurrency(ticket.subtotalCents || 0)}</span>
         </div>
-        ${
-          showServiceFee
-            ? `
+        ${showServiceFee
+      ? `
               <div class="ticket-total-row">
                 <span>${toStrongLabel('Taxa de Servico')}</span>
                 <span class="ticket-value-strong">${formatCurrency(ticket.serviceFeeCents || 0)}</span>
               </div>
             `
-            : ''
-        }
-        ${
-          showDeliveryFee
-            ? `
+      : ''
+    }
+        ${showDeliveryFee
+      ? `
               <div class="ticket-total-row">
                 <span>${toStrongLabel('Taxa de Entrega')}</span>
                 <span class="ticket-value-strong">${formatCurrency(ticket.deliveryFeeCents || 0)}</span>
               </div>
             `
-            : ''
-        }
+      : ''
+    }
         <div class="ticket-solid-separator"></div>
         <div class="ticket-total-row ticket-grand-total">
           <span>${toStrongLabel('Total')}</span>

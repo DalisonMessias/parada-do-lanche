@@ -41,6 +41,25 @@ const PROMOTIONS_TAB_ID = '__PROMOTIONS__';
 const UAITECH_LOGO_URL =
   'https://obeoiqjwqchwedeupngc.supabase.co/storage/v1/object/public/assets/logos/534545345.png';
 
+const TAB_SLUGS: Record<AdminTab, string> = {
+  ACTIVE_TABLES: 'pedidos',
+  FINISHED_ORDERS: 'pedidos-finalizados',
+  PERFORMANCE: 'desempenho',
+  TABLES: 'mesas-e-qr',
+  MENU: 'cardapio',
+  SETTINGS: 'configuracoes',
+  STAFF: 'equipe',
+  PROMOTIONS: 'promocoes',
+  RATINGS: 'avaliacoes',
+  WAITER_MODULE: 'garcom',
+  COUNTER_MODULE: 'balcao',
+};
+
+const SLUG_TO_TAB: Record<string, AdminTab> = Object.entries(TAB_SLUGS).reduce(
+  (acc, [tab, slug]) => ({ ...acc, [slug]: tab as AdminTab }),
+  {}
+);
+
 const lazyFallback = (
   <div className="bg-white border border-gray-200 rounded-2xl p-5">
     <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Carregando...</p>
@@ -218,7 +237,7 @@ const App: React.FC = () => {
     setSessionOrders([]);
     setShowCart(false);
     await pushLocalNotification('Mesa finalizada', 'A mesa foi encerrada pelo atendimento.', `session-closed-${sessionId}`);
-    window.location.hash = '/';
+    window.history.pushState({}, '', '/');
   }, [pushLocalNotification]);
 
   useEffect(() => {
@@ -245,7 +264,7 @@ const App: React.FC = () => {
   }, [adminSidebarOpen]);
 
   useEffect(() => {
-    if (view !== 'ADMIN_DASHBOARD' || !user) return;
+    if (view !== 'ADMIN_DASHBOARD' || !user || !profile || !settings) return;
 
     const role = profile?.role || 'WAITER';
     const canAccessCounter = settings?.enable_counter_module !== false;
@@ -268,10 +287,10 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    const handleHash = async () => {
-      const hash = window.location.hash;
-      if (hash.startsWith('#/cupom/')) {
-        const token = decodeURIComponent((hash.split('/cupom/')[1] || '').split(/[?#]/)[0] || '').trim();
+    const handleRoute = async () => {
+      const path = window.location.pathname;
+      if (path.startsWith('/cupom/')) {
+        const token = decodeURIComponent((path.split('/cupom/')[1] || '').split(/[?#]/)[0] || '').trim();
         if (!token) {
           setPublicReceiptToken('');
           setView('LANDING');
@@ -279,9 +298,9 @@ const App: React.FC = () => {
         }
         setPublicReceiptToken(token);
         setView('PUBLIC_RECEIPT');
-      } else if (hash.startsWith('#/m/')) {
+      } else if (path.startsWith('/m/')) {
         setPublicReceiptToken('');
-        const token = hash.split('/m/')[1];
+        const token = path.split('/m/')[1];
         const { data: table } = await supabase.from('tables').select('*').eq('token', token).single();
         if (table) {
           setActiveTable(table);
@@ -301,26 +320,47 @@ const App: React.FC = () => {
           }
           setView('CUSTOMER_MENU');
         }
-      } else if (hash === '#/cadastro-temp') {
+      } else if (path === '/cadastro-temp') {
         setPublicReceiptToken('');
         setView(tempRegisterEnabled ? 'TEMP_REGISTER' : 'LANDING');
-      } else if (hash.startsWith('#/admin')) {
+      } else if (path.startsWith('/admin')) {
         setPublicReceiptToken('');
-        const clean = hash.replace(/^#\//, '');
-        const [, providedKey = ''] = clean.split('/');
+        const clean = path.replace(/^\//, '');
+        const segments = clean.split('/');
+        const providedKey = segments[1] || '';
+        const providedTabSlug = segments[2] || '';
+
         if (adminAccessKey && providedKey !== adminAccessKey) {
+          window.history.replaceState({}, '', '/');
           setView('LANDING');
           return;
         }
+
+        if (providedTabSlug) {
+          const tab = SLUG_TO_TAB[providedTabSlug.toLowerCase()];
+          if (tab) {
+            setAdminTab(tab);
+          }
+        }
+
         setView('ADMIN_DASHBOARD');
       } else {
         setPublicReceiptToken('');
         setView('LANDING');
       }
     };
-    handleHash();
-    window.addEventListener('hashchange', handleHash);
-    return () => window.removeEventListener('hashchange', handleHash);
+    handleRoute();
+    window.addEventListener('popstate', handleRoute);
+    // Helper to handle internal navigation
+    const originalPushState = window.history.pushState;
+    window.history.pushState = function () {
+      originalPushState.apply(this, arguments as any);
+      handleRoute();
+    };
+    return () => {
+      window.removeEventListener('popstate', handleRoute);
+      window.history.pushState = originalPushState;
+    };
   }, []);
 
   useEffect(() => {
@@ -617,7 +657,8 @@ const App: React.FC = () => {
         const printResult = await printKitchenTicket({
           tickets: [
             {
-              storeName: 'Parada do Lanche',
+              storeName: settings?.store_name || 'UaiTech'
+              ,
               storeImageUrl: settings?.logo_url || null,
               orderId: loadedOrder.id,
               ticketType,
@@ -626,9 +667,9 @@ const App: React.FC = () => {
               statusLabel: getTicketStatusLabel(loadedOrder),
               orderTime: openedAt
                 ? new Date(openedAt).toLocaleTimeString('pt-BR', {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })
                 : '-',
               tableName: loadedOrder.session?.table?.name || 'Mesa',
               customerName: loadedOrder.customer_name || null,
@@ -1207,13 +1248,13 @@ const App: React.FC = () => {
       toast('Por favor, insira seu e-mail corporativo antes de recuperar a senha.', 'info');
       return;
     }
-    
+
     setIsLoading(true);
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: window.location.origin + '/#' + adminHash,
     });
     setIsLoading(false);
-    
+
     if (error) toast(error.message, 'error');
     else toast('E-mail de redefinicao de senha enviado. Verifique sua caixa de entrada.', 'success');
   };
@@ -1312,7 +1353,7 @@ const App: React.FC = () => {
         <PublicReceipt
           token={publicReceiptToken}
           onBackHome={() => {
-            window.location.hash = '/';
+            window.history.pushState({}, '', '/');
           }}
         />
       </Suspense>
@@ -1539,10 +1580,10 @@ const App: React.FC = () => {
             </form>
 
             <div className="text-center">
-              <button onClick={() => window.location.hash = '/'} className="text-[9px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Voltar para o Cardapio</button>
+              <button onClick={() => window.history.pushState({}, '', '/')} className="text-[9px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Voltar para o Cardapio</button>
               {tempRegisterEnabled && (
                 <div className="mt-3">
-                  <button onClick={() => window.location.hash = '/cadastro-temp'} className="text-[9px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Cadastro Temporario</button>
+                  <button onClick={() => window.history.pushState({}, '', '/cadastro-temp')} className="text-[9px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Cadastro Temporario</button>
                 </div>
               )}
             </div>
@@ -1558,6 +1599,15 @@ const App: React.FC = () => {
 
     const openTab = (tab: AdminTab) => {
       if (!allowedTabs.includes(tab)) return;
+
+      const path = window.location.pathname;
+      const clean = path.replace(/^\//, '');
+      const segments = clean.split('/');
+      const providedKey = segments[1] || adminAccessKey || '';
+      const slug = TAB_SLUGS[tab];
+
+      window.history.pushState({}, '', `/admin/${providedKey}/${slug}`);
+
       setAdminTab(tab);
       if (!isDesktopAdmin) {
         setAdminSidebarOpen(false);
@@ -1565,10 +1615,9 @@ const App: React.FC = () => {
     };
 
     const sidebarButtonClass = (tab: AdminTab) =>
-      `w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border ${
-        adminTab === tab
-          ? 'bg-primary text-white border-primary font-black'
-          : 'text-gray-500 font-bold hover:bg-gray-50 border-transparent'
+      `w-full flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all border ${adminTab === tab
+        ? 'bg-primary text-white border-primary font-black'
+        : 'text-gray-500 font-bold hover:bg-gray-50 border-transparent'
       }`;
 
     const sidebarContent = (
@@ -1579,7 +1628,7 @@ const App: React.FC = () => {
               <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Atendimento</h3>
               <nav className="space-y-1">
                 <button onClick={() => openTab('WAITER_MODULE')} className={sidebarButtonClass('WAITER_MODULE')}>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7h18"/><path d="M6 7V4"/><path d="M18 7V4"/><path d="M8 11h8"/><path d="M12 11v9"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7h18" /><path d="M6 7V4" /><path d="M18 7V4" /><path d="M8 11h8" /><path d="M12 11v9" /></svg>
                   Garcom
                 </button>
               </nav>
@@ -1590,24 +1639,24 @@ const App: React.FC = () => {
                 <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Operacao</h3>
                 <nav className="space-y-1">
                   <button onClick={() => openTab('ACTIVE_TABLES')} className={sidebarButtonClass('ACTIVE_TABLES')}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
                     Pedidos
                   </button>
                   <button onClick={() => openTab('FINISHED_ORDERS')} className={sidebarButtonClass('FINISHED_ORDERS')}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" /><path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" /></svg>
                     Pedidos Finaliz...
                   </button>
                   <button onClick={() => openTab('PERFORMANCE')} className={sidebarButtonClass('PERFORMANCE')}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="3" x2="3" y2="21"/><line x1="21" y1="21" x2="3" y2="21"/><path d="m7 14 4-4 3 3 5-6"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="3" x2="3" y2="21" /><line x1="21" y1="21" x2="3" y2="21" /><path d="m7 14 4-4 3 3 5-6" /></svg>
                     Desempenho
                   </button>
                   <button onClick={() => openTab('TABLES')} className={sidebarButtonClass('TABLES')}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" /><circle cx="12" cy="10" r="3" /></svg>
                     Mesas & QR
                   </button>
                   {allowedTabs.includes('COUNTER_MODULE') && (
                     <button onClick={() => openTab('COUNTER_MODULE')} className={sidebarButtonClass('COUNTER_MODULE')}>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 20h8"/><path d="M12 18v2"/></svg>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="14" rx="2" /><path d="M8 20h8" /><path d="M12 18v2" /></svg>
                       Balcao
                     </button>
                   )}
@@ -1618,30 +1667,30 @@ const App: React.FC = () => {
                 <h3 className="text-[8px] font-black text-gray-400 uppercase tracking-[0.3em] mb-4">Conteudo</h3>
                 <nav className="space-y-1">
                   <button onClick={() => openTab('MENU')} className={sidebarButtonClass('MENU')}>
-                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="2" y1="14" x2="6" y2="14"/><line x1="10" y1="8" x2="14" y2="8"/><line x1="18" y1="16" x2="22" y2="16"/></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" /><line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" /><line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" /><line x1="2" y1="14" x2="6" y2="14" /><line x1="10" y1="8" x2="14" y2="8" /><line x1="18" y1="16" x2="22" y2="16" /></svg>
                     Cardapio
                   </button>
                   {allowedTabs.includes('SETTINGS') && (
                     <button onClick={() => openTab('SETTINGS')} className={sidebarButtonClass('SETTINGS')}>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
                       Configuracoes
                     </button>
                   )}
                   {allowedTabs.includes('STAFF') && (
                     <button onClick={() => openTab('STAFF')} className={sidebarButtonClass('STAFF')}>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                       Equipe
                     </button>
                   )}
                   {allowedTabs.includes('PROMOTIONS') && (
                     <button onClick={() => openTab('PROMOTIONS')} className={sidebarButtonClass('PROMOTIONS')}>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41 11 3.83a2 2 0 0 0-2.83 0L3 9a2 2 0 0 0 0 2.83l9.59 9.58a2 2 0 0 0 2.82 0L21 15.83a2 2 0 0 0 0-2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20.59 13.41 11 3.83a2 2 0 0 0-2.83 0L3 9a2 2 0 0 0 0 2.83l9.59 9.58a2 2 0 0 0 2.82 0L21 15.83a2 2 0 0 0 0-2.82z" /><line x1="7" y1="7" x2="7.01" y2="7" /></svg>
                       Promocoes
                     </button>
                   )}
                   {allowedTabs.includes('RATINGS') && (
                     <button onClick={() => openTab('RATINGS')} className={sidebarButtonClass('RATINGS')}>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m12 17.27 6.18 3.73-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m12 17.27 6.18 3.73-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" /></svg>
                       Avaliacoes
                     </button>
                   )}
@@ -1676,7 +1725,7 @@ const App: React.FC = () => {
             title={adminSidebarOpen ? 'Fechar menu lateral' : 'Abrir menu lateral'}
             aria-label={adminSidebarOpen ? 'Fechar menu lateral' : 'Abrir menu lateral'}
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" /></svg>
           </button>
         }
         actions={
@@ -1735,7 +1784,7 @@ const App: React.FC = () => {
   }
   // Visualizacao Cliente (Mobile View)
   return (
-    <Layout 
+    <Layout
       settings={settings}
       title={activeTable?.name}
       actions={
@@ -1770,7 +1819,7 @@ const App: React.FC = () => {
       {!guest ? (
         <div className="p-8 flex flex-col items-center justify-center min-h-[70vh] space-y-12">
           <div className="w-16 h-16 bg-gray-50 border border-gray-100 rounded-[22px] flex items-center justify-center text-primary">
-             <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>
           </div>
           <div className="text-center space-y-3">
             <h2 className="text-3xl font-black text-gray-900 uppercase tracking-tighter leading-none italic">Sua Mesa Esta Pronta</h2>
@@ -1798,17 +1847,15 @@ const App: React.FC = () => {
               <div className="flex gap-2 overflow-x-auto no-scrollbar">
                 <button
                   onClick={() => setSelectedCategory(null)}
-                  className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${
-                    !selectedCategory ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
-                  }`}
+                  className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${!selectedCategory ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
+                    }`}
                 >
                   Todos
                 </button>
                 <button
                   onClick={() => setSelectedCategory(PROMOTIONS_TAB_ID)}
-                  className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${
-                    showPromotionsOnly ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
-                  }`}
+                  className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all shrink-0 border ${showPromotionsOnly ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
+                    }`}
                 >
                   Promocoes
                 </button>
@@ -1816,9 +1863,8 @@ const App: React.FC = () => {
                   <button
                     key={c.id}
                     onClick={() => setSelectedCategory(c.id)}
-                    className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest whitespace-nowrap transition-all shrink-0 border ${
-                      selectedCategory === c.id ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
-                    }`}
+                    className={`px-5 py-2 rounded-lg text-[9px] font-black uppercase tracking-widest whitespace-nowrap transition-all shrink-0 border ${selectedCategory === c.id ? 'bg-primary text-white border-primary' : 'bg-gray-50 text-gray-400 border-gray-100'
+                      }`}
                   >
                     {c.name}
                   </button>
@@ -1874,7 +1920,7 @@ const App: React.FC = () => {
                 </p>
               </section>
             )}
-            
+
             {featuredProducts.length > 0 && (
               <section className="space-y-4">
                 <div className="flex items-center gap-3">
@@ -2144,7 +2190,7 @@ const App: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex flex-col items-end">
-                   <span className="font-black text-primary text-lg tracking-tighter leading-none italic">{formatCurrency(myCartTotal)}</span>
+                  <span className="font-black text-primary text-lg tracking-tighter leading-none italic">{formatCurrency(myCartTotal)}</span>
                 </div>
               </button>
             </div>
@@ -2342,11 +2388,10 @@ const App: React.FC = () => {
                         key={star}
                         type="button"
                         onClick={() => setRatingStars(star)}
-                        className={`w-10 h-10 rounded-xl border flex items-center justify-center ${
-                          star <= ratingStars
-                            ? 'bg-amber-50 border-amber-200 text-amber-500'
-                            : 'bg-white border-gray-200 text-gray-300'
-                        }`}
+                        className={`w-10 h-10 rounded-xl border flex items-center justify-center ${star <= ratingStars
+                          ? 'bg-amber-50 border-amber-200 text-amber-500'
+                          : 'bg-white border-gray-200 text-gray-300'
+                          }`}
                       >
                         <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
                           <path d="m12 17.27 6.18 3.73-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z" />

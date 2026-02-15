@@ -83,7 +83,7 @@ const normalizeDeliveryAddress = (value: Record<string, any> | null | undefined)
 const toTicket = (
   payload: PublicReceiptResponse | null,
   token: string,
-  settingsLogoUrl?: string | null
+  settings?: { store_name?: string; logo_url?: string } | null
 ): KitchenPrintTicket | null => {
   const order = payload?.order;
   if (!order?.id) return null;
@@ -92,8 +92,8 @@ const toTicket = (
   const resolvedToken = (order.receipt_token || token || '').trim();
 
   return {
-    storeName: (payload?.store_name || 'Parada do Lanche').trim() || 'Parada do Lanche',
-    storeImageUrl: (payload?.store_logo_url || settingsLogoUrl || '').trim() || null,
+    storeName: (payload?.store_name || settings?.store_name || 'Loja').trim(),
+    storeImageUrl: (payload?.store_logo_url || settings?.logo_url || '').trim() || null,
     orderId: order.id,
     ticketType,
     openedAt: order.opened_at || null,
@@ -149,7 +149,7 @@ const PublicReceipt: React.FC<PublicReceiptProps> = ({ token, onBackHome }) => {
         supabase.rpc('get_public_receipt_by_token', {
           p_token: cleanToken,
         }),
-        supabase.from('settings').select('logo_url').eq('id', 1).maybeSingle(),
+        supabase.from('settings').select('logo_url, store_name').eq('id', 1).maybeSingle(),
       ]);
 
       if (!active) return;
@@ -169,7 +169,7 @@ const PublicReceipt: React.FC<PublicReceiptProps> = ({ token, onBackHome }) => {
       const normalized = toTicket(
         (receiptRes.data as PublicReceiptResponse) || null,
         cleanToken,
-        settingsLogoUrl || null
+        settingsRes.data as any
       );
       if (!normalized) {
         setTicket(null);

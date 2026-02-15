@@ -32,7 +32,7 @@ const onQrImageError: React.ReactEventHandler<HTMLImageElement> = (event) => {
 const StickerCard: React.FC<StickerCardProps> = ({
   tableName,
   logoUrl,
-  storeName = 'Parada do Lanche',
+  storeName = 'Loja',
   stickerTheme,
   menuQrUrl,
   menuQrFallbackUrl,

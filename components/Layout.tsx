@@ -30,7 +30,7 @@ const Layout: React.FC<LayoutProps> = ({
   showFooter,
 }) => {
   const primaryColor = '#dbd114';
-  const storeName = 'Parada do Lanche';
+  const storeName = settings?.store_name || 'UaiTech';
   const currentYear = new Date().getFullYear();
   const shouldRenderFooter = showFooter ?? !isAdmin;
   const adminHeaderOffsetClass = isAdmin ? 'pt-[73px]' : '';
@@ -57,7 +57,7 @@ const Layout: React.FC<LayoutProps> = ({
           {leadingAction}
           {showBackButton && (
             <button onClick={onBack} className="p-2 -ml-2 hover:bg-gray-100 rounded-full transition-colors text-gray-400">
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
             </button>
           )}
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
@@ -85,7 +85,7 @@ const Layout: React.FC<LayoutProps> = ({
             title="Recarregar pagina"
             aria-label="Recarregar pagina"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2v6h6"/><path d="M21 12A9 9 0 0 0 6 5.3L3 8"/><path d="M21 22v-6h-6"/><path d="M3 12a9 9 0 0 0 15 6.7l3-2.7"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2v6h6" /><path d="M21 12A9 9 0 0 0 6 5.3L3 8" /><path d="M21 22v-6h-6" /><path d="M3 12a9 9 0 0 0 15 6.7l3-2.7" /></svg>
           </button>
           {actions}
         </div>
@@ -99,9 +99,9 @@ const Layout: React.FC<LayoutProps> = ({
         <footer className="border-t border-gray-100 bg-white px-4 py-3 text-center">
           <img src={UAITECH_LOGO_URL} alt="Logo UaiTech" className="h-5 w-auto mx-auto" />
           <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-400">© {currentYear}</p>
-                <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-500">
-                  Dalison Messias
-                </p>
+          <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-500">
+            Dalison Messias
+          </p>
         </footer>
       )}
 

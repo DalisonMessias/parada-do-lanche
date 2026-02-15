@@ -218,9 +218,8 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
         {tables.map((table) => (
           <div key={table.id} className="bg-white border border-gray-200 rounded-2xl p-5 flex flex-col items-center gap-4 text-center transition-all hover:border-primary">
             <div
-              className={`w-12 h-12 rounded-xl flex items-center justify-center font-black text-xl border ${
-                table.status === 'FREE' ? 'bg-green-50 text-green-500 border-green-100' : 'bg-amber-50 text-amber-500 border-amber-100'
-              }`}
+              className={`w-12 h-12 rounded-xl flex items-center justify-center font-black text-xl border ${table.status === 'FREE' ? 'bg-green-50 text-green-500 border-green-100' : 'bg-amber-50 text-amber-500 border-amber-100'
+                }`}
             >
               {table.name.replace('Mesa ', '')}
             </div>
@@ -341,7 +340,7 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
                               key={`${table.id}-${slotIndex}`}
                               tableName={table.name}
                               logoUrl={settings?.logo_url}
-                              storeName="Parada do Lanche"
+                              storeName={settings?.store_name || 'Loja'}
                               stickerTheme={stickerTheme}
                               menuQrUrl={getQrUrl(generateMenuUrl(table.token))}
                               menuQrFallbackUrl={getQrFallbackUrl(generateMenuUrl(table.token))}

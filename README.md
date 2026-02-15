@@ -1,7 +1,7 @@
 
-# Parada do Lanche - Cardápio Digital Colaborativo
+# UaiTech - Cardápio Digital Colaborativo
 
-O **Parada do Lanche** é uma solução moderna de autoatendimento para restaurantes, focada na experiência coletiva e eficiência operacional.
+O **UaiTech** é uma solução moderna de autoatendimento para restaurantes, focada na experiência coletiva e eficiência operacional.
 
 ## Funcionalidades Principais
 

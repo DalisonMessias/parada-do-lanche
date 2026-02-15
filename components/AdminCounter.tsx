@@ -382,9 +382,9 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
       return prev.map((item, index) =>
         index === existingIndex
           ? {
-              ...item,
-              qty: item.qty + qty,
-            }
+            ...item,
+            qty: item.qty + qty,
+          }
           : item
       );
     });
@@ -521,12 +521,12 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
     const deliveryAddress: DeliveryAddress | null =
       mode === 'NEW' && serviceType === 'ENTREGA'
         ? {
-            street: deliveryStreet.trim(),
-            number: deliveryNumber.trim(),
-            neighborhood: deliveryNeighborhood.trim(),
-            complement: deliveryComplement.trim() || undefined,
-            reference: deliveryReference.trim() || undefined,
-          }
+          street: deliveryStreet.trim(),
+          number: deliveryNumber.trim(),
+          neighborhood: deliveryNeighborhood.trim(),
+          complement: deliveryComplement.trim() || undefined,
+          reference: deliveryReference.trim() || undefined,
+        }
         : null;
     const rpcServiceType: ServiceType =
       mode === 'ADDITIONAL'
@@ -605,7 +605,7 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
         const result = await printKitchenTicket({
           tickets: [
             {
-              storeName: 'Parada do Lanche',
+              storeName: settings?.store_name || 'UaiTech',
               storeImageUrl: settings?.logo_url || null,
               orderId: order.id,
               ticketType,
@@ -742,9 +742,8 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
                   setDeliveryFeeInput('R$ 0,00');
                 }}
                 disabled={shouldDisableAdditionalModeButton}
-                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${
-                  mode === 'ADDITIONAL' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'
-                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${mode === 'ADDITIONAL' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
                 Adicional
               </button>
@@ -757,18 +756,16 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
               <button
                 onClick={activatePickup}
                 disabled={mode === 'ADDITIONAL'}
-                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${
-                  mode === 'NEW' && serviceType === 'RETIRADA' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'
-                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${mode === 'NEW' && serviceType === 'RETIRADA' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
                 Retirada
               </button>
               <button
                 onClick={activateDelivery}
                 disabled={mode === 'ADDITIONAL'}
-                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${
-                  mode === 'NEW' && serviceType === 'ENTREGA' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'
-                } disabled:opacity-50 disabled:cursor-not-allowed`}
+                className={`flex-1 py-2.5 rounded-xl border text-[10px] font-black uppercase tracking-widest ${mode === 'NEW' && serviceType === 'ENTREGA' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
               >
                 Entrega
               </button>
@@ -1002,11 +999,10 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
                     <button
                       type="button"
                       onClick={() => setPaymentMethod('CARD')}
-                      className={`rounded-xl border p-2.5 flex flex-col items-center gap-1.5 transition-all ${
-                        paymentMethod === 'CARD'
+                      className={`rounded-xl border p-2.5 flex flex-col items-center gap-1.5 transition-all ${paymentMethod === 'CARD'
                           ? 'border-primary bg-primary/10 text-gray-900'
                           : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
-                      }`}
+                        }`}
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                         <rect x="2" y="5" width="20" height="14" rx="2" />
@@ -1017,11 +1013,10 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
                     <button
                       type="button"
                       onClick={() => setPaymentMethod('CASH')}
-                      className={`rounded-xl border p-2.5 flex flex-col items-center gap-1.5 transition-all ${
-                        paymentMethod === 'CASH'
+                      className={`rounded-xl border p-2.5 flex flex-col items-center gap-1.5 transition-all ${paymentMethod === 'CASH'
                           ? 'border-primary bg-primary/10 text-gray-900'
                           : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
-                      }`}
+                        }`}
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                         <rect x="2" y="6" width="20" height="12" rx="2" />
@@ -1033,11 +1028,10 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
                     <button
                       type="button"
                       onClick={() => setPaymentMethod('PIX')}
-                      className={`rounded-xl border p-2.5 flex flex-col items-center gap-1.5 transition-all ${
-                        paymentMethod === 'PIX'
+                      className={`rounded-xl border p-2.5 flex flex-col items-center gap-1.5 transition-all ${paymentMethod === 'PIX'
                           ? 'border-primary bg-primary/10 text-gray-900'
                           : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'
-                      }`}
+                        }`}
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                         <rect x="7" y="2.5" width="10" height="19" rx="2.2" />
@@ -1120,40 +1114,40 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
           }
         >
 
-            <div className="space-y-2">
-              <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Quantidade</label>
-              <input type="number" min={1} value={pendingQty} onChange={(e) => setPendingQty(Math.max(1, Number(e.target.value) || 1))} className="w-full p-3 rounded-xl border border-gray-200 font-black outline-none focus:border-primary" />
-            </div>
+          <div className="space-y-2">
+            <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Quantidade</label>
+            <input type="number" min={1} value={pendingQty} onChange={(e) => setPendingQty(Math.max(1, Number(e.target.value) || 1))} className="w-full p-3 rounded-xl border border-gray-200 font-black outline-none focus:border-primary" />
+          </div>
 
-            {getAddonsByProduct(pendingProduct.id).length > 0 && (
-              <div className="space-y-2">
-                <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Adicionais</label>
-                <div className="space-y-2 max-h-[180px] overflow-auto pr-1">
-                  {getAddonsByProduct(pendingProduct.id).map((addon) => {
-                    const checked = pendingAddonIds.includes(addon.id);
-                    return (
-                      <label key={addon.id} className="flex items-center justify-between border border-gray-200 rounded-xl px-3 py-2">
-                        <span className="text-sm font-black text-gray-700">{addon.name}</span>
-                        <div className="flex items-center gap-3">
-                          <span className="text-sm font-black text-primary">+ {formatCurrency(addon.price_cents)}</span>
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            onChange={(e) => setPendingAddonIds((prev) => (e.target.checked ? [...prev, addon.id] : prev.filter((id) => id !== addon.id)))}
-                            aria-label={`Selecionar adicional ${addon.name}`}
-                          />
-                        </div>
-                      </label>
-                    );
-                  })}
-                </div>
+          {getAddonsByProduct(pendingProduct.id).length > 0 && (
+            <div className="space-y-2">
+              <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Adicionais</label>
+              <div className="space-y-2 max-h-[180px] overflow-auto pr-1">
+                {getAddonsByProduct(pendingProduct.id).map((addon) => {
+                  const checked = pendingAddonIds.includes(addon.id);
+                  return (
+                    <label key={addon.id} className="flex items-center justify-between border border-gray-200 rounded-xl px-3 py-2">
+                      <span className="text-sm font-black text-gray-700">{addon.name}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-black text-primary">+ {formatCurrency(addon.price_cents)}</span>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => setPendingAddonIds((prev) => (e.target.checked ? [...prev, addon.id] : prev.filter((id) => id !== addon.id)))}
+                          aria-label={`Selecionar adicional ${addon.name}`}
+                        />
+                      </div>
+                    </label>
+                  );
+                })}
               </div>
-            )}
-
-            <div className="space-y-2">
-              <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Observacao (opcional)</label>
-              <textarea rows={3} value={pendingObservation} onChange={(e) => setPendingObservation(e.target.value)} className="w-full p-3 rounded-xl border border-gray-200 text-sm font-bold outline-none focus:border-primary" placeholder="Ex.: sem gelo, molho separado..." />
             </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="text-[9px] font-black uppercase tracking-widest text-gray-400">Observacao (opcional)</label>
+            <textarea rows={3} value={pendingObservation} onChange={(e) => setPendingObservation(e.target.value)} className="w-full p-3 rounded-xl border border-gray-200 text-sm font-bold outline-none focus:border-primary" placeholder="Ex.: sem gelo, molho separado..." />
+          </div>
         </AppModal>
       )}
     </div>

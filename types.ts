@@ -22,6 +22,7 @@ export interface DeliveryAddress {
 
 export interface StoreSettings {
   id: string;
+  store_name: string;
   logo_url: string;
   wifi_ssid: string;
   wifi_password: string;

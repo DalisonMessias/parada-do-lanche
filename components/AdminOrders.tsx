@@ -142,7 +142,9 @@ const getTicketStatusLabel = (order: Order) => {
   if (order.approval_status === 'REJECTED') return 'Rejeitado';
   if (order.status === 'PREPARING') return 'Em preparo';
   if (order.status === 'READY') return 'Pronto';
-  if (order.status === 'FINISHED') return 'Finalizado';
+  if (order.status === 'FINISHED') {
+    return (order.service_type === 'ENTREGA' || order.service_type === 'RETIRADA') ? 'Entregue' : 'Finalizado';
+  }
   if (order.status === 'CANCELLED') return 'Cancelado';
   return 'Confirmado';
 };
@@ -648,7 +650,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
           Math.max(0, subtotalCents + serviceFeeCents + (ticketType === 'ENTREGA' ? deliveryFeeCents : 0));
 
         return {
-          storeName: 'Parada do Lanche',
+          storeName: settings?.store_name || 'UaiTech',
           storeImageUrl: settings?.logo_url || null,
           orderId: order.id,
           ticketType,
@@ -734,7 +736,13 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
       const unprintedCount = getUnprintedOrders(session).length;
       const hasCancelledOrder = visibleOrders.some((order) => order.status === 'CANCELLED');
       const cardStatusLabel =
-        mode === 'ACTIVE' ? 'Ativa' : hasCancelledOrder ? 'Cancelada' : 'Finalizada';
+        mode === 'ACTIVE'
+          ? 'Ativa'
+          : hasCancelledOrder
+            ? 'Cancelada'
+            : (cardType === 'ENTREGA' || cardType === 'RETIRADA')
+              ? 'Entregue'
+              : 'Finalizada';
       const cardStatusClass =
         mode === 'ACTIVE'
           ? 'bg-green-50 text-green-600 border-green-100'
@@ -744,8 +752,8 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
       const shortAddress =
         cardType === 'ENTREGA' && latestOrder?.delivery_address
           ? [latestOrder.delivery_address.street, latestOrder.delivery_address.number, latestOrder.delivery_address.neighborhood]
-              .filter(Boolean)
-              .join(' - ')
+            .filter(Boolean)
+            .join(' - ')
           : '';
 
       return (
@@ -828,7 +836,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
                 onClick={() => handleFinalizeSession(session)}
                 className="flex-1 border border-green-200 bg-green-50 text-green-700 py-3.5 rounded-xl text-[9px] font-black uppercase tracking-widest"
               >
-                Marcar Pago
+                {(cardType === 'ENTREGA' || cardType === 'RETIRADA') ? 'Entregue' : 'Marcar Pago'}
               </button>
             )}
           </div>
@@ -906,43 +914,41 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
         </button>
         {mode === 'FINISHED' && (
           <>
-          <div className="space-y-1">
-            <label className="text-[9px] mr-4 font-black uppercase tracking-widest text-gray-400">Filtrar por tipo</label>
-            <CustomSelect
-              value={selectedFinishedType}
-              onChange={(value) => setSelectedFinishedType((value as FinishedTypeFilter) || 'ALL')}
-              options={FINISHED_TYPE_OPTIONS}
-              buttonClassName="px-3 py-2 text-sm"
-            />
-          </div>
+            <div className="space-y-1">
+              <label className="text-[9px] mr-4 font-black uppercase tracking-widest text-gray-400">Filtrar por tipo</label>
+              <CustomSelect
+                value={selectedFinishedType}
+                onChange={(value) => setSelectedFinishedType((value as FinishedTypeFilter) || 'ALL')}
+                options={FINISHED_TYPE_OPTIONS}
+                buttonClassName="px-3 py-2 text-sm"
+              />
+            </div>
 
-          <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 w-fit ml-auto text-right">
-            <p className="text-2xl font-black tracking-tighter text-emerald-800 italic">{formatCurrency(finishedRevenueTotal)}</p>
-            <p className="text-[8px] font-black uppercase tracking-widest text-emerald-700 mt-1">Ganhos</p>
-          </div>
+            <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 w-fit ml-auto text-right">
+              <p className="text-2xl font-black tracking-tighter text-emerald-800 italic">{formatCurrency(finishedRevenueTotal)}</p>
+              <p className="text-[8px] font-black uppercase tracking-widest text-emerald-700 mt-1">Ganhos</p>
+            </div>
           </>
         )}
       </div>
 
       {mode === 'FINISHED' && (
         <>
-          
+
           <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-6">
             <p className="text-[9px] font-black uppercase tracking-widest text-gray-500">Resumo por tipo (data selecionada)</p>
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
               {finishedSummaryByType.map((row) => (
                 <div
                   key={`finished-summary-${row.type}`}
-                  className={`rounded-xl border px-3 py-3 ${
-                    row.type === 'CANCELLED'
-                      ? 'border-red-100 bg-red-50/40'
-                      : 'border-gray-100 bg-gray-50/60'
-                  }`}
+                  className={`rounded-xl border px-3 py-3 ${row.type === 'CANCELLED'
+                    ? 'border-red-100 bg-red-50/40'
+                    : 'border-gray-100 bg-gray-50/60'
+                    }`}
                 >
                   <p
-                    className={`text-[9px] font-black uppercase tracking-widest ${
-                      row.type === 'CANCELLED' ? 'text-red-600' : 'text-gray-500'
-                    }`}
+                    className={`text-[9px] font-black uppercase tracking-widest ${row.type === 'CANCELLED' ? 'text-red-600' : 'text-gray-500'
+                      }`}
                   >
                     {row.label}
                   </p>
@@ -1011,246 +1017,245 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
                   onClick={() => handleFinalizeSession(selectedSession)}
                   className="px-4 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest"
                 >
-                  Marcar Pago
+                  {(selectedSession && (getSessionCardType(selectedSession) === 'ENTREGA' || getSessionCardType(selectedSession) === 'RETIRADA')) ? 'Entregue' : 'Marcar Pago'}
                 </button>
               )}
             </div>
           }
         >
 
-            {mode === 'ACTIVE' && selectedPendingApprovals.length > 0 && (
-              <div className="border border-amber-100 bg-amber-50 rounded-2xl p-4 flex flex-col gap-3">
-                <h4 className="text-xs font-black uppercase tracking-widest text-amber-700">Pedidos aguardando aceite</h4>
-                {selectedPendingApprovals.map((order) => (
-                  <div key={order.id} className="bg-white border border-amber-200 rounded-xl p-3 flex flex-wrap gap-2 items-center justify-between">
-                    <div>
-                      <p className="text-sm font-black text-gray-800">Pedido #{order.id.slice(0, 6)}</p>
-                      <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest mt-1">
-                        {new Date(order.created_at).toLocaleTimeString()} • {formatCurrency(order.total_cents)}
-                      </p>
-                    </div>
-                    <div className="flex gap-2">
-                      <button onClick={() => handleApproveOrder(order)} className="px-3 py-2 rounded-lg bg-green-600 text-white text-[10px] font-black uppercase tracking-widest">
-                        Aceitar
+          {mode === 'ACTIVE' && selectedPendingApprovals.length > 0 && (
+            <div className="border border-amber-100 bg-amber-50 rounded-2xl p-4 flex flex-col gap-3">
+              <h4 className="text-xs font-black uppercase tracking-widest text-amber-700">Pedidos aguardando aceite</h4>
+              {selectedPendingApprovals.map((order) => (
+                <div key={order.id} className="bg-white border border-amber-200 rounded-xl p-3 flex flex-wrap gap-2 items-center justify-between">
+                  <div>
+                    <p className="text-sm font-black text-gray-800">Pedido #{order.id.slice(0, 6)}</p>
+                    <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest mt-1">
+                      {new Date(order.created_at).toLocaleTimeString()} • {formatCurrency(order.total_cents)}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => handleApproveOrder(order)} className="px-3 py-2 rounded-lg bg-green-600 text-white text-[10px] font-black uppercase tracking-widest">
+                      Aceitar
+                    </button>
+                    {canCancelOrders && (
+                      <button onClick={() => handleCancelOrder(order)} className="px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-red-600 text-[10px] font-black uppercase tracking-widest">
+                        Cancelar Pedido
                       </button>
-                      {canCancelOrders && (
-                        <button onClick={() => handleCancelOrder(order)} className="px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-red-600 text-[10px] font-black uppercase tracking-widest">
-                          Cancelar Pedido
-                        </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <section className="border border-gray-100 rounded-2xl p-4 flex flex-col gap-3">
+            <h4 className="text-xs font-black uppercase tracking-widest text-gray-500">Pedidos da mesa (individuais)</h4>
+            <div className="flex flex-col gap-2 max-h-[32vh] overflow-auto pr-1">
+              {selectedVisibleOrders.length === 0 && (
+                <p className="text-sm text-gray-400 font-bold">Nenhum pedido enviado.</p>
+              )}
+              {selectedOrderGroups.map((group) => (
+                <div key={group.groupId} className="border border-gray-100 rounded-xl p-3 flex flex-col gap-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-black text-gray-800">
+                      Pedido:  #{group.rootOrder.id.slice(0, 6)} | {new Date(group.rootOrder.created_at).toLocaleTimeString()}
+                    </p>
+                    <button
+                      onClick={() => selectedSession && printSession(selectedSession, { scope: 'ORDER', orderId: group.rootOrder.id })}
+                      disabled={!hasThermalPrinter}
+                      className="px-2 py-0.5 rounded-full border border-gray-200 text-[9px] font-black uppercase tracking-widest text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      Imprimir
+                    </button>
+                  </div>
+
+                  {group.orders.map((order) => (
+                    <div
+                      key={order.id}
+                      className={`border rounded-lg p-2.5 space-y-2 ${order.status === 'CANCELLED'
+                        ? 'border-red-200 bg-red-50/40'
+                        : 'border-gray-100'
+                        }`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-[11px] font-black text-gray-700">
+                          Pedido:  #{order.id.slice(0, 6)} | {new Date(order.created_at).toLocaleTimeString()}
+                        </p>
+                        <div className="flex gap-1.5">
+                          <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest ${approvalClass[order.approval_status || 'APPROVED'] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>
+                            {approvalLabel[order.approval_status || 'APPROVED'] || 'Confirmado'}
+                          </span>
+                          {order.status !== 'PENDING' && (
+                            <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest ${orderStatusClass[order.status]}`}>
+                              {(order.status === 'FINISHED' && (order.service_type === 'ENTREGA' || order.service_type === 'RETIRADA')) ? 'Entregue' : orderStatusLabel[order.status]}
+                            </span>
+                          )}
+                          <span className="px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest bg-slate-50 border-slate-200 text-slate-600">
+                            {serviceTypeLabel(order.service_type)}
+                          </span>
+                          <button
+                            onClick={() => selectedSession && printSession(selectedSession, { scope: 'ORDER', orderId: order.id })}
+                            disabled={!hasThermalPrinter}
+                            className="px-2 py-0.5 rounded-full border border-gray-200 text-[9px] font-black uppercase tracking-widest text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            Imprimir
+                          </button>
+                          {canCancelOrders && mode === 'ACTIVE' && (
+                            <button
+                              onClick={() => handleCancelOrder(order)}
+                              disabled={!isOrderCancellable(order)}
+                              className="px-2 py-0.5 rounded-full border border-red-200 bg-red-50 text-[9px] font-black uppercase tracking-widest text-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              {order.status === 'CANCELLED' ? 'Cancelado' : 'Cancelar Pedido'}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {(order.service_type === 'RETIRADA' || order.service_type === 'ENTREGA') && (
+                        <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 space-y-1.5">
+                          <p className="text-[10px] text-blue-700 font-black uppercase tracking-widest">
+                            {serviceTypeLabel(order.service_type)}
+                          </p>
+                          {order.customer_name && (
+                            <p className="text-[10px] text-blue-800 font-black">Cliente: {order.customer_name}</p>
+                          )}
+                          {order.customer_phone && (
+                            <p className="text-[10px] text-blue-700 font-black">Telefone: {order.customer_phone}</p>
+                          )}
+                          {order.service_type === 'ENTREGA' &&
+                            getDeliveryLines(order).map((line, index) => (
+                              <p key={`${order.id}-delivery-${index}`} className="text-[10px] text-blue-700 font-black">
+                                {line}
+                              </p>
+                            ))}
+                          {order.service_type === 'ENTREGA' && (order.delivery_fee_cents || 0) > 0 && (
+                            <p className="text-[10px] text-blue-700 font-black">
+                              Taxa de entrega: {formatCurrency(order.delivery_fee_cents || 0)}
+                            </p>
+                          )}
+                        </div>
                       )}
+                      {groupOrderItems(order.items || []).map((item, index) => (
+                        <div key={`${order.id}-${item.id || index}`} className="flex items-start justify-between gap-2 border-t border-gray-50 pt-2">
+                          <div>
+                            <p className="font-black text-gray-700 text-sm">{item.qty}x {item.name_snapshot}</p>
+                            {Number((item as any).promo_discount_cents || 0) > 0 && (
+                              <p className="text-[10px] text-emerald-600 font-black mt-1">
+                                Promocao {((item as any).promo_name || '').trim() ? `(${(item as any).promo_name})` : ''}: -{formatCurrency(Number((item as any).promo_discount_cents || 0))}
+                              </p>
+                            )}
+                            {item.note && <p className="text-[10px] text-gray-500 font-black mt-1 whitespace-pre-line">{item.note}</p>}
+                          </div>
+                          <span className="font-black text-gray-800 text-sm">{formatCurrency(item.qty * item.unit_price_cents)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <div className="border border-gray-100 rounded-2xl p-4 flex flex-col gap-3">
+            <div className="flex flex-wrap gap-3 items-end justify-between">
+              <div>
+                <h4 className="text-xs font-black uppercase tracking-widest text-gray-500">Dividir conta</h4>
+                <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mt-1">Modo igual ou por consumo</p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setSplitMode('CONSUMPTION')}
+                  className={`px-3 py-2 rounded-lg border text-[10px] font-black uppercase tracking-widest ${splitMode === 'CONSUMPTION' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}
+                >
+                  Paganto unico
+                </button>
+                <button
+                  onClick={() => setSplitMode('EQUAL')}
+                  className={`px-3 py-2 rounded-lg border text-[10px] font-black uppercase tracking-widest ${splitMode === 'EQUAL' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}
+                >
+                  Dividir conta
+                </button>
+              </div>
+            </div>
+
+            {splitMode === 'EQUAL' ? (
+              <div className="flex flex-wrap gap-3 items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Dividir em</label>
+                  <input
+                    type="number"
+                    min={2}
+                    value={splitPeople}
+                    onChange={(e) => setSplitPeople(Math.max(2, Number(e.target.value) || 2))}
+                    className="w-20 px-3 py-2 rounded-lg border border-gray-200 font-black"
+                  />
+                  <span className="text-[10px] text-gray-500 font-black uppercase tracking-widest">pessoas</span>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Valor por pessoa</p>
+                  <p className="text-xl font-black text-primary tracking-tighter italic">{formatCurrency(equalSplitValue)}</p>
+                </div>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {selectedTotalsByGuest.map((row) => (
+                  <div key={row.name} className="flex justify-between items-start text-sm">
+                    <div className="flex flex-col">
+                      <span className="font-black text-gray-600">{row.name}</span>
+                      <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">
+                        {row.items} item(ns)
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      <span className="font-black text-gray-900">{formatCurrency(row.total)}</span>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mt-1">
+                        {selectedSubtotal > 0 ? `${Math.round((row.total / selectedSubtotal) * 100)}% da mesa` : '0% da mesa'}
+                      </p>
                     </div>
                   </div>
                 ))}
               </div>
             )}
 
-            <section className="border border-gray-100 rounded-2xl p-4 flex flex-col gap-3">
-              <h4 className="text-xs font-black uppercase tracking-widest text-gray-500">Pedidos da mesa (individuais)</h4>
-              <div className="flex flex-col gap-2 max-h-[32vh] overflow-auto pr-1">
-                {selectedVisibleOrders.length === 0 && (
-                  <p className="text-sm text-gray-400 font-bold">Nenhum pedido enviado.</p>
-                )}
-                {selectedOrderGroups.map((group) => (
-                  <div key={group.groupId} className="border border-gray-100 rounded-xl p-3 flex flex-col gap-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-sm font-black text-gray-800">
-                        Pedido:  #{group.rootOrder.id.slice(0, 6)} | {new Date(group.rootOrder.created_at).toLocaleTimeString()}
-                      </p>
-                      <button
-                        onClick={() => selectedSession && printSession(selectedSession, { scope: 'ORDER', orderId: group.rootOrder.id })}
-                        disabled={!hasThermalPrinter}
-                        className="px-2 py-0.5 rounded-full border border-gray-200 text-[9px] font-black uppercase tracking-widest text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        Imprimir
-                      </button>
-                    </div>
-
-                    {group.orders.map((order) => (
-                      <div
-                        key={order.id}
-                        className={`border rounded-lg p-2.5 space-y-2 ${
-                          order.status === 'CANCELLED'
-                            ? 'border-red-200 bg-red-50/40'
-                            : 'border-gray-100'
-                        }`}
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <p className="text-[11px] font-black text-gray-700">
-                            Pedido:  #{order.id.slice(0, 6)} | {new Date(order.created_at).toLocaleTimeString()}
-                          </p>
-                          <div className="flex gap-1.5">
-                            <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest ${approvalClass[order.approval_status || 'APPROVED'] || 'bg-gray-100 text-gray-700 border-gray-200'}`}>
-                              {approvalLabel[order.approval_status || 'APPROVED'] || 'Confirmado'}
-                            </span>
-                            {order.status !== 'PENDING' && (
-                              <span className={`px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest ${orderStatusClass[order.status]}`}>
-                                {orderStatusLabel[order.status]}
-                              </span>
-                            )}
-                            <span className="px-2 py-0.5 rounded-full border text-[9px] font-black uppercase tracking-widest bg-slate-50 border-slate-200 text-slate-600">
-                              {serviceTypeLabel(order.service_type)}
-                            </span>
-                            <button
-                              onClick={() => selectedSession && printSession(selectedSession, { scope: 'ORDER', orderId: order.id })}
-                              disabled={!hasThermalPrinter}
-                              className="px-2 py-0.5 rounded-full border border-gray-200 text-[9px] font-black uppercase tracking-widest text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                              Imprimir
-                            </button>
-                            {canCancelOrders && mode === 'ACTIVE' && (
-                              <button
-                                onClick={() => handleCancelOrder(order)}
-                                disabled={!isOrderCancellable(order)}
-                                className="px-2 py-0.5 rounded-full border border-red-200 bg-red-50 text-[9px] font-black uppercase tracking-widest text-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
-                              >
-                                {order.status === 'CANCELLED' ? 'Cancelado' : 'Cancelar Pedido'}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                        {(order.service_type === 'RETIRADA' || order.service_type === 'ENTREGA') && (
-                          <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 space-y-1.5">
-                            <p className="text-[10px] text-blue-700 font-black uppercase tracking-widest">
-                              {serviceTypeLabel(order.service_type)}
-                            </p>
-                            {order.customer_name && (
-                              <p className="text-[10px] text-blue-800 font-black">Cliente: {order.customer_name}</p>
-                            )}
-                            {order.customer_phone && (
-                              <p className="text-[10px] text-blue-700 font-black">Telefone: {order.customer_phone}</p>
-                            )}
-                            {order.service_type === 'ENTREGA' &&
-                              getDeliveryLines(order).map((line, index) => (
-                                <p key={`${order.id}-delivery-${index}`} className="text-[10px] text-blue-700 font-black">
-                                  {line}
-                                </p>
-                              ))}
-                            {order.service_type === 'ENTREGA' && (order.delivery_fee_cents || 0) > 0 && (
-                              <p className="text-[10px] text-blue-700 font-black">
-                                Taxa de entrega: {formatCurrency(order.delivery_fee_cents || 0)}
-                              </p>
-                            )}
-                          </div>
-                        )}
-                        {groupOrderItems(order.items || []).map((item, index) => (
-                          <div key={`${order.id}-${item.id || index}`} className="flex items-start justify-between gap-2 border-t border-gray-50 pt-2">
-                            <div>
-                              <p className="font-black text-gray-700 text-sm">{item.qty}x {item.name_snapshot}</p>
-                              {Number((item as any).promo_discount_cents || 0) > 0 && (
-                                <p className="text-[10px] text-emerald-600 font-black mt-1">
-                                  Promocao {((item as any).promo_name || '').trim() ? `(${(item as any).promo_name})` : ''}: -{formatCurrency(Number((item as any).promo_discount_cents || 0))}
-                                </p>
-                              )}
-                              {item.note && <p className="text-[10px] text-gray-500 font-black mt-1 whitespace-pre-line">{item.note}</p>}
-                            </div>
-                            <span className="font-black text-gray-800 text-sm">{formatCurrency(item.qty * item.unit_price_cents)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ))}
+            {splitMode === 'EQUAL' && selectedTotalsByGuest.length > 0 && (
+              <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-3 space-y-2">
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">
+                  Consumo individual (referencia)
+                </p>
+                {selectedTotalsByGuest.map((row) => (
+                  <div key={`equal-${row.name}`} className="flex justify-between items-center text-sm">
+                    <span className="font-black text-gray-600">{row.name}</span>
+                    <span className="font-black text-gray-900">{formatCurrency(row.total)}</span>
                   </div>
                 ))}
               </div>
-            </section>
+            )}
+          </div>
 
-            <div className="border border-gray-100 rounded-2xl p-4 flex flex-col gap-3">
-              <div className="flex flex-wrap gap-3 items-end justify-between">
-                <div>
-                  <h4 className="text-xs font-black uppercase tracking-widest text-gray-500">Dividir conta</h4>
-                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mt-1">Modo igual ou por consumo</p>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => setSplitMode('CONSUMPTION')}
-                    className={`px-3 py-2 rounded-lg border text-[10px] font-black uppercase tracking-widest ${splitMode === 'CONSUMPTION' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}
-                  >
-                    Paganto unico
-                  </button>
-                  <button
-                    onClick={() => setSplitMode('EQUAL')}
-                    className={`px-3 py-2 rounded-lg border text-[10px] font-black uppercase tracking-widest ${splitMode === 'EQUAL' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-600 border-gray-200'}`}
-                  >
-                    Dividir conta
-                  </button>
-                </div>
-              </div>
-
-              {splitMode === 'EQUAL' ? (
-                <div className="flex flex-wrap gap-3 items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <label className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Dividir em</label>
-                    <input
-                      type="number"
-                      min={2}
-                      value={splitPeople}
-                      onChange={(e) => setSplitPeople(Math.max(2, Number(e.target.value) || 2))}
-                      className="w-20 px-3 py-2 rounded-lg border border-gray-200 font-black"
-                    />
-                    <span className="text-[10px] text-gray-500 font-black uppercase tracking-widest">pessoas</span>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Valor por pessoa</p>
-                    <p className="text-xl font-black text-primary tracking-tighter italic">{formatCurrency(equalSplitValue)}</p>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex flex-col gap-2">
-                  {selectedTotalsByGuest.map((row) => (
-                    <div key={row.name} className="flex justify-between items-start text-sm">
-                      <div className="flex flex-col">
-                        <span className="font-black text-gray-600">{row.name}</span>
-                        <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">
-                          {row.items} item(ns)
-                        </span>
-                      </div>
-                      <div className="text-right">
-                        <span className="font-black text-gray-900">{formatCurrency(row.total)}</span>
-                        <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mt-1">
-                          {selectedSubtotal > 0 ? `${Math.round((row.total / selectedSubtotal) * 100)}% da mesa` : '0% da mesa'}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+          <div className="border-t border-gray-100 pt-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Subtotal da mesa</p>
+              <p className="text-xl font-black text-gray-900 tracking-tighter italic">{formatCurrency(selectedSubtotal)}</p>
+              {waiterFeeEnabled && (
+                <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mt-1">
+                  {selectedWaiterFeeLabel}: + {formatCurrency(selectedWaiterFee)}
+                </p>
               )}
-
-              {splitMode === 'EQUAL' && selectedTotalsByGuest.length > 0 && (
-                <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-3 space-y-2">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-400">
-                    Consumo individual (referencia)
-                  </p>
+              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-2">Total geral da mesa</p>
+              <p className="text-2xl font-black text-gray-900 tracking-tighter italic">{formatCurrency(selectedTotal)}</p>
+              {selectedTotalsByGuest.length > 0 && (
+                <div className="mt-2 flex flex-col gap-1">
                   {selectedTotalsByGuest.map((row) => (
-                    <div key={`equal-${row.name}`} className="flex justify-between items-center text-sm">
-                      <span className="font-black text-gray-600">{row.name}</span>
-                      <span className="font-black text-gray-900">{formatCurrency(row.total)}</span>
-                    </div>
+                    <p key={`total-${row.name}`} className="text-[10px] font-black uppercase tracking-widest text-gray-500">
+                      {row.name}: {formatCurrency(row.total)}
+                    </p>
                   ))}
                 </div>
               )}
             </div>
-
-            <div className="border-t border-gray-100 pt-4 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Subtotal da mesa</p>
-                <p className="text-xl font-black text-gray-900 tracking-tighter italic">{formatCurrency(selectedSubtotal)}</p>
-                {waiterFeeEnabled && (
-                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mt-1">
-                    {selectedWaiterFeeLabel}: + {formatCurrency(selectedWaiterFee)}
-                  </p>
-                )}
-                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-2">Total geral da mesa</p>
-                <p className="text-2xl font-black text-gray-900 tracking-tighter italic">{formatCurrency(selectedTotal)}</p>
-                {selectedTotalsByGuest.length > 0 && (
-                  <div className="mt-2 flex flex-col gap-1">
-                    {selectedTotalsByGuest.map((row) => (
-                      <p key={`total-${row.name}`} className="text-[10px] font-black uppercase tracking-widest text-gray-500">
-                        {row.name}: {formatCurrency(row.total)}
-                      </p>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
+          </div>
         </AppModal>
       )}
 
