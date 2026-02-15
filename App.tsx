@@ -35,7 +35,8 @@ type AdminTab =
   | 'PROMOTIONS'
   | 'RATINGS'
   | 'WAITER_MODULE'
-  | 'COUNTER_MODULE';
+  | 'COUNTER_MODULE'
+  | 'NOT_FOUND';
 
 const PROMOTIONS_TAB_ID = '__PROMOTIONS__';
 const UAITECH_LOGO_URL =
@@ -53,6 +54,7 @@ const TAB_SLUGS: Record<AdminTab, string> = {
   RATINGS: 'avaliacoes',
   WAITER_MODULE: 'garcom',
   COUNTER_MODULE: 'balcao',
+  NOT_FOUND: '404',
 };
 
 const SLUG_TO_TAB: Record<string, AdminTab> = Object.entries(TAB_SLUGS).reduce(
@@ -110,7 +112,7 @@ const playLocalBeep = () => {
 const App: React.FC = () => {
   const adminAccessKey = ((import.meta as any).env?.VITE_ADMIN_ACCESS_KEY || '').trim();
   const tempRegisterEnabled = ((import.meta as any).env?.VITE_ENABLE_TEMP_REGISTER || '').trim().toLowerCase() === 'true';
-  const adminHash = adminAccessKey ? `/admin/${adminAccessKey}` : '/admin';
+  const adminPath = adminAccessKey ? `/admin/${adminAccessKey}` : '/admin';
   const [view, setView] = useState<AppView>('LANDING');
   const [publicReceiptToken, setPublicReceiptToken] = useState('');
   const [activeTable, setActiveTable] = useState<Table | null>(null);
@@ -118,6 +120,7 @@ const App: React.FC = () => {
   const [guest, setGuest] = useState<Guest | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [showPassword, setShowPassword] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [addons, setAddons] = useState<ProductAddon[]>([]);
   const [settings, setSettings] = useState<StoreSettings | null>(null);
@@ -340,13 +343,21 @@ const App: React.FC = () => {
           const tab = SLUG_TO_TAB[providedTabSlug.toLowerCase()];
           if (tab) {
             setAdminTab(tab);
+          } else {
+            setView('NOT_FOUND');
+            return;
           }
         }
 
         setView('ADMIN_DASHBOARD');
       } else {
         setPublicReceiptToken('');
-        setView('LANDING');
+        // If it's the root path, LANDING. Otherwise, 404.
+        if (path === '/' || path === '') {
+          setView('LANDING');
+        } else {
+          setView('NOT_FOUND');
+        }
       }
     };
     handleRoute();
@@ -1251,7 +1262,7 @@ const App: React.FC = () => {
 
     setIsLoading(true);
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: window.location.origin + '/#' + adminHash,
+      redirectTo: window.location.origin + adminPath,
     });
     setIsLoading(false);
 
@@ -1518,9 +1529,7 @@ const App: React.FC = () => {
           )}
 
           <div className="text-center">
-            <button onClick={() => (window.location.hash = adminHash)} className="text-[10px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">
-              Voltar para Login
-            </button>
+            <button onClick={() => window.history.pushState({}, '', adminPath)} className="text-[10px] text-gray-400 font-black uppercase tracking-widest hover:text-primary transition-colors">Voltar para Login</button>
           </div>
         </div>
       </div>
@@ -1569,7 +1578,26 @@ const App: React.FC = () => {
                   <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest">SENHA DE ACESSO</label>
                   <button type="button" onClick={handleResetPassword} className="text-[9px] font-black text-primary uppercase tracking-widest hover:underline decoration-2">Esqueci a senha</button>
                 </div>
-                <input name="password" type="password" placeholder="********" required className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary transition-all font-bold placeholder:text-gray-200" />
+                <div className="relative">
+                  <input
+                    name="password"
+                    type={showPassword ? 'text' : 'password'}
+                    placeholder="********"
+                    required
+                    className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary transition-all font-bold placeholder:text-gray-200"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+                  >
+                    {showPassword ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9.88 9.88s.5-5.38 5.62-5.38C20.62 4.5 22 9.24 22 12c0 2.22-1.21 4.22-3.23 5.34" /><path d="M2 2l20 20" /><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" /><path d="M6.61 6.61A13.52 13.52 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" /><path d="M13 13L13 13" /><circle cx="12" cy="12" r="3" /></svg>
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0z" /><circle cx="12" cy="12" r="3" /></svg>
+                    )}
+                  </button>
+                </div>
               </div>
               <button
                 disabled={isLoading}
@@ -1606,7 +1634,8 @@ const App: React.FC = () => {
       const providedKey = segments[1] || adminAccessKey || '';
       const slug = TAB_SLUGS[tab];
 
-      window.history.pushState({}, '', `/admin/${providedKey}/${slug}`);
+      const newPath = providedKey ? `/admin/${providedKey}/${slug}` : `/admin/${slug}`;
+      window.history.pushState({}, '', newPath);
 
       setAdminTab(tab);
       if (!isDesktopAdmin) {
@@ -1782,6 +1811,27 @@ const App: React.FC = () => {
       </Layout>
     );
   }
+  // NOT_FOUND View
+  if (view === 'NOT_FOUND') {
+    return (
+      <Layout isAdmin={false} settings={settings} showFooter={false}>
+        <div className="min-h-[70vh] flex flex-col items-center justify-center p-6 text-center space-y-6">
+          <div className="w-24 h-24 bg-red-50 text-red-500 rounded-3xl flex items-center justify-center mb-4">
+            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+          </div>
+          <h1 className="text-4xl font-black text-gray-900 uppercase tracking-tighter">404</h1>
+          <p className="text-gray-500 font-bold max-w-sm">Ops! A pagina que voce esta procurando nao foi encontrada ou foi movida.</p>
+          <button
+            onClick={() => window.history.pushState({}, '', '/')}
+            className="px-8 py-4 bg-gray-900 text-white rounded-2xl font-black uppercase tracking-widest text-xs hover:bg-gray-800 transition-all active:scale-[0.98] shadow-xl"
+          >
+            Voltar ao Inicio
+          </button>
+        </div>
+      </Layout>
+    );
+  }
+
   // Visualizacao Cliente (Mobile View)
   return (
     <Layout
