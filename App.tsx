@@ -1,29 +1,33 @@
 ﻿
-import React, { useCallback, useMemo, useState, useEffect, useRef } from 'react';
+import React, { Suspense, lazy, useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import { supabase, formatCurrency } from './services/supabase';
 import { groupOrderItems } from './services/orderItemGrouping';
 import { AppView, Table, Session, Guest, CartItem, Category, Product, ProductAddon, StoreSettings, Profile, UserRole, Order, Promotion } from './types';
 import Layout from './components/Layout';
-import AdminOrders from './components/AdminOrders';
-import AdminTables from './components/AdminTables';
-import AdminMenu from './components/AdminMenu';
-import AdminSettings from './components/AdminSettings';
-import AdminStaff from './components/AdminStaff';
-import AdminWaiter from './components/AdminWaiter';
-import AdminCounter from './components/AdminCounter';
-import AdminPromotions from './components/AdminPromotions';
-import AdminRatings from './components/AdminRatings';
-import PublicReceipt from './components/PublicReceipt';
 import { useFeedback } from './components/feedback/FeedbackProvider';
 import CustomSelect from './components/ui/CustomSelect';
 import AppModal from './components/ui/AppModal';
 import CalculatorModal from './components/ui/CalculatorModal';
 import { playOrderAlertSound } from './services/notifications';
 import { applyPromotionToPrice, resolvePromotionForProduct } from './services/promotions';
+import { printKitchenTicket } from './services/kitchenPrint';
+
+const AdminOrders = lazy(() => import('./components/AdminOrders'));
+const AdminTables = lazy(() => import('./components/AdminTables'));
+const AdminMenu = lazy(() => import('./components/AdminMenu'));
+const AdminSettings = lazy(() => import('./components/AdminSettings'));
+const AdminStaff = lazy(() => import('./components/AdminStaff'));
+const AdminWaiter = lazy(() => import('./components/AdminWaiter'));
+const AdminCounter = lazy(() => import('./components/AdminCounter'));
+const AdminPromotions = lazy(() => import('./components/AdminPromotions'));
+const AdminRatings = lazy(() => import('./components/AdminRatings'));
+const AdminPerformance = lazy(() => import('./components/AdminPerformance'));
+const PublicReceipt = lazy(() => import('./components/PublicReceipt'));
 
 type AdminTab =
   | 'ACTIVE_TABLES'
   | 'FINISHED_ORDERS'
+  | 'PERFORMANCE'
   | 'TABLES'
   | 'MENU'
   | 'SETTINGS'
@@ -37,6 +41,12 @@ const PROMOTIONS_TAB_ID = '__PROMOTIONS__';
 const UAITECH_LOGO_URL =
   'https://obeoiqjwqchwedeupngc.supabase.co/storage/v1/object/public/assets/logos/534545345.png';
 
+const lazyFallback = (
+  <div className="bg-white border border-gray-200 rounded-2xl p-5">
+    <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Carregando...</p>
+  </div>
+);
+
 const getAllowedAdminTabs = (
   role: UserRole,
   counterEnabled: boolean
@@ -45,7 +55,7 @@ const getAllowedAdminTabs = (
     return ['WAITER_MODULE'];
   }
 
-  const tabs: AdminTab[] = ['ACTIVE_TABLES', 'FINISHED_ORDERS', 'TABLES', 'MENU'];
+  const tabs: AdminTab[] = ['ACTIVE_TABLES', 'FINISHED_ORDERS', 'PERFORMANCE', 'TABLES', 'MENU'];
   if (counterEnabled) tabs.push('COUNTER_MODULE');
   if (role === 'ADMIN') {
     tabs.push('SETTINGS');
@@ -129,6 +139,8 @@ const App: React.FC = () => {
   const adminLatestOrderCreatedAtRef = useRef<string | null>(null);
   const adminOrdersSeededRef = useRef(false);
   const adminOrdersWatcherUserIdRef = useRef<string | null>(null);
+  const adminAutoPrintedOrderIdsRef = useRef<Set<string>>(new Set());
+  const adminAutoPrintInFlightOrderIdsRef = useRef<Set<string>>(new Set());
   const sessionResetRef = useRef<string | null>(null);
   const { toast, confirm } = useFeedback();
 
@@ -513,6 +525,8 @@ const App: React.FC = () => {
       adminKnownOrderIdsRef.current = new Set();
       adminLatestOrderCreatedAtRef.current = null;
       adminOrdersSeededRef.current = false;
+      adminAutoPrintedOrderIdsRef.current = new Set();
+      adminAutoPrintInFlightOrderIdsRef.current = new Set();
     }
 
     let active = true;
@@ -525,6 +539,169 @@ const App: React.FC = () => {
           : order?.origin === 'BALCAO'
             ? 'Balcao'
             : 'Mesa';
+
+    const isAutoPrintableOrder = (order: any) =>
+      order?.origin === 'WAITER' ||
+      (order?.origin === 'CUSTOMER' && Boolean(order?.created_by_guest_id));
+
+    const getTicketStatusLabel = (order: any) => {
+      if (order?.approval_status === 'PENDING_APPROVAL') return 'Aguardando aceite';
+      if (order?.approval_status === 'REJECTED') return 'Rejeitado';
+      if (order?.status === 'PREPARING') return 'Em preparo';
+      if (order?.status === 'READY') return 'Pronto';
+      if (order?.status === 'FINISHED') return 'Finalizado';
+      if (order?.status === 'CANCELLED') return 'Cancelado';
+      return 'Confirmado';
+    };
+
+    const getAutoPrintWaiterFeeCents = (subtotalCents: number) => {
+      if (settings?.enable_waiter_fee !== true) return 0;
+      const mode = settings?.waiter_fee_mode === 'FIXED' ? 'FIXED' : 'PERCENT';
+      const rawValue = Number(settings?.waiter_fee_value ?? (mode === 'PERCENT' ? 10 : 0));
+      if (mode === 'FIXED') return Math.max(0, rawValue);
+      const percent = Math.min(100, Math.max(0, rawValue));
+      return Math.round(subtotalCents * (percent / 100));
+    };
+
+    const autoPrintMenuDigitalOrder = async (order: any) => {
+      if (settings?.has_thermal_printer !== true) return;
+      if (settings?.auto_print_menu_digital !== true) return;
+      if (!isAutoPrintableOrder(order)) return;
+
+      const orderId = String(order?.id || '').trim();
+      if (!orderId) return;
+      if (adminAutoPrintedOrderIdsRef.current.has(orderId)) return;
+      if (adminAutoPrintInFlightOrderIdsRef.current.has(orderId)) return;
+
+      adminAutoPrintInFlightOrderIdsRef.current.add(orderId);
+
+      try {
+        const { data: freshOrder, error: loadError } = await supabase
+          .from('orders')
+          .select('id,session_id,table_id,origin,service_type,created_by_guest_id,status,approval_status,created_at,customer_name,customer_phone,delivery_address,delivery_fee_cents,subtotal_cents,total_cents,printed_at,items:order_items(*),session:sessions(created_at,closed_at,table:tables(name))')
+          .eq('id', orderId)
+          .maybeSingle();
+
+        if (loadError || !freshOrder) {
+          throw new Error(loadError?.message || 'pedido nao encontrado');
+        }
+
+        const loadedOrder = freshOrder as any;
+        if (!isAutoPrintableOrder(loadedOrder)) return;
+        if (loadedOrder.printed_at) {
+          adminAutoPrintedOrderIdsRef.current.add(orderId);
+          return;
+        }
+
+        const ticketType =
+          loadedOrder?.service_type === 'ENTREGA'
+            ? 'ENTREGA'
+            : loadedOrder?.service_type === 'RETIRADA'
+              ? 'RETIRADA'
+              : loadedOrder?.origin === 'BALCAO'
+                ? 'BALCAO'
+                : 'MESA';
+        const items = (loadedOrder.items || []) as any[];
+        const fallbackSubtotal = items.reduce(
+          (acc, item) => acc + (Number(item.qty || 0) * Number(item.unit_price_cents || 0)),
+          0
+        );
+        const subtotalCents = Number(loadedOrder.subtotal_cents ?? fallbackSubtotal);
+        const serviceFeeCents = ticketType === 'MESA' ? getAutoPrintWaiterFeeCents(subtotalCents) : 0;
+        const deliveryFeeCents = Number(loadedOrder.delivery_fee_cents || 0);
+        const totalCentsResolved =
+          Number(loadedOrder.total_cents) ||
+          Math.max(0, subtotalCents + serviceFeeCents + (ticketType === 'ENTREGA' ? deliveryFeeCents : 0));
+
+        const openedAt = loadedOrder.created_at || loadedOrder.session?.created_at || null;
+        const printResult = await printKitchenTicket({
+          tickets: [
+            {
+              storeName: 'Parada do Lanche',
+              storeImageUrl: settings?.logo_url || null,
+              orderId: loadedOrder.id,
+              ticketType,
+              openedAt,
+              closedAt: loadedOrder.session?.closed_at || null,
+              statusLabel: getTicketStatusLabel(loadedOrder),
+              orderTime: openedAt
+                ? new Date(openedAt).toLocaleTimeString('pt-BR', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })
+                : '-',
+              tableName: loadedOrder.session?.table?.name || 'Mesa',
+              customerName: loadedOrder.customer_name || null,
+              customerPhone: loadedOrder.customer_phone || null,
+              deliveryAddress: loadedOrder.delivery_address || null,
+              items: items.map((item: any) => ({
+                name_snapshot: String(item.name_snapshot || 'Item'),
+                qty: Number(item.qty || 0),
+                unit_price_cents: Number(item.unit_price_cents || 0),
+                note: item.note || '',
+              })),
+              subtotalCents,
+              serviceFeeCents,
+              deliveryFeeCents,
+              totalCents: totalCentsResolved,
+              receiptToken: null,
+              receiptUrl: null,
+            },
+          ],
+        });
+
+        if (printResult.status !== 'printed') {
+          if (printResult.status === 'cancelled') {
+            console.warn('[AUTO_PRINT] Impressao automatica cancelada', {
+              orderId,
+              reason: printResult.message,
+            });
+            toast(`Impressao automatica cancelada: ${printResult.message}`, 'info');
+            return;
+          }
+
+          console.error('[AUTO_PRINT] Falha na impressao automatica', {
+            orderId,
+            reason: printResult.message,
+            printResult,
+          });
+          toast(
+            `Falha ao imprimir automaticamente. Verifique a impressora. Motivo: ${printResult.message || 'erro desconhecido.'}`,
+            'error'
+          );
+          return;
+        }
+
+        const { error: markError } = await supabase.rpc('mark_orders_printed', {
+          p_session_id: loadedOrder.session_id,
+          p_order_ids: [loadedOrder.id],
+        });
+
+        if (markError) {
+          console.error('[AUTO_PRINT] Impresso, mas falhou ao marcar como impresso', {
+            orderId,
+            markError,
+          });
+          toast(`Impresso, mas falhou ao marcar automaticamente: ${markError.message}`, 'error');
+          return;
+        }
+
+        adminAutoPrintedOrderIdsRef.current.add(orderId);
+        toast('Pedido novo impresso automaticamente', 'success');
+      } catch (error: any) {
+        console.error('[AUTO_PRINT] Excecao no fluxo de impressao automatica', {
+          orderId,
+          error,
+          message: error?.message,
+        });
+        toast(
+          `Falha ao imprimir automaticamente. Verifique a impressora. Motivo: ${error?.message || 'erro inesperado.'}`,
+          'error'
+        );
+      } finally {
+        adminAutoPrintInFlightOrderIdsRef.current.delete(orderId);
+      }
+    };
 
     const registerOrderForAdmin = async (order: any, shouldNotify: boolean) => {
       const orderId = String(order?.id || '').trim();
@@ -540,6 +717,8 @@ const App: React.FC = () => {
         `${getOrderTypeLabel(order)} • Pedido #${shortId}`,
         `admin-new-order-${orderId}`
       );
+
+      await autoPrintMenuDigitalOrder(order);
     };
 
     const seedAdminOrders = async () => {
@@ -625,7 +804,19 @@ const App: React.FC = () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       supabase.removeChannel(channel);
     };
-  }, [view, user?.id, settings?.notification_sound_enabled, settings?.notification_sound_url]);
+  }, [
+    settings?.auto_print_menu_digital,
+    settings?.has_thermal_printer,
+    settings?.enable_waiter_fee,
+    settings?.logo_url,
+    settings?.notification_sound_enabled,
+    settings?.notification_sound_url,
+    settings?.waiter_fee_mode,
+    settings?.waiter_fee_value,
+    toast,
+    user?.id,
+    view,
+  ]);
 
   const handleOpenTable = async (name: string) => {
     if (!activeTable) return;
@@ -1117,12 +1308,14 @@ const App: React.FC = () => {
 
   if (view === 'PUBLIC_RECEIPT') {
     return (
-      <PublicReceipt
-        token={publicReceiptToken}
-        onBackHome={() => {
-          window.location.hash = '/';
-        }}
-      />
+      <Suspense fallback={lazyFallback}>
+        <PublicReceipt
+          token={publicReceiptToken}
+          onBackHome={() => {
+            window.location.hash = '/';
+          }}
+        />
+      </Suspense>
     );
   }
 
@@ -1404,6 +1597,10 @@ const App: React.FC = () => {
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
                     Pedidos Finaliz...
                   </button>
+                  <button onClick={() => openTab('PERFORMANCE')} className={sidebarButtonClass('PERFORMANCE')}>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="3" x2="3" y2="21"/><line x1="21" y1="21" x2="3" y2="21"/><path d="m7 14 4-4 3 3 5-6"/></svg>
+                    Desempenho
+                  </button>
                   <button onClick={() => openTab('TABLES')} className={sidebarButtonClass('TABLES')}>
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
                     Mesas & QR
@@ -1499,16 +1696,19 @@ const App: React.FC = () => {
 
           <main className="flex-1 h-full min-h-0 overflow-y-auto transition-all duration-300">
             <div className="p-4 sm:p-6 lg:p-8">
-              {adminTab === 'ACTIVE_TABLES' && <AdminOrders mode="ACTIVE" settings={settings} />}
-              {adminTab === 'FINISHED_ORDERS' && <AdminOrders mode="FINISHED" settings={settings} />}
-              {adminTab === 'MENU' && <AdminMenu />}
-              {adminTab === 'TABLES' && <AdminTables settings={settings} />}
-              {adminTab === 'WAITER_MODULE' && <AdminWaiter profile={profile} />}
-              {adminTab === 'COUNTER_MODULE' && <AdminCounter profile={profile} settings={settings} />}
-              {adminTab === 'SETTINGS' && <AdminSettings settings={settings} onUpdate={fetchSettings} profile={profile} />}
-              {adminTab === 'STAFF' && <AdminStaff profile={profile} />}
-              {adminTab === 'PROMOTIONS' && <AdminPromotions />}
-              {adminTab === 'RATINGS' && <AdminRatings />}
+              <Suspense fallback={lazyFallback}>
+                {adminTab === 'ACTIVE_TABLES' && <AdminOrders mode="ACTIVE" settings={settings} profile={profile} />}
+                {adminTab === 'FINISHED_ORDERS' && <AdminOrders mode="FINISHED" settings={settings} profile={profile} />}
+                {adminTab === 'PERFORMANCE' && <AdminPerformance profile={profile} />}
+                {adminTab === 'MENU' && <AdminMenu />}
+                {adminTab === 'TABLES' && <AdminTables settings={settings} />}
+                {adminTab === 'WAITER_MODULE' && <AdminWaiter profile={profile} />}
+                {adminTab === 'COUNTER_MODULE' && <AdminCounter profile={profile} settings={settings} />}
+                {adminTab === 'SETTINGS' && <AdminSettings settings={settings} onUpdate={fetchSettings} profile={profile} />}
+                {adminTab === 'STAFF' && <AdminStaff profile={profile} />}
+                {adminTab === 'PROMOTIONS' && <AdminPromotions />}
+                {adminTab === 'RATINGS' && <AdminRatings />}
+              </Suspense>
 
               <footer className="mt-8 border-t border-gray-200 pt-4 text-center">
                 <img src={UAITECH_LOGO_URL} alt="Logo UaiTech" className="h-5 w-auto mx-auto" />

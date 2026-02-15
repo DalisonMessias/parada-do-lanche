@@ -149,6 +149,13 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
   const [pendingAddonIds, setPendingAddonIds] = useState<string[]>([]);
 
   const counterEnabled = settings?.enable_counter_module !== false;
+  const hasThermalPrinter = settings?.has_thermal_printer === true;
+
+  useEffect(() => {
+    if (!hasThermalPrinter && printNow) {
+      setPrintNow(false);
+    }
+  }, [hasThermalPrinter, printNow]);
 
   const loadCatalog = async () => {
     const [catRes, prodRes, addonRes, promoRes] = await Promise.all([
@@ -557,7 +564,7 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
       return;
     }
 
-    if (printNow) {
+    if (printNow && hasThermalPrinter) {
       const { data: createdOrder } = await supabase
         .from('orders')
         .select('*, items:order_items(*)')
@@ -684,7 +691,13 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
           </div>
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-gray-500">
-              <input type="checkbox" checked={printNow} onChange={(e) => setPrintNow(e.target.checked)} aria-label="Imprimir agora" />
+              <input
+                type="checkbox"
+                checked={printNow}
+                disabled={!hasThermalPrinter}
+                onChange={(e) => setPrintNow(e.target.checked)}
+                aria-label="Imprimir agora"
+              />
               Imprimir agora
             </label>
             {counterSession && (
@@ -698,6 +711,14 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
             )}
           </div>
         </div>
+
+        {!hasThermalPrinter && (
+          <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3">
+            <p className="text-[10px] font-black uppercase tracking-widest text-amber-700">
+              Impressao desativada: marque "Tenho impressora termica" em Configuracoes.
+            </p>
+          </div>
+        )}
 
         <div className="grid lg:grid-cols-3 gap-4">
           <div className="space-y-2">
@@ -1074,7 +1095,7 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
           </div>
 
           <button onClick={handleGenerateOrder} disabled={loading || cartItems.length === 0} className="w-full bg-primary text-white py-4 rounded-xl text-[11px] font-black uppercase tracking-widest disabled:opacity-50 disabled:cursor-not-allowed">
-            {loading ? 'Gerando...' : printNow ? 'Gerar pedido e imprimir' : 'Gerar pedido sem imprimir'}
+            {loading ? 'Gerando...' : printNow && hasThermalPrinter ? 'Gerar pedido e imprimir' : 'Gerar pedido sem imprimir'}
           </button>
         </section>
       </div>

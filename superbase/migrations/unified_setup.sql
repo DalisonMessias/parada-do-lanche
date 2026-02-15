@@ -9,6 +9,7 @@ create table if not exists public.settings (
   logo_url text,
   wifi_ssid text not null default '',
   wifi_password text not null default '',
+  has_thermal_printer boolean not null default false,
   order_approval_mode text not null default 'HOST' check (order_approval_mode in ('HOST', 'SELF')),
   enable_counter_module boolean not null default true,
   enable_waiter_fee boolean not null default false,
@@ -19,6 +20,7 @@ create table if not exists public.settings (
   pix_key_value text,
   notification_sound_enabled boolean not null default false,
   notification_sound_url text not null default '',
+  auto_print_menu_digital boolean not null default false,
   sticker_bg_color text not null default '#ffffff',
   sticker_text_color text not null default '#111827',
   sticker_border_color text not null default '#111111',
@@ -35,6 +37,8 @@ alter table if exists public.settings
   add column if not exists wifi_ssid text not null default '';
 alter table if exists public.settings
   add column if not exists wifi_password text not null default '';
+alter table if exists public.settings
+  add column if not exists has_thermal_printer boolean not null default false;
 alter table if exists public.settings
   add column if not exists order_approval_mode text not null default 'HOST';
 alter table if exists public.settings
@@ -56,6 +60,8 @@ alter table if exists public.settings
 alter table if exists public.settings
   add column if not exists notification_sound_url text not null default '';
 alter table if exists public.settings
+  add column if not exists auto_print_menu_digital boolean not null default false;
+alter table if exists public.settings
   add column if not exists sticker_bg_color text not null default '#ffffff';
 alter table if exists public.settings
   add column if not exists sticker_text_color text not null default '#111827';
@@ -70,6 +76,7 @@ alter table if exists public.settings
 
 update public.settings
 set
+  has_thermal_printer = coalesce(has_thermal_printer, false),
   waiter_fee_mode = case
     when waiter_fee_mode in ('PERCENT', 'FIXED') then waiter_fee_mode
     else 'PERCENT'
@@ -85,6 +92,10 @@ set
   end,
   notification_sound_enabled = coalesce(notification_sound_enabled, false),
   notification_sound_url = coalesce(notification_sound_url, ''),
+  auto_print_menu_digital = case
+    when coalesce(has_thermal_printer, false) then coalesce(auto_print_menu_digital, false)
+    else false
+  end,
   updated_at = coalesce(updated_at, timezone('utc'::text, now()));
 
 do $$
@@ -657,6 +668,8 @@ create index if not exists idx_orders_session_printed on public.orders(session_i
 create index if not exists idx_orders_session_round on public.orders(session_id, round_number desc);
 create index if not exists idx_orders_session_origin_printed on public.orders(session_id, origin, printed_at);
 create index if not exists idx_orders_parent_order_id on public.orders(parent_order_id);
+create index if not exists idx_orders_created_at on public.orders(created_at desc);
+create index if not exists idx_orders_created_at_service_status on public.orders(created_at desc, service_type, status, approval_status);
 create unique index if not exists uq_orders_receipt_token
 on public.orders(receipt_token)
 where receipt_token is not null;
@@ -681,6 +694,42 @@ create table if not exists public.staff_password_audit (
 );
 create index if not exists idx_staff_password_audit_changed_at on public.staff_password_audit(changed_at desc);
 
+create table if not exists public.order_cancellation_audit (
+  id uuid default gen_random_uuid() primary key,
+  action_scope text not null check (action_scope in ('SINGLE', 'BULK')),
+  batch_id uuid,
+  order_id uuid not null references public.orders(id) on delete cascade,
+  session_id uuid references public.sessions(id) on delete set null,
+  table_id uuid references public.tables(id) on delete set null,
+  actor_profile_id uuid references public.profiles(id) on delete set null,
+  actor_role text,
+  actor_name text,
+  previous_status text,
+  previous_approval_status text,
+  cancelled_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+create index if not exists idx_order_cancellation_audit_cancelled_at on public.order_cancellation_audit(cancelled_at desc);
+create index if not exists idx_order_cancellation_audit_order_id on public.order_cancellation_audit(order_id);
+create index if not exists idx_order_cancellation_audit_actor_profile_id on public.order_cancellation_audit(actor_profile_id);
+create index if not exists idx_order_cancellation_audit_batch_id on public.order_cancellation_audit(batch_id);
+
+create table if not exists public.staff_action_audit (
+  id uuid default gen_random_uuid() primary key,
+  action_type text not null,
+  actor_profile_id uuid references public.profiles(id) on delete set null,
+  actor_role text,
+  actor_name text,
+  session_id uuid references public.sessions(id) on delete set null,
+  table_id uuid references public.tables(id) on delete set null,
+  order_ids uuid[],
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+create index if not exists idx_staff_action_audit_created_at on public.staff_action_audit(created_at desc);
+create index if not exists idx_staff_action_audit_actor_profile_id on public.staff_action_audit(actor_profile_id);
+create index if not exists idx_staff_action_audit_action_type on public.staff_action_audit(action_type);
+create index if not exists idx_staff_action_audit_session_id on public.staff_action_audit(session_id);
+
 -- Garante default UUID consistente mesmo em bases antigas que ainda usam uuid_generate_v4().
 alter table if exists public.categories alter column id set default gen_random_uuid();
 alter table if exists public.products alter column id set default gen_random_uuid();
@@ -693,6 +742,8 @@ alter table if exists public.orders alter column id set default gen_random_uuid(
 alter table if exists public.order_items alter column id set default gen_random_uuid();
 alter table if exists public.session_events alter column id set default gen_random_uuid();
 alter table if exists public.staff_password_audit alter column id set default gen_random_uuid();
+alter table if exists public.order_cancellation_audit alter column id set default gen_random_uuid();
+alter table if exists public.staff_action_audit alter column id set default gen_random_uuid();
 
 insert into public.settings (id)
 values (1)
@@ -702,6 +753,7 @@ update public.settings
 set
   wifi_ssid = coalesce(wifi_ssid, ''),
   wifi_password = coalesce(wifi_password, ''),
+  has_thermal_printer = coalesce(has_thermal_printer, false),
   order_approval_mode = coalesce(order_approval_mode, 'HOST'),
   enable_counter_module = coalesce(enable_counter_module, true),
   enable_waiter_fee = coalesce(enable_waiter_fee, false),
@@ -722,6 +774,10 @@ set
   pix_key_value = nullif(trim(coalesce(pix_key_value, '')), ''),
   notification_sound_enabled = coalesce(notification_sound_enabled, false),
   notification_sound_url = coalesce(notification_sound_url, ''),
+  auto_print_menu_digital = case
+    when coalesce(has_thermal_printer, false) then coalesce(auto_print_menu_digital, false)
+    else false
+  end,
   sticker_bg_color = coalesce(sticker_bg_color, '#ffffff'),
   sticker_text_color = coalesce(sticker_text_color, '#111827'),
   sticker_border_color = coalesce(sticker_border_color, '#111111'),
@@ -766,7 +822,7 @@ where receipt_token is not null
 update public.orders
 set
   receipt_token = encode(
-    digest(
+    extensions.digest(
       coalesce(id::text, '') || '-' ||
       coalesce(created_at::text, '') || '-' ||
       gen_random_uuid()::text || '-' ||
@@ -819,6 +875,368 @@ begin
     execute format('create policy rls_public_delete on public.%I for delete to public using (true)', r.tablename);
   end loop;
 end $$;
+
+-- Endurecimento incremental de RLS para areas administrativas/sensiveis.
+-- Mantem fluxo publico de cliente (mesa, pedidos, carrinho) sem quebra.
+create or replace function public.current_profile_role(
+  p_profile_id uuid default auth.uid()
+)
+returns text
+language sql
+security definer
+stable
+set search_path = public, auth
+as $$
+  select role
+  from public.profiles
+  where id = coalesce(p_profile_id, auth.uid())
+  limit 1;
+$$;
+
+create or replace function public.is_profile_in_roles(
+  p_roles text[],
+  p_profile_id uuid default auth.uid()
+)
+returns boolean
+language sql
+security definer
+stable
+set search_path = public, auth
+as $$
+  select coalesce(
+    public.current_profile_role(coalesce(p_profile_id, auth.uid())) = any(p_roles),
+    false
+  );
+$$;
+
+create or replace function public.log_staff_action(
+  p_action_type text,
+  p_session_id uuid default null,
+  p_table_id uuid default null,
+  p_order_ids uuid[] default null,
+  p_payload jsonb default '{}'::jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_actor_profile_id uuid;
+  v_actor_role text;
+  v_actor_name text;
+begin
+  v_actor_profile_id := auth.uid();
+  if v_actor_profile_id is null then
+    return;
+  end if;
+
+  select role, name
+    into v_actor_role, v_actor_name
+  from public.profiles
+  where id = v_actor_profile_id
+  limit 1;
+
+  if coalesce(v_actor_role, '') not in ('ADMIN', 'MANAGER', 'WAITER') then
+    return;
+  end if;
+
+  insert into public.staff_action_audit (
+    action_type,
+    actor_profile_id,
+    actor_role,
+    actor_name,
+    session_id,
+    table_id,
+    order_ids,
+    payload
+  )
+  values (
+    coalesce(nullif(trim(coalesce(p_action_type, '')), ''), 'UNKNOWN'),
+    v_actor_profile_id,
+    v_actor_role,
+    nullif(trim(coalesce(v_actor_name, '')), ''),
+    p_session_id,
+    p_table_id,
+    p_order_ids,
+    coalesce(p_payload, '{}'::jsonb)
+  );
+end;
+$$;
+
+create or replace function public.audit_admin_table_changes()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_actor_profile_id uuid;
+  v_actor_role text;
+  v_actor_name text;
+begin
+  v_actor_profile_id := auth.uid();
+  if v_actor_profile_id is null then
+    return coalesce(new, old);
+  end if;
+
+  select role, name
+    into v_actor_role, v_actor_name
+  from public.profiles
+  where id = v_actor_profile_id
+  limit 1;
+
+  if coalesce(v_actor_role, '') not in ('ADMIN', 'MANAGER') then
+    return coalesce(new, old);
+  end if;
+
+  insert into public.staff_action_audit (
+    action_type,
+    actor_profile_id,
+    actor_role,
+    actor_name,
+    payload
+  )
+  values (
+    'ADMIN_TABLE_MUTATION',
+    v_actor_profile_id,
+    v_actor_role,
+    nullif(trim(coalesce(v_actor_name, '')), ''),
+    jsonb_build_object(
+      'table', tg_table_name,
+      'operation', tg_op,
+      'new', case when tg_op <> 'DELETE' then to_jsonb(new) else null end,
+      'old', case when tg_op <> 'INSERT' then to_jsonb(old) else null end
+    )
+  );
+
+  return coalesce(new, old);
+end;
+$$;
+
+-- SETTINGS: leitura publica, escrita apenas ADMIN.
+drop policy if exists settings_select_public on public.settings;
+drop policy if exists settings_insert_admin on public.settings;
+drop policy if exists settings_update_admin on public.settings;
+drop policy if exists settings_delete_admin on public.settings;
+drop policy if exists rls_public_select on public.settings;
+drop policy if exists rls_public_insert on public.settings;
+drop policy if exists rls_public_update on public.settings;
+drop policy if exists rls_public_delete on public.settings;
+
+create policy settings_select_public
+on public.settings
+for select
+to public
+using (true);
+
+create policy settings_insert_admin
+on public.settings
+for insert
+to authenticated
+with check (public.is_profile_in_roles(array['ADMIN']::text[]));
+
+create policy settings_update_admin
+on public.settings
+for update
+to authenticated
+using (public.is_profile_in_roles(array['ADMIN']::text[]))
+with check (public.is_profile_in_roles(array['ADMIN']::text[]));
+
+create policy settings_delete_admin
+on public.settings
+for delete
+to authenticated
+using (public.is_profile_in_roles(array['ADMIN']::text[]));
+
+-- CARDAPIO/PROMOCOES: leitura publica, escrita para ADMIN e MANAGER.
+drop policy if exists menu_select_public_categories on public.categories;
+drop policy if exists menu_write_staff_categories on public.categories;
+drop policy if exists rls_public_select on public.categories;
+drop policy if exists rls_public_insert on public.categories;
+drop policy if exists rls_public_update on public.categories;
+drop policy if exists rls_public_delete on public.categories;
+
+create policy menu_select_public_categories
+on public.categories
+for select
+to public
+using (true);
+
+create policy menu_write_staff_categories
+on public.categories
+for all
+to authenticated
+using (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]))
+with check (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]));
+
+drop policy if exists menu_select_public_products on public.products;
+drop policy if exists menu_write_staff_products on public.products;
+drop policy if exists rls_public_select on public.products;
+drop policy if exists rls_public_insert on public.products;
+drop policy if exists rls_public_update on public.products;
+drop policy if exists rls_public_delete on public.products;
+
+create policy menu_select_public_products
+on public.products
+for select
+to public
+using (true);
+
+create policy menu_write_staff_products
+on public.products
+for all
+to authenticated
+using (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]))
+with check (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]));
+
+drop policy if exists menu_select_public_product_addons on public.product_addons;
+drop policy if exists menu_write_staff_product_addons on public.product_addons;
+drop policy if exists rls_public_select on public.product_addons;
+drop policy if exists rls_public_insert on public.product_addons;
+drop policy if exists rls_public_update on public.product_addons;
+drop policy if exists rls_public_delete on public.product_addons;
+
+create policy menu_select_public_product_addons
+on public.product_addons
+for select
+to public
+using (true);
+
+create policy menu_write_staff_product_addons
+on public.product_addons
+for all
+to authenticated
+using (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]))
+with check (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]));
+
+drop policy if exists promotions_select_public on public.promotions;
+drop policy if exists promotions_write_staff on public.promotions;
+drop policy if exists rls_public_select on public.promotions;
+drop policy if exists rls_public_insert on public.promotions;
+drop policy if exists rls_public_update on public.promotions;
+drop policy if exists rls_public_delete on public.promotions;
+
+create policy promotions_select_public
+on public.promotions
+for select
+to public
+using (true);
+
+create policy promotions_write_staff
+on public.promotions
+for all
+to authenticated
+using (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]))
+with check (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]));
+
+drop policy if exists promotions_products_select_public on public.promotion_products;
+drop policy if exists promotions_products_write_staff on public.promotion_products;
+drop policy if exists rls_public_select on public.promotion_products;
+drop policy if exists rls_public_insert on public.promotion_products;
+drop policy if exists rls_public_update on public.promotion_products;
+drop policy if exists rls_public_delete on public.promotion_products;
+
+create policy promotions_products_select_public
+on public.promotion_products
+for select
+to public
+using (true);
+
+create policy promotions_products_write_staff
+on public.promotion_products
+for all
+to authenticated
+using (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]))
+with check (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]));
+
+-- AUDITORIAS: sem acesso publico; leitura para staff autorizado.
+drop policy if exists staff_password_audit_read_admin on public.staff_password_audit;
+drop policy if exists staff_password_audit_write_admin on public.staff_password_audit;
+drop policy if exists rls_public_select on public.staff_password_audit;
+drop policy if exists rls_public_insert on public.staff_password_audit;
+drop policy if exists rls_public_update on public.staff_password_audit;
+drop policy if exists rls_public_delete on public.staff_password_audit;
+
+create policy staff_password_audit_read_admin
+on public.staff_password_audit
+for select
+to authenticated
+using (public.is_profile_in_roles(array['ADMIN']::text[]));
+
+create policy staff_password_audit_write_admin
+on public.staff_password_audit
+for insert
+to authenticated
+with check (public.is_profile_in_roles(array['ADMIN']::text[]));
+
+drop policy if exists order_cancellation_audit_read_staff on public.order_cancellation_audit;
+drop policy if exists order_cancellation_audit_write_staff on public.order_cancellation_audit;
+drop policy if exists rls_public_select on public.order_cancellation_audit;
+drop policy if exists rls_public_insert on public.order_cancellation_audit;
+drop policy if exists rls_public_update on public.order_cancellation_audit;
+drop policy if exists rls_public_delete on public.order_cancellation_audit;
+
+create policy order_cancellation_audit_read_staff
+on public.order_cancellation_audit
+for select
+to authenticated
+using (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]));
+
+create policy order_cancellation_audit_write_staff
+on public.order_cancellation_audit
+for insert
+to authenticated
+with check (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]));
+
+drop policy if exists staff_action_audit_read_staff on public.staff_action_audit;
+drop policy if exists staff_action_audit_write_staff on public.staff_action_audit;
+drop policy if exists rls_public_select on public.staff_action_audit;
+drop policy if exists rls_public_insert on public.staff_action_audit;
+drop policy if exists rls_public_update on public.staff_action_audit;
+drop policy if exists rls_public_delete on public.staff_action_audit;
+
+create policy staff_action_audit_read_staff
+on public.staff_action_audit
+for select
+to authenticated
+using (public.is_profile_in_roles(array['ADMIN', 'MANAGER']::text[]));
+
+create policy staff_action_audit_write_staff
+on public.staff_action_audit
+for insert
+to authenticated
+with check (public.is_profile_in_roles(array['ADMIN', 'MANAGER', 'WAITER']::text[]));
+
+drop trigger if exists trg_audit_settings_mutation on public.settings;
+create trigger trg_audit_settings_mutation
+after insert or update or delete on public.settings
+for each row execute function public.audit_admin_table_changes();
+
+drop trigger if exists trg_audit_categories_mutation on public.categories;
+create trigger trg_audit_categories_mutation
+after insert or update or delete on public.categories
+for each row execute function public.audit_admin_table_changes();
+
+drop trigger if exists trg_audit_products_mutation on public.products;
+create trigger trg_audit_products_mutation
+after insert or update or delete on public.products
+for each row execute function public.audit_admin_table_changes();
+
+drop trigger if exists trg_audit_product_addons_mutation on public.product_addons;
+create trigger trg_audit_product_addons_mutation
+after insert or update or delete on public.product_addons
+for each row execute function public.audit_admin_table_changes();
+
+drop trigger if exists trg_audit_promotions_mutation on public.promotions;
+create trigger trg_audit_promotions_mutation
+after insert or update or delete on public.promotions
+for each row execute function public.audit_admin_table_changes();
+
+drop trigger if exists trg_audit_promotion_products_mutation on public.promotion_products;
+create trigger trg_audit_promotion_products_mutation
+after insert or update or delete on public.promotion_products
+for each row execute function public.audit_admin_table_changes();
 
 -- Garante que as tabelas criticas estejam na publicacao realtime do Supabase.
 do $$
@@ -1041,6 +1459,14 @@ begin
     p_actor_profile_id,
     nullif(trim(coalesce(p_actor_name, '')), ''),
     p_target_profile_id
+  );
+
+  perform public.log_staff_action(
+    'PASSWORD_CHANGED',
+    null,
+    null,
+    null,
+    jsonb_build_object('target_profile_id', p_target_profile_id)
   );
 end;
 $$;
@@ -1265,7 +1691,7 @@ begin
   ),
   grouped_items as (
     select
-      min(product_id) as product_id,
+      min(product_id::text)::uuid as product_id,
       name_snapshot,
       original_unit_price_cents,
       unit_price_cents,
@@ -1324,7 +1750,7 @@ create or replace function public.ensure_order_receipt_token(
 returns text
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_service_type text;
@@ -1355,7 +1781,7 @@ begin
 
   loop
     v_candidate := encode(
-      digest(
+      extensions.digest(
         p_order_id::text || '-' ||
         gen_random_uuid()::text || '-' ||
         clock_timestamp()::text || '-' ||
@@ -1753,7 +2179,7 @@ begin
   ),
   grouped_items as (
     select
-      min(product_id) as product_id,
+      min(product_id::text)::uuid as product_id,
       name_snapshot,
       original_unit_price_cents,
       unit_price_cents,
@@ -1809,6 +2235,688 @@ begin
 end;
 $$;
 
+create or replace function public.cancel_order_as_staff(
+  p_actor_profile_id uuid,
+  p_order_id uuid
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_auth_uid uuid;
+  v_actor_role text;
+  v_actor_name text;
+  v_prev_status text;
+  v_prev_approval_status text;
+  v_session_id uuid;
+  v_table_id uuid;
+begin
+  if p_actor_profile_id is null then
+    raise exception 'p_actor_profile_id e obrigatorio';
+  end if;
+  if p_order_id is null then
+    raise exception 'p_order_id e obrigatorio';
+  end if;
+
+  v_auth_uid := auth.uid();
+  if v_auth_uid is null or v_auth_uid <> p_actor_profile_id then
+    raise exception 'usuario autenticado invalido para cancelar pedido';
+  end if;
+
+  select role, name
+    into v_actor_role, v_actor_name
+  from public.profiles
+  where id = p_actor_profile_id
+  limit 1;
+
+  if coalesce(v_actor_role, '') not in ('ADMIN', 'MANAGER') then
+    raise exception 'permissao insuficiente para cancelar pedido';
+  end if;
+
+  select status, approval_status, session_id, table_id
+    into v_prev_status, v_prev_approval_status, v_session_id, v_table_id
+  from public.orders
+  where id = p_order_id
+  for update;
+
+  if not found then
+    raise exception 'pedido nao encontrado';
+  end if;
+
+  if v_prev_status not in ('PENDING', 'PREPARING', 'READY') then
+    return jsonb_build_object(
+      'updated', false,
+      'order_id', p_order_id,
+      'previous_status', v_prev_status,
+      'previous_approval_status', v_prev_approval_status
+    );
+  end if;
+
+  update public.orders
+    set status = 'CANCELLED',
+        approval_status = 'REJECTED'
+  where id = p_order_id;
+
+  insert into public.order_cancellation_audit (
+    action_scope,
+    batch_id,
+    order_id,
+    session_id,
+    table_id,
+    actor_profile_id,
+    actor_role,
+    actor_name,
+    previous_status,
+    previous_approval_status
+  )
+  values (
+    'SINGLE',
+    null,
+    p_order_id,
+    v_session_id,
+    v_table_id,
+    p_actor_profile_id,
+    v_actor_role,
+    nullif(trim(coalesce(v_actor_name, '')), ''),
+    v_prev_status,
+    v_prev_approval_status
+  );
+
+  perform public.log_staff_action(
+    'ORDER_CANCELLED_SINGLE',
+    v_session_id,
+    v_table_id,
+    array[p_order_id],
+    jsonb_build_object(
+      'previous_status', v_prev_status,
+      'previous_approval_status', v_prev_approval_status
+    )
+  );
+
+  return jsonb_build_object(
+    'updated', true,
+    'order_id', p_order_id,
+    'previous_status', v_prev_status,
+    'previous_approval_status', v_prev_approval_status,
+    'current_status', 'CANCELLED',
+    'current_approval_status', 'REJECTED'
+  );
+end;
+$$;
+
+create or replace function public.cancel_orders_bulk_as_staff(
+  p_actor_profile_id uuid,
+  p_order_ids uuid[]
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_auth_uid uuid;
+  v_actor_role text;
+  v_actor_name text;
+  v_batch_id uuid := gen_random_uuid();
+  v_requested_ids uuid[];
+  v_requested_count integer := 0;
+  v_updated_count integer := 0;
+  v_skipped_count integer := 0;
+  v_updated_order_ids uuid[] := '{}'::uuid[];
+begin
+  if p_actor_profile_id is null then
+    raise exception 'p_actor_profile_id e obrigatorio';
+  end if;
+
+  v_auth_uid := auth.uid();
+  if v_auth_uid is null or v_auth_uid <> p_actor_profile_id then
+    raise exception 'usuario autenticado invalido para cancelamento em massa';
+  end if;
+
+  select role, name
+    into v_actor_role, v_actor_name
+  from public.profiles
+  where id = p_actor_profile_id
+  limit 1;
+
+  if coalesce(v_actor_role, '') not in ('ADMIN', 'MANAGER') then
+    raise exception 'permissao insuficiente para cancelamento em massa';
+  end if;
+
+  if p_order_ids is null or array_length(p_order_ids, 1) is null then
+    return jsonb_build_object(
+      'batch_id', null,
+      'requested_count', 0,
+      'updated_count', 0,
+      'skipped_count', 0,
+      'updated_order_ids', '[]'::jsonb
+    );
+  end if;
+
+  select coalesce(array_agg(id), '{}'::uuid[])
+    into v_requested_ids
+  from (
+    select distinct unnest(p_order_ids) as id
+  ) dedup
+  where id is not null;
+
+  v_requested_count := coalesce(array_length(v_requested_ids, 1), 0);
+  if v_requested_count = 0 then
+    return jsonb_build_object(
+      'batch_id', null,
+      'requested_count', 0,
+      'updated_count', 0,
+      'skipped_count', 0,
+      'updated_order_ids', '[]'::jsonb
+    );
+  end if;
+
+  with target_orders as (
+    select
+      o.id,
+      o.session_id,
+      o.table_id,
+      o.status,
+      o.approval_status
+    from public.orders o
+    where o.id = any(v_requested_ids)
+    for update
+  ),
+  cancellable as (
+    select *
+    from target_orders
+    where status in ('PENDING', 'PREPARING', 'READY')
+  ),
+  updated as (
+    update public.orders o
+      set status = 'CANCELLED',
+          approval_status = 'REJECTED'
+    from cancellable c
+    where o.id = c.id
+    returning o.id
+  ),
+  audit_rows as (
+    insert into public.order_cancellation_audit (
+      action_scope,
+      batch_id,
+      order_id,
+      session_id,
+      table_id,
+      actor_profile_id,
+      actor_role,
+      actor_name,
+      previous_status,
+      previous_approval_status
+    )
+    select
+      'BULK',
+      v_batch_id,
+      c.id,
+      c.session_id,
+      c.table_id,
+      p_actor_profile_id,
+      v_actor_role,
+      nullif(trim(coalesce(v_actor_name, '')), ''),
+      c.status,
+      c.approval_status
+    from cancellable c
+    inner join updated u on u.id = c.id
+    returning order_id
+  )
+  select
+    coalesce(array_agg(a.order_id), '{}'::uuid[]),
+    coalesce(count(*), 0)::integer
+  into v_updated_order_ids, v_updated_count
+  from audit_rows a;
+
+  v_skipped_count := greatest(v_requested_count - v_updated_count, 0);
+
+  if v_updated_count > 0 then
+    perform public.log_staff_action(
+      'ORDER_CANCELLED_BULK',
+      null,
+      null,
+      v_updated_order_ids,
+      jsonb_build_object(
+        'batch_id', v_batch_id,
+        'requested_count', v_requested_count,
+        'updated_count', v_updated_count,
+        'skipped_count', v_skipped_count
+      )
+    );
+  end if;
+
+  return jsonb_build_object(
+    'batch_id', v_batch_id,
+    'requested_count', v_requested_count,
+    'updated_count', v_updated_count,
+    'skipped_count', v_skipped_count,
+    'updated_order_ids', coalesce(to_jsonb(v_updated_order_ids), '[]'::jsonb)
+  );
+end;
+$$;
+
+create or replace function public.get_performance_dashboard(
+  p_actor_profile_id uuid,
+  p_period text default 'WEEK',
+  p_from date default null,
+  p_to date default null,
+  p_order_type text default 'ALL',
+  p_order_status text default 'ALL',
+  p_timezone text default 'UTC'
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_auth_uid uuid;
+  v_actor_role text;
+  v_timezone text;
+  v_period text;
+  v_order_type text;
+  v_order_status text;
+  v_today date;
+  v_dow integer;
+  v_from date;
+  v_to date;
+  v_period_days integer := 1;
+  v_prev_from date;
+  v_prev_to date;
+  v_from_utc timestamp with time zone;
+  v_to_exclusive_utc timestamp with time zone;
+  v_prev_from_utc timestamp with time zone;
+  v_prev_to_exclusive_utc timestamp with time zone;
+  v_tmp date;
+  v_total_orders integer := 0;
+  v_cancelled_orders integer := 0;
+  v_revenue_orders integer := 0;
+  v_revenue_cents bigint := 0;
+  v_prev_total_orders integer := 0;
+  v_prev_cancelled_orders integer := 0;
+  v_prev_revenue_orders integer := 0;
+  v_prev_revenue_cents bigint := 0;
+  v_prev_average_ticket_cents bigint := 0;
+  v_delta_orders_pct numeric := 0;
+  v_delta_revenue_pct numeric := 0;
+  v_series jsonb := '[]'::jsonb;
+  v_distribution jsonb := '[]'::jsonb;
+  v_top_products jsonb := '[]'::jsonb;
+  v_ticket_by_type jsonb := '[]'::jsonb;
+begin
+  if p_actor_profile_id is null then
+    raise exception 'p_actor_profile_id e obrigatorio';
+  end if;
+
+  v_auth_uid := auth.uid();
+  if v_auth_uid is null or v_auth_uid <> p_actor_profile_id then
+    raise exception 'usuario autenticado invalido para consultar desempenho';
+  end if;
+
+  select role
+    into v_actor_role
+  from public.profiles
+  where id = p_actor_profile_id
+  limit 1;
+
+  if coalesce(v_actor_role, '') not in ('ADMIN', 'MANAGER') then
+    raise exception 'permissao insuficiente para consultar desempenho';
+  end if;
+
+  v_timezone := nullif(trim(coalesce(p_timezone, '')), '');
+  if v_timezone is null then
+    v_timezone := 'UTC';
+  end if;
+  if not exists (
+    select 1
+    from pg_timezone_names
+    where name = v_timezone
+  ) then
+    v_timezone := 'UTC';
+  end if;
+
+  v_period := upper(coalesce(p_period, 'WEEK'));
+  if v_period not in ('WEEK', 'MONTH', 'CUSTOM') then
+    v_period := 'WEEK';
+  end if;
+
+  v_order_type := upper(coalesce(p_order_type, 'ALL'));
+  if v_order_type not in ('ALL', 'MESA', 'ENTREGA', 'RETIRADA') then
+    v_order_type := 'ALL';
+  end if;
+
+  v_order_status := upper(coalesce(p_order_status, 'ALL'));
+  if v_order_status not in ('ALL', 'PENDING', 'PREPARING', 'READY', 'FINISHED', 'CANCELLED') then
+    v_order_status := 'ALL';
+  end if;
+
+  v_today := timezone(v_timezone, now())::date;
+  if v_period = 'CUSTOM' then
+    v_from := coalesce(p_from, v_today);
+    v_to := coalesce(p_to, v_today);
+  elsif v_period = 'MONTH' then
+    v_from := date_trunc('month', v_today::timestamp)::date;
+    v_to := (date_trunc('month', v_today::timestamp) + interval '1 month - 1 day')::date;
+  else
+    -- Semana atual com inicio no domingo (0), conforme decisoes do produto.
+    v_dow := extract(dow from v_today)::integer;
+    v_from := v_today - v_dow;
+    v_to := v_from + 6;
+  end if;
+
+  if v_from > v_to then
+    v_tmp := v_from;
+    v_from := v_to;
+    v_to := v_tmp;
+  end if;
+
+  v_period_days := greatest((v_to - v_from) + 1, 1);
+  v_prev_to := v_from - 1;
+  v_prev_from := v_prev_to - (v_period_days - 1);
+
+  -- Converte intervalos locais para UTC para permitir uso do indice em created_at.
+  v_from_utc := (v_from::timestamp at time zone v_timezone);
+  v_to_exclusive_utc := ((v_to + 1)::timestamp at time zone v_timezone);
+  v_prev_from_utc := (v_prev_from::timestamp at time zone v_timezone);
+  v_prev_to_exclusive_utc := ((v_prev_to + 1)::timestamp at time zone v_timezone);
+
+  with filtered_orders as (
+    select
+      o.id,
+      o.status,
+      o.approval_status,
+      greatest(coalesce(o.total_cents, 0), 0)::bigint as total_cents,
+      timezone(v_timezone, o.created_at)::date as local_date,
+      case
+        when coalesce(o.service_type, 'ON_TABLE') = 'ENTREGA' then 'ENTREGA'
+        when coalesce(o.service_type, 'ON_TABLE') = 'RETIRADA' then 'RETIRADA'
+        else 'MESA'
+      end as order_type
+    from public.orders o
+    where o.created_at >= v_from_utc
+      and o.created_at < v_to_exclusive_utc
+      and (
+        v_order_type = 'ALL'
+        or (v_order_type = 'MESA' and coalesce(o.service_type, 'ON_TABLE') = 'ON_TABLE')
+        or (v_order_type = 'ENTREGA' and coalesce(o.service_type, 'ON_TABLE') = 'ENTREGA')
+        or (v_order_type = 'RETIRADA' and coalesce(o.service_type, 'ON_TABLE') = 'RETIRADA')
+      )
+      and (
+        v_order_status = 'ALL'
+        or o.status = v_order_status
+      )
+  ),
+  previous_filtered_orders as (
+    select
+      o.id,
+      o.status,
+      o.approval_status,
+      greatest(coalesce(o.total_cents, 0), 0)::bigint as total_cents
+    from public.orders o
+    where o.created_at >= v_prev_from_utc
+      and o.created_at < v_prev_to_exclusive_utc
+      and (
+        v_order_type = 'ALL'
+        or (v_order_type = 'MESA' and coalesce(o.service_type, 'ON_TABLE') = 'ON_TABLE')
+        or (v_order_type = 'ENTREGA' and coalesce(o.service_type, 'ON_TABLE') = 'ENTREGA')
+        or (v_order_type = 'RETIRADA' and coalesce(o.service_type, 'ON_TABLE') = 'RETIRADA')
+      )
+      and (
+        v_order_status = 'ALL'
+        or o.status = v_order_status
+      )
+  ),
+  kpis as (
+    select
+      count(*)::integer as total_orders,
+      count(*) filter (where status = 'CANCELLED')::integer as cancelled_orders,
+      count(*) filter (where approval_status = 'APPROVED' and status <> 'CANCELLED')::integer as revenue_orders,
+      coalesce(sum(total_cents) filter (where approval_status = 'APPROVED' and status <> 'CANCELLED'), 0)::bigint as revenue_cents
+    from filtered_orders
+  ),
+  previous_kpis as (
+    select
+      count(*)::integer as total_orders,
+      count(*) filter (where status = 'CANCELLED')::integer as cancelled_orders,
+      count(*) filter (where approval_status = 'APPROVED' and status <> 'CANCELLED')::integer as revenue_orders,
+      coalesce(sum(total_cents) filter (where approval_status = 'APPROVED' and status <> 'CANCELLED'), 0)::bigint as revenue_cents
+    from previous_filtered_orders
+  ),
+  days as (
+    select generate_series(v_from::timestamp, v_to::timestamp, interval '1 day')::date as day
+  ),
+  series as (
+    select
+      d.day,
+      coalesce(count(f.id), 0)::integer as orders,
+      coalesce(sum(
+        case
+          when f.approval_status = 'APPROVED' and f.status <> 'CANCELLED' then f.total_cents
+          else 0
+        end
+      ), 0)::bigint as revenue_cents
+    from days d
+    left join filtered_orders f on f.local_date = d.day
+    group by d.day
+    order by d.day
+  ),
+  distribution as (
+    select
+      t.order_type,
+      coalesce(count(f.id), 0)::integer as orders,
+      coalesce(sum(
+        case
+          when f.approval_status = 'APPROVED' and f.status <> 'CANCELLED' then f.total_cents
+          else 0
+        end
+      ), 0)::bigint as revenue_cents
+    from (values ('MESA'), ('ENTREGA'), ('RETIRADA')) as t(order_type)
+    left join filtered_orders f on f.order_type = t.order_type
+    group by t.order_type
+  ),
+  ticket_by_type as (
+    select
+      t.order_type,
+      coalesce(count(f.id), 0)::integer as total_orders,
+      coalesce(
+        count(f.id) filter (where f.approval_status = 'APPROVED' and f.status <> 'CANCELLED'),
+        0
+      )::integer as revenue_orders,
+      coalesce(
+        sum(
+          case
+            when f.approval_status = 'APPROVED' and f.status <> 'CANCELLED' then f.total_cents
+            else 0
+          end
+        ),
+        0
+      )::bigint as revenue_cents
+    from (values ('MESA'), ('ENTREGA'), ('RETIRADA')) as t(order_type)
+    left join filtered_orders f on f.order_type = t.order_type
+    group by t.order_type
+  ),
+  top_products as (
+    select
+      coalesce(nullif(trim(oi.name_snapshot), ''), 'Item') as product_name,
+      coalesce(sum(greatest(coalesce(oi.qty, 0), 0)), 0)::integer as qty,
+      coalesce(
+        sum(
+          greatest(
+            (
+              greatest(coalesce(oi.qty, 0), 0) * greatest(coalesce(oi.unit_price_cents, 0), 0)
+            ) - greatest(coalesce(oi.promo_discount_cents, 0), 0),
+            0
+          )
+        ),
+        0
+      )::bigint as revenue_cents
+    from filtered_orders f
+    join public.order_items oi on oi.order_id = f.id
+    where f.approval_status = 'APPROVED'
+      and f.status <> 'CANCELLED'
+    group by coalesce(nullif(trim(oi.name_snapshot), ''), 'Item')
+    order by revenue_cents desc, qty desc, product_name asc
+    limit 5
+  )
+  select
+    k.total_orders,
+    k.cancelled_orders,
+    k.revenue_orders,
+    k.revenue_cents,
+    pk.total_orders,
+    pk.cancelled_orders,
+    pk.revenue_orders,
+    pk.revenue_cents,
+    coalesce((
+      select jsonb_agg(
+        jsonb_build_object(
+          'date', to_char(s.day, 'YYYY-MM-DD'),
+          'label', to_char(s.day, 'DD/MM'),
+          'orders', s.orders,
+          'revenue_cents', s.revenue_cents
+        )
+        order by s.day
+      )
+      from series s
+    ), '[]'::jsonb),
+    coalesce((
+      select jsonb_agg(
+        jsonb_build_object(
+          'type', d.order_type,
+          'label', case
+            when d.order_type = 'MESA' then 'Mesa'
+            when d.order_type = 'ENTREGA' then 'Entrega'
+            when d.order_type = 'RETIRADA' then 'Retirada'
+            else d.order_type
+          end,
+          'orders', d.orders,
+          'revenue_cents', d.revenue_cents
+        )
+        order by case
+          when d.order_type = 'MESA' then 1
+          when d.order_type = 'ENTREGA' then 2
+          when d.order_type = 'RETIRADA' then 3
+          else 99
+        end
+      )
+      from distribution d
+    ), '[]'::jsonb),
+    coalesce((
+      select jsonb_agg(
+        jsonb_build_object(
+          'name_snapshot', tp.product_name,
+          'qty', tp.qty,
+          'revenue_cents', tp.revenue_cents
+        )
+        order by tp.revenue_cents desc, tp.qty desc, tp.product_name asc
+      )
+      from top_products tp
+    ), '[]'::jsonb),
+    coalesce((
+      select jsonb_agg(
+        jsonb_build_object(
+          'type', tb.order_type,
+          'label', case
+            when tb.order_type = 'MESA' then 'Mesa'
+            when tb.order_type = 'ENTREGA' then 'Entrega'
+            when tb.order_type = 'RETIRADA' then 'Retirada'
+            else tb.order_type
+          end,
+          'total_orders', tb.total_orders,
+          'revenue_orders', tb.revenue_orders,
+          'revenue_cents', tb.revenue_cents,
+          'average_ticket_cents', case
+            when tb.revenue_orders > 0 then round(tb.revenue_cents::numeric / tb.revenue_orders)::bigint
+            else 0
+          end
+        )
+        order by case
+          when tb.order_type = 'MESA' then 1
+          when tb.order_type = 'ENTREGA' then 2
+          when tb.order_type = 'RETIRADA' then 3
+          else 99
+        end
+      )
+      from ticket_by_type tb
+    ), '[]'::jsonb)
+  into
+    v_total_orders,
+    v_cancelled_orders,
+    v_revenue_orders,
+    v_revenue_cents,
+    v_prev_total_orders,
+    v_prev_cancelled_orders,
+    v_prev_revenue_orders,
+    v_prev_revenue_cents,
+    v_series,
+    v_distribution,
+    v_top_products,
+    v_ticket_by_type
+  from kpis k
+  cross join previous_kpis pk;
+
+  v_prev_average_ticket_cents := case
+    when coalesce(v_prev_revenue_orders, 0) > 0 then round(v_prev_revenue_cents::numeric / v_prev_revenue_orders)::bigint
+    else 0
+  end;
+
+  v_delta_orders_pct := case
+    when coalesce(v_prev_total_orders, 0) > 0 then
+      ((v_total_orders - v_prev_total_orders)::numeric * 100.0) / v_prev_total_orders
+    when coalesce(v_total_orders, 0) > 0 then 100
+    else 0
+  end;
+
+  v_delta_revenue_pct := case
+    when coalesce(v_prev_revenue_cents, 0) > 0 then
+      ((v_revenue_cents - v_prev_revenue_cents)::numeric * 100.0) / v_prev_revenue_cents
+    when coalesce(v_revenue_cents, 0) > 0 then 100
+    else 0
+  end;
+
+  return jsonb_build_object(
+    'period', v_period,
+    'timezone', v_timezone,
+    'from', to_char(v_from, 'YYYY-MM-DD'),
+    'to', to_char(v_to, 'YYYY-MM-DD'),
+    'filters', jsonb_build_object(
+      'order_type', v_order_type,
+      'order_status', v_order_status
+    ),
+    'kpis', jsonb_build_object(
+      'total_orders', coalesce(v_total_orders, 0),
+      'total_revenue_cents', coalesce(v_revenue_cents, 0),
+      'average_ticket_cents', case
+        when coalesce(v_revenue_orders, 0) > 0 then round(v_revenue_cents::numeric / v_revenue_orders)::bigint
+        else 0
+      end,
+      'cancelled_orders', coalesce(v_cancelled_orders, 0),
+      'revenue_orders', coalesce(v_revenue_orders, 0)
+    ),
+    'comparison_previous', jsonb_build_object(
+      'from', to_char(v_prev_from, 'YYYY-MM-DD'),
+      'to', to_char(v_prev_to, 'YYYY-MM-DD'),
+      'kpis', jsonb_build_object(
+        'total_orders', coalesce(v_prev_total_orders, 0),
+        'total_revenue_cents', coalesce(v_prev_revenue_cents, 0),
+        'average_ticket_cents', coalesce(v_prev_average_ticket_cents, 0),
+        'cancelled_orders', coalesce(v_prev_cancelled_orders, 0),
+        'revenue_orders', coalesce(v_prev_revenue_orders, 0)
+      ),
+      'delta_orders_pct', round(coalesce(v_delta_orders_pct, 0), 2),
+      'delta_revenue_pct', round(coalesce(v_delta_revenue_pct, 0), 2)
+    ),
+    'series_daily', coalesce(v_series, '[]'::jsonb),
+    'distribution_by_type', coalesce(v_distribution, '[]'::jsonb),
+    'top_products', coalesce(v_top_products, '[]'::jsonb),
+    'ticket_by_type', coalesce(v_ticket_by_type, '[]'::jsonb)
+  );
+end;
+$$;
+
 create or replace function public.mark_orders_printed(
   p_session_id uuid,
   p_order_ids uuid[]
@@ -1848,6 +2956,14 @@ begin
     (select table_id from public.sessions where id = p_session_id),
     'KITCHEN_PRINT',
     jsonb_build_object('order_ids', p_order_ids, 'printed_count', v_count)
+  );
+
+  perform public.log_staff_action(
+    'KITCHEN_PRINT',
+    p_session_id,
+    (select table_id from public.sessions where id = p_session_id),
+    p_order_ids,
+    jsonb_build_object('printed_count', v_count)
   );
 
   return v_count;
@@ -1918,6 +3034,14 @@ begin
     p_session_id,
     v_table_id,
     'SESSION_FINALIZED',
+    jsonb_build_object('total_final', v_total, 'items_total_final', v_items)
+  );
+
+  perform public.log_staff_action(
+    'SESSION_PAID',
+    p_session_id,
+    v_table_id,
+    null,
     jsonb_build_object('total_final', v_total, 'items_total_final', v_items)
   );
 end;

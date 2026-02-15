@@ -45,6 +45,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
   const [formData, setFormData] = useState({
     logo_url: '',
     order_approval_mode: 'HOST' as 'HOST' | 'SELF',
+    has_thermal_printer: false,
     enable_counter_module: true,
     enable_waiter_fee: false,
     waiter_fee_mode: 'PERCENT' as WaiterFeeMode,
@@ -54,6 +55,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
     pix_key_value: '',
     notification_sound_enabled: false,
     notification_sound_url: '',
+    auto_print_menu_digital: false,
     sticker_bg_color: '#ffffff',
     sticker_text_color: '#111827',
     sticker_border_color: '#111111',
@@ -78,6 +80,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
       setFormData({
         logo_url: settings.logo_url || '',
         order_approval_mode: (settings.order_approval_mode || 'HOST') as 'HOST' | 'SELF',
+        has_thermal_printer: settings.has_thermal_printer === true,
         enable_counter_module: settings.enable_counter_module !== false,
         enable_waiter_fee: settings.enable_waiter_fee === true,
         waiter_fee_mode: waiterFeeMode,
@@ -87,6 +90,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
         pix_key_value: pixValueMasked,
         notification_sound_enabled: settings.notification_sound_enabled === true,
         notification_sound_url: settings.notification_sound_url || '',
+        auto_print_menu_digital: settings.auto_print_menu_digital === true,
         sticker_bg_color: settings.sticker_bg_color || '#ffffff',
         sticker_text_color: settings.sticker_text_color || '#111827',
         sticker_border_color: settings.sticker_border_color || '#111111',
@@ -151,9 +155,13 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
       formData.waiter_fee_mode === 'PERCENT'
         ? clampPercent(waiterFeePercentValue)
         : parseMaskedCurrencyToCents(waiterFeeFixedMasked);
+    const hasThermalPrinter = formData.has_thermal_printer === true;
+    const autoPrintEnabled = hasThermalPrinter && formData.auto_print_menu_digital === true;
     const payload = {
       id: 1,
       ...formData,
+      has_thermal_printer: hasThermalPrinter,
+      auto_print_menu_digital: autoPrintEnabled,
       pix_key_type: pixTypeToSave,
       pix_key_value: pixValueToSave,
       notification_sound_url: soundUrl,
@@ -421,6 +429,46 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
               <p className="text-[10px] text-gray-500 font-bold">
                 Salve para manter a chave Pix disponivel e copiar rapidamente.
               </p>
+            </div>
+
+            <div className="space-y-3 md:col-span-2 rounded-2xl border border-gray-100 p-4 bg-gray-50">
+              <p className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Impressao</p>
+              <label className="flex items-center justify-between gap-4 bg-white border border-gray-200 rounded-xl px-4 py-3 cursor-pointer">
+                <div>
+                  <p className="text-sm font-black text-gray-800">Tenho impressora termica</p>
+                  <p className="text-[10px] text-gray-500 font-bold">Habilita os botoes de impressao e a opcao de impressao automatica.</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={formData.has_thermal_printer}
+                  onChange={(e) =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      has_thermal_printer: e.target.checked,
+                      auto_print_menu_digital: e.target.checked ? prev.auto_print_menu_digital : false,
+                    }))
+                  }
+                  aria-label="Tenho impressora termica"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-4 bg-white border border-gray-200 rounded-xl px-4 py-3 cursor-pointer">
+                <div>
+                  <p className="text-sm font-black text-gray-800">Ativar impressao automatica (Menu Digital + Garcom)</p>
+                  <p className="text-[10px] text-gray-500 font-bold">Imprime automaticamente quando chegar pedido novo do cliente ou do garcom.</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={formData.auto_print_menu_digital}
+                  disabled={!formData.has_thermal_printer}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, auto_print_menu_digital: e.target.checked }))}
+                  aria-label="Ativar impressao automatica do menu digital e garcom"
+                />
+              </label>
+              {!formData.has_thermal_printer && (
+                <p className="text-[10px] text-amber-700 font-bold bg-amber-50 border border-amber-100 rounded-xl px-3 py-2">
+                  Impressao desativada. Marque "Tenho impressora termica" para liberar impressao manual e automatica.
+                </p>
+              )}
             </div>
 
             <div className="space-y-3 md:col-span-2 rounded-2xl border border-gray-100 p-4 bg-gray-50">

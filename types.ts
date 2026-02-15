@@ -25,10 +25,12 @@ export interface StoreSettings {
   logo_url: string;
   wifi_ssid: string;
   wifi_password: string;
+  has_thermal_printer?: boolean;
   pix_key_type?: PixKeyType | null;
   pix_key_value?: string | null;
   notification_sound_enabled?: boolean;
   notification_sound_url?: string;
+  auto_print_menu_digital?: boolean;
   sticker_bg_color: string;
   sticker_text_color: string;
   sticker_border_color: string;

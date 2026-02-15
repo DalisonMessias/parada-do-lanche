@@ -597,19 +597,70 @@ const waitForPrintWindowAssets = async (win: Window, timeoutMs = 3500) => {
   });
 };
 
+const printKitchenTicketWithIframe = async (html: string): Promise<KitchenPrintResult> => {
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.position = 'fixed';
+  iframe.style.right = '0';
+  iframe.style.bottom = '0';
+  iframe.style.width = '0';
+  iframe.style.height = '0';
+  iframe.style.border = '0';
+  iframe.style.opacity = '0';
+  iframe.style.pointerEvents = 'none';
+
+  document.body.appendChild(iframe);
+
+  const cleanup = () => {
+    try {
+      iframe.remove();
+    } catch {
+      // noop
+    }
+  };
+
+  const win = iframe.contentWindow;
+  if (!win) {
+    cleanup();
+    return { status: 'error', message: 'Nao foi possivel preparar a impressao automatica.' };
+  }
+
+  try {
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    await waitForPrintWindowAssets(win);
+    win.focus();
+    win.print();
+  } catch (error: any) {
+    cleanup();
+    const message = String(error?.message || error || '');
+    if (message.toLowerCase().includes('no longer runnable')) {
+      return { status: 'cancelled', message: 'Impressao cancelada.' };
+    }
+    return { status: 'error', message };
+  }
+
+  window.setTimeout(() => {
+    cleanup();
+  }, 15000);
+
+  return { status: 'printed' };
+};
+
 export const printKitchenTicket = async (payload: KitchenPrintPayload): Promise<KitchenPrintResult> => {
   const tickets = payload.tickets || [];
   if (tickets.length === 0) {
     return { status: 'error', message: 'Nao ha cupons para imprimir.' };
   }
 
-  const win = window.open('', '_blank', 'width=560,height=920');
-  if (!win) {
-    return { status: 'error', message: 'Nao foi possivel abrir a janela de impressao.' };
-  }
-
   const qrDataUrlByIndex = await buildQrDataUrlByIndex(tickets);
   const html = renderKitchenTicketDocument(payload, qrDataUrlByIndex);
+
+  const win = window.open('', '_blank', 'width=560,height=920');
+  if (!win) {
+    return printKitchenTicketWithIframe(html);
+  }
 
   win.document.open();
   win.document.write(html);

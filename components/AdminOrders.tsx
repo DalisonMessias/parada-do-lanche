@@ -3,9 +3,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase, formatCurrency } from '../services/supabase';
 import { buildReceiptUrlFromToken, printKitchenTicket } from '../services/kitchenPrint';
 import { groupOrderItems } from '../services/orderItemGrouping';
-import { Guest, Order, OrderItem, OrderStatus, Session, StoreSettings } from '../types';
+import { Guest, Order, OrderItem, OrderStatus, Profile, Session, StoreSettings } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
 import AppModal from './ui/AppModal';
+import CustomSelect, { CustomSelectOption } from './ui/CustomSelect';
 
 type AdminOrdersMode = 'ACTIVE' | 'FINISHED';
 
@@ -18,9 +19,27 @@ type SessionAggregate = Session & {
 interface AdminOrdersProps {
   mode: AdminOrdersMode;
   settings: StoreSettings | null;
+  profile: Profile | null;
 }
 
 type PrintScope = 'ALL' | 'UNPRINTED' | 'ORDER';
+const CANCELLABLE_STATUSES: OrderStatus[] = ['PENDING', 'PREPARING', 'READY'];
+type FinishedTypeFilter = 'ALL' | SessionCardType | 'CANCELLED';
+const FINISHED_TYPE_OPTIONS: CustomSelectOption[] = [
+  { value: 'ALL', label: 'Todos' },
+  { value: 'MESA', label: 'Mesa' },
+  { value: 'BALCAO', label: 'Balcao' },
+  { value: 'RETIRADA', label: 'Retirada' },
+  { value: 'ENTREGA', label: 'Entrega' },
+  { value: 'CANCELLED', label: 'Cancelados' },
+];
+const FINISHED_SUMMARY_ROWS: Array<{ type: FinishedTypeFilter; label: string }> = [
+  { type: 'MESA', label: 'Mesa' },
+  { type: 'BALCAO', label: 'Balcao' },
+  { type: 'RETIRADA', label: 'Retirada' },
+  { type: 'ENTREGA', label: 'Entrega' },
+  { type: 'CANCELLED', label: 'Cancelados' },
+];
 
 const getTodayInputDate = () => {
   const now = new Date();
@@ -139,16 +158,22 @@ const getDeliveryLines = (order: Order) => {
   return [firstLine, secondLine, thirdLine].filter((line) => !!line);
 };
 
-const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
+const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) => {
   const [sessions, setSessions] = useState<SessionAggregate[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [seenOrderIdsBySession, setSeenOrderIdsBySession] = useState<Record<string, string[]>>({});
   const [selectedDate, setSelectedDate] = useState<string>(getTodayInputDate());
+  const [selectedFinishedType, setSelectedFinishedType] = useState<FinishedTypeFilter>('ALL');
   const [splitMode, setSplitMode] = useState<'EQUAL' | 'CONSUMPTION'>('CONSUMPTION');
   const [splitPeople, setSplitPeople] = useState(2);
+  const [showBulkCancelModal, setShowBulkCancelModal] = useState(false);
+  const [bulkCancelLoading, setBulkCancelLoading] = useState(false);
   const initializedSeenRef = useRef(false);
+  const refreshTimerRef = useRef<number | null>(null);
 
   const { toast, confirm } = useFeedback();
+  const hasThermalPrinter = settings?.has_thermal_printer === true;
+  const canCancelOrders = profile?.role === 'ADMIN' || profile?.role === 'MANAGER';
   const waiterFeeEnabled = settings?.enable_waiter_fee === true;
   const waiterFeeMode = settings?.waiter_fee_mode === 'FIXED' ? 'FIXED' : 'PERCENT';
   const waiterFeeRawValue = Number(settings?.waiter_fee_value ?? (waiterFeeMode === 'PERCENT' ? 10 : 0));
@@ -172,7 +197,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
     });
   }, []);
 
-  const fetchSessions = async () => {
+  const fetchSessions = useCallback(async (options?: { silent?: boolean }) => {
     const statusFilter = mode === 'ACTIVE' ? 'OPEN' : 'EXPIRED';
 
     const { data, error } = await supabase
@@ -182,7 +207,9 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
       .order('created_at', { ascending: false });
 
     if (error) {
-      toast(`Erro ao buscar mesas: ${error.message}`, 'error');
+      if (!options?.silent) {
+        toast(`Erro ao buscar mesas: ${error.message}`, 'error');
+      }
       return;
     }
 
@@ -193,36 +220,47 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
       const baseline: Record<string, string[]> = {};
       normalized.forEach((session) => {
         baseline[session.id] = (session.orders || [])
-          .filter((order) => order.approval_status !== 'REJECTED')
+          .filter((order) => order.approval_status !== 'REJECTED' || order.status === 'CANCELLED')
           .map((order) => order.id);
       });
       setSeenOrderIdsBySession(baseline);
       initializedSeenRef.current = true;
     }
-  };
+  }, [mode, toast]);
+
+  const scheduleFetchSessions = useCallback((delayMs = 180, silent = true) => {
+    if (refreshTimerRef.current) {
+      window.clearTimeout(refreshTimerRef.current);
+    }
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      fetchSessions({ silent });
+    }, delayMs);
+  }, [fetchSessions]);
 
   useEffect(() => {
     initializedSeenRef.current = false;
     setSeenOrderIdsBySession({});
-    fetchSessions();
+    fetchSessions({ silent: false });
 
     const channel = supabase
       .channel(`admin_tables_${mode}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions' }, fetchSessions)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, fetchSessions)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, fetchSessions)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sessions' }, () => scheduleFetchSessions(120, true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => scheduleFetchSessions(120, true))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, () => scheduleFetchSessions(120, true))
       .subscribe();
 
+    // Fallback leve caso algum evento realtime seja perdido.
     const intervalId = window.setInterval(() => {
-      fetchSessions();
-    }, 5000);
+      fetchSessions({ silent: true });
+    }, 30000);
 
     const handleFocus = () => {
-      fetchSessions();
+      scheduleFetchSessions(0, true);
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        fetchSessions();
+        scheduleFetchSessions(0, true);
       }
     };
 
@@ -230,14 +268,31 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
+      if (refreshTimerRef.current) {
+        window.clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
       window.clearInterval(intervalId);
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       supabase.removeChannel(channel);
     };
-  }, [mode]);
+  }, [mode, fetchSessions, scheduleFetchSessions]);
 
-  const filteredSessions = useMemo(() => {
+  const getSessionCardType = useCallback((session: SessionAggregate): SessionCardType => {
+    const visibleOrders = [...(session.orders || [])]
+      .filter((order) => order.approval_status !== 'REJECTED' || order.status === 'CANCELLED')
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    const latestOrder = visibleOrders[0] || null;
+    const tableType = session.table?.table_type || 'DINING';
+
+    if (tableType === 'COUNTER') {
+      return latestOrder ? getTicketTypeFromOrder(latestOrder) : 'BALCAO';
+    }
+    return 'MESA';
+  }, []);
+
+  const sessionsByDate = useMemo(() => {
     if (!selectedDate) return sessions;
 
     const start = new Date(`${selectedDate}T00:00:00`);
@@ -250,12 +305,23 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
     });
   }, [sessions, selectedDate, mode]);
 
+  const filteredSessions = useMemo(() => {
+    if (mode !== 'FINISHED' || selectedFinishedType === 'ALL') return sessionsByDate;
+    if (selectedFinishedType === 'CANCELLED') {
+      return sessionsByDate.filter((session) => (session.orders || []).some((order) => order.status === 'CANCELLED'));
+    }
+    return sessionsByDate.filter((session) => getSessionCardType(session) === selectedFinishedType);
+  }, [sessionsByDate, mode, selectedFinishedType, getSessionCardType]);
+
   const selectedSession = useMemo(
     () => filteredSessions.find((session) => session.id === selectedSessionId) || null,
     [filteredSessions, selectedSessionId]
   );
+  const isOrderCancellable = (order: Order) => CANCELLABLE_STATUSES.includes(order.status);
   const getVisibleOrders = (session: SessionAggregate) => {
-    return (session.orders || []).filter((order) => order.approval_status !== 'REJECTED');
+    return (session.orders || []).filter(
+      (order) => order.approval_status !== 'REJECTED' || order.status === 'CANCELLED'
+    );
   };
 
   const getConfirmedOrdersFrom = (orders: (Order & { items?: OrderItem[] })[]) => {
@@ -290,6 +356,22 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
     return getVisibleOrders(session).filter((order) => !seen.has(order.id));
   };
 
+  const applyCancelledOrdersOptimistically = useCallback((orderIds: string[]) => {
+    const ids = new Set(orderIds.filter(Boolean));
+    if (ids.size === 0) return;
+
+    setSessions((prev) =>
+      prev.map((session) => ({
+        ...session,
+        orders: (session.orders || []).map((order) =>
+          ids.has(order.id) && isOrderCancellable(order)
+            ? { ...order, status: 'CANCELLED', approval_status: 'REJECTED' }
+            : order
+        ),
+      }))
+    );
+  }, []);
+
   const getTotalsByGuestFromOrders = (orders: (Order & { items?: OrderItem[] })[]) => {
     const map = new Map<string, { total: number; items: number }>();
 
@@ -311,6 +393,15 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
   const getTotalsByGuest = (session: SessionAggregate) => {
     return getTotalsByGuestFromOrders(getVisibleOrders(session));
   };
+
+  const selectedBulkCancelableOrderIds = useMemo(() => {
+    if (mode !== 'ACTIVE' || !selectedSession) return [] as string[];
+    const ids = new Set<string>();
+    getVisibleOrders(selectedSession).forEach((order) => {
+      if (isOrderCancellable(order)) ids.add(order.id);
+    });
+    return Array.from(ids);
+  }, [mode, selectedSession]);
 
   const handleApproveOrder = async (order: Order) => {
     const ok = await confirm(`Aprovar pedido ${order.id.slice(0, 6)} para entrar na mesa?`);
@@ -342,26 +433,95 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
     fetchSessions();
   };
 
-  const handleRejectOrder = async (order: Order) => {
-    const ok = await confirm(`Rejeitar pedido ${order.id.slice(0, 6)}?`);
-    if (!ok) return;
-
-    const { error } = await supabase
-      .from('orders')
-      .update({ approval_status: 'REJECTED', status: 'CANCELLED' })
-      .eq('id', order.id);
-
-    if (error) {
-      toast(`Erro ao rejeitar: ${error.message}`, 'error');
+  const handleCancelOrder = async (order: Order) => {
+    if (!canCancelOrders || !profile?.id) {
+      toast('Sem permissao para cancelar pedidos.', 'error');
+      return;
+    }
+    if (!isOrderCancellable(order)) {
+      toast('Pedido ja finalizado ou cancelado.', 'info');
       return;
     }
 
-    toast('Pedido rejeitado.', 'info');
+    const ok = await confirm(`Cancelar pedido ${order.id.slice(0, 6)}?`);
+    if (!ok) return;
+
+    const { data, error } = await supabase.rpc('cancel_order_as_staff', {
+      p_actor_profile_id: profile.id,
+      p_order_id: order.id,
+    });
+
+    if (error) {
+      toast(`Erro ao cancelar: ${error.message}`, 'error');
+      return;
+    }
+
+    const updated = Boolean((data as any)?.updated);
+    if (!updated) {
+      toast('Pedido ja estava finalizado/cancelado.', 'info');
+      fetchSessions();
+      return;
+    }
+
+    applyCancelledOrdersOptimistically([order.id]);
+    toast('Pedido cancelado.', 'success');
+    fetchSessions();
+  };
+
+  const handleBulkCancelClick = async () => {
+    if (!canCancelOrders || !profile?.id) {
+      toast('Sem permissao para cancelar pedidos.', 'error');
+      return;
+    }
+    if (mode !== 'ACTIVE' || !selectedSession) return;
+    if (selectedBulkCancelableOrderIds.length === 0) {
+      toast('Nao ha pedidos ativos nesta sessao para cancelar.', 'info');
+      return;
+    }
+
+    setShowBulkCancelModal(true);
+  };
+
+  const handleConfirmBulkCancel = async () => {
+    if (!canCancelOrders || !profile?.id || mode !== 'ACTIVE' || !selectedSession) return;
+    if (selectedBulkCancelableOrderIds.length === 0) {
+      toast('Nao ha pedidos ativos nesta sessao para cancelar.', 'info');
+      setShowBulkCancelModal(false);
+      return;
+    }
+
+    setBulkCancelLoading(true);
+    const { data, error } = await supabase.rpc('cancel_orders_bulk_as_staff', {
+      p_actor_profile_id: profile.id,
+      p_order_ids: selectedBulkCancelableOrderIds,
+    });
+    setBulkCancelLoading(false);
+
+    if (error) {
+      toast(`Erro ao cancelar em massa: ${error.message}`, 'error');
+      return;
+    }
+
+    const updatedOrderIds = Array.isArray((data as any)?.updated_order_ids)
+      ? ((data as any).updated_order_ids as string[])
+      : [];
+    const updatedCount = Number((data as any)?.updated_count || 0);
+    const skippedCount = Number((data as any)?.skipped_count || 0);
+
+    if (updatedOrderIds.length > 0) {
+      applyCancelledOrdersOptimistically(updatedOrderIds);
+    }
+
+    toast(
+      `Cancelamento em massa concluido. Atualizados: ${updatedCount}. Ignorados: ${skippedCount}.`,
+      updatedCount > 0 ? 'success' : 'info'
+    );
+    setShowBulkCancelModal(false);
     fetchSessions();
   };
 
   const handleFinalizeSession = async (session: SessionAggregate) => {
-    const ok = await confirm(`Finalizar ${session.table?.name || 'mesa'} e encerrar ciclo?`);
+    const ok = await confirm(`Marcar ${session.table?.name || 'mesa'} como paga e encerrar ciclo?`);
     if (!ok) return;
 
     const { error: finalizeError } = await supabase.rpc('finalize_session_with_history', {
@@ -384,12 +544,12 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
         sessionError = retry.error;
 
         if (!sessionError) {
-          toast('Mesa finalizada sem campo closed_at (atualize o SQL unificado no banco).', 'info');
+          toast('Pagamento concluido sem campo closed_at (atualize o SQL unificado no banco).', 'info');
         }
       }
 
       if (sessionError) {
-        toast(`Erro ao finalizar mesa: ${sessionError.message}`, 'error');
+        toast(`Erro ao confirmar pagamento: ${sessionError.message}`, 'error');
         return;
       }
 
@@ -408,7 +568,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
     }
 
     setSelectedSessionId(null);
-    toast('Mesa finalizada e liberada para novo ciclo.', 'success');
+    toast('Pagamento concluido. Mesa liberada para novo ciclo.', 'success');
     fetchSessions();
   };
 
@@ -416,6 +576,11 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
     session: SessionAggregate,
     options: { scope?: PrintScope; orderId?: string } = {}
   ) => {
+    if (!hasThermalPrinter) {
+      toast('Impressao desativada. Ative "Tenho impressora termica" em Configuracoes.', 'info');
+      return;
+    }
+
     const scope = options.scope || 'ALL';
     const visibleOrders = getVisibleOrders(session);
     const printableOrders =
@@ -552,13 +717,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
         (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
       const latestOrder = visibleOrders[0] || null;
-      const tableType = session.table?.table_type || 'DINING';
-      const cardType: SessionCardType =
-        tableType === 'COUNTER'
-          ? latestOrder
-            ? getTicketTypeFromOrder(latestOrder)
-            : 'BALCAO'
-          : 'MESA';
+      const cardType = getSessionCardType(session);
       const cardTypeLabel =
         cardType === 'ENTREGA'
           ? 'Entrega'
@@ -573,6 +732,15 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
       const pendingApprovals = getPendingApprovals(session).length;
       const newOrdersCount = getNewOrders(session).length;
       const unprintedCount = getUnprintedOrders(session).length;
+      const hasCancelledOrder = visibleOrders.some((order) => order.status === 'CANCELLED');
+      const cardStatusLabel =
+        mode === 'ACTIVE' ? 'Ativa' : hasCancelledOrder ? 'Cancelada' : 'Finalizada';
+      const cardStatusClass =
+        mode === 'ACTIVE'
+          ? 'bg-green-50 text-green-600 border-green-100'
+          : hasCancelledOrder
+            ? 'bg-red-50 text-red-600 border-red-100'
+            : 'bg-gray-100 text-gray-500 border-gray-200';
       const shortAddress =
         cardType === 'ENTREGA' && latestOrder?.delivery_address
           ? [latestOrder.delivery_address.street, latestOrder.delivery_address.number, latestOrder.delivery_address.neighborhood]
@@ -595,8 +763,8 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
               <span className="px-3 py-1.5 rounded-full text-[8px] font-black tracking-widest border uppercase bg-slate-50 text-slate-700 border-slate-200">
                 {cardTypeLabel}
               </span>
-              <span className={`px-3 py-1.5 rounded-full text-[8px] font-black tracking-widest border uppercase ${mode === 'ACTIVE' ? 'bg-green-50 text-green-600 border-green-100' : 'bg-gray-100 text-gray-500 border-gray-200'}`}>
-                {mode === 'ACTIVE' ? 'Ativa' : 'Finalizada'}
+              <span className={`px-3 py-1.5 rounded-full text-[8px] font-black tracking-widest border uppercase ${cardStatusClass}`}>
+                {cardStatusLabel}
               </span>
               {mode === 'ACTIVE' && newOrdersCount > 0 && (
                 <span className="px-2 py-1 rounded-full bg-red-600 text-white text-[8px] font-black uppercase tracking-widest">
@@ -610,7 +778,9 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
                 <p className="text-[8px] font-black uppercase tracking-widest text-gray-400">Status</p>
-                <p className="text-sm font-black text-gray-800 uppercase">{mode === 'ACTIVE' ? 'Ativa' : 'Finalizada'}</p>
+                <p className={`text-sm font-black uppercase ${hasCancelledOrder && mode !== 'ACTIVE' ? 'text-red-600' : 'text-gray-800'}`}>
+                  {cardStatusLabel}
+                </p>
               </div>
               <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
                 <p className="text-[8px] font-black uppercase tracking-widest text-gray-400">Horario</p>
@@ -644,19 +814,21 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
             >
               Visualizar
             </button>
-            <button
-              onClick={() => printSession(session, { scope: 'UNPRINTED' })}
-              disabled={unprintedCount === 0}
-              className="flex-1 border border-gray-200 text-gray-600 py-3.5 rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Imprimir Novos
-            </button>
+            {mode === 'ACTIVE' && (
+              <button
+                onClick={() => printSession(session, { scope: 'UNPRINTED' })}
+                disabled={!hasThermalPrinter || unprintedCount === 0}
+                className="flex-1 border border-gray-200 text-gray-600 py-3.5 rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Imprimir Novos
+              </button>
+            )}
             {mode === 'ACTIVE' && (
               <button
                 onClick={() => handleFinalizeSession(session)}
                 className="flex-1 border border-green-200 bg-green-50 text-green-700 py-3.5 rounded-xl text-[9px] font-black uppercase tracking-widest"
               >
-                Finalizar Mesa
+                Marcar Pago
               </button>
             )}
           </div>
@@ -678,6 +850,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
     [selectedVisibleOrders]
   );
   const selectedUnprintedCount = selectedSession ? getUnprintedOrders(selectedSession).length : 0;
+  const selectedSessionLabel = selectedSession?.table?.name || 'Mesa';
 
   useEffect(() => {
     if (!selectedSession) return;
@@ -691,6 +864,25 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
     if (mode !== 'FINISHED') return 0;
     return filteredSessions.reduce((acc, session) => acc + getSessionTotal(session), 0);
   }, [mode, filteredSessions]);
+  const finishedSummaryByType = useMemo(() => {
+    if (mode !== 'FINISHED') return [] as Array<{ type: FinishedTypeFilter; label: string; count: number; total: number }>;
+
+    return FINISHED_SUMMARY_ROWS.map((row) => {
+      const scopedSessions = sessionsByDate.filter((session) => {
+        if (row.type === 'CANCELLED') {
+          return (session.orders || []).some((order) => order.status === 'CANCELLED');
+        }
+        return getSessionCardType(session) === row.type;
+      });
+
+      return {
+        type: row.type,
+        label: row.label,
+        count: scopedSessions.length,
+        total: scopedSessions.reduce((acc, session) => acc + getSessionTotal(session), 0),
+      };
+    });
+  }, [mode, sessionsByDate, getSessionCardType]);
 
   const equalSplitValue = splitPeople > 0 ? selectedTotal / splitPeople : 0;
 
@@ -712,12 +904,61 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
         >
           Hoje
         </button>
+        {mode === 'FINISHED' && (
+          <>
+          <div className="space-y-1">
+            <label className="text-[9px] mr-4 font-black uppercase tracking-widest text-gray-400">Filtrar por tipo</label>
+            <CustomSelect
+              value={selectedFinishedType}
+              onChange={(value) => setSelectedFinishedType((value as FinishedTypeFilter) || 'ALL')}
+              options={FINISHED_TYPE_OPTIONS}
+              buttonClassName="px-3 py-2 text-sm"
+            />
+          </div>
+
+          <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 w-fit ml-auto text-right">
+            <p className="text-2xl font-black tracking-tighter text-emerald-800 italic">{formatCurrency(finishedRevenueTotal)}</p>
+            <p className="text-[8px] font-black uppercase tracking-widest text-emerald-700 mt-1">Ganhos</p>
+          </div>
+          </>
+        )}
       </div>
 
       {mode === 'FINISHED' && (
-        <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 mb-6">
-          <p className="text-[9px] font-black uppercase tracking-widest text-emerald-700">Soma total de ganhos das mesas</p>
-          <p className="text-3xl font-black tracking-tighter text-emerald-800 mt-2 italic">{formatCurrency(finishedRevenueTotal)}</p>
+        <>
+          
+          <div className="bg-white border border-gray-200 rounded-2xl p-4 mb-6">
+            <p className="text-[9px] font-black uppercase tracking-widest text-gray-500">Resumo por tipo (data selecionada)</p>
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+              {finishedSummaryByType.map((row) => (
+                <div
+                  key={`finished-summary-${row.type}`}
+                  className={`rounded-xl border px-3 py-3 ${
+                    row.type === 'CANCELLED'
+                      ? 'border-red-100 bg-red-50/40'
+                      : 'border-gray-100 bg-gray-50/60'
+                  }`}
+                >
+                  <p
+                    className={`text-[9px] font-black uppercase tracking-widest ${
+                      row.type === 'CANCELLED' ? 'text-red-600' : 'text-gray-500'
+                    }`}
+                  >
+                    {row.label}
+                  </p>
+                  <p className="text-sm font-black text-gray-800 mt-2">{row.count} pedido(s)</p>
+                  <p className="text-lg font-black tracking-tighter text-gray-900 mt-1 italic">{formatCurrency(row.total)}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {!hasThermalPrinter && (
+        <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 mb-6">
+          <p className="text-[9px] font-black uppercase tracking-widest text-amber-700">Impressao desativada</p>
+          <p className="text-sm font-bold text-amber-700 mt-2">Ative "Tenho impressora termica" em Configuracoes para liberar os botoes de imprimir.</p>
         </div>
       )}
 
@@ -744,23 +985,33 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
             <div className="flex flex-wrap justify-end gap-2">
               <button
                 onClick={() => printSession(selectedSession, { scope: 'UNPRINTED' })}
-                disabled={selectedUnprintedCount === 0}
+                disabled={!hasThermalPrinter || selectedUnprintedCount === 0}
                 className="px-4 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Imprimir Novos
               </button>
               <button
                 onClick={() => printSession(selectedSession, { scope: 'ALL' })}
-                className="px-4 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest"
+                disabled={!hasThermalPrinter}
+                className="px-4 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Imprimir Todos
               </button>
+              {mode === 'ACTIVE' && canCancelOrders && (
+                <button
+                  onClick={handleBulkCancelClick}
+                  disabled={selectedBulkCancelableOrderIds.length === 0}
+                  className="px-4 py-3 rounded-xl border border-red-200 bg-red-50 text-red-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Cancelar Todos os Pedidos
+                </button>
+              )}
               {mode === 'ACTIVE' && (
                 <button
                   onClick={() => handleFinalizeSession(selectedSession)}
                   className="px-4 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest"
                 >
-                  Finalizar Mesa
+                  Marcar Pago
                 </button>
               )}
             </div>
@@ -782,9 +1033,11 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
                       <button onClick={() => handleApproveOrder(order)} className="px-3 py-2 rounded-lg bg-green-600 text-white text-[10px] font-black uppercase tracking-widest">
                         Aceitar
                       </button>
-                      <button onClick={() => handleRejectOrder(order)} className="px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-red-600 text-[10px] font-black uppercase tracking-widest">
-                        Rejeitar
-                      </button>
+                      {canCancelOrders && (
+                        <button onClick={() => handleCancelOrder(order)} className="px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-red-600 text-[10px] font-black uppercase tracking-widest">
+                          Cancelar Pedido
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -805,14 +1058,22 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
                       </p>
                       <button
                         onClick={() => selectedSession && printSession(selectedSession, { scope: 'ORDER', orderId: group.rootOrder.id })}
-                        className="px-2 py-0.5 rounded-full border border-gray-200 text-[9px] font-black uppercase tracking-widest text-gray-600"
+                        disabled={!hasThermalPrinter}
+                        className="px-2 py-0.5 rounded-full border border-gray-200 text-[9px] font-black uppercase tracking-widest text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         Imprimir
                       </button>
                     </div>
 
                     {group.orders.map((order) => (
-                      <div key={order.id} className="border border-gray-100 rounded-lg p-2.5 space-y-2">
+                      <div
+                        key={order.id}
+                        className={`border rounded-lg p-2.5 space-y-2 ${
+                          order.status === 'CANCELLED'
+                            ? 'border-red-200 bg-red-50/40'
+                            : 'border-gray-100'
+                        }`}
+                      >
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <p className="text-[11px] font-black text-gray-700">
                             Pedido:  #{order.id.slice(0, 6)} | {new Date(order.created_at).toLocaleTimeString()}
@@ -831,10 +1092,20 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
                             </span>
                             <button
                               onClick={() => selectedSession && printSession(selectedSession, { scope: 'ORDER', orderId: order.id })}
-                              className="px-2 py-0.5 rounded-full border border-gray-200 text-[9px] font-black uppercase tracking-widest text-gray-600"
+                              disabled={!hasThermalPrinter}
+                              className="px-2 py-0.5 rounded-full border border-gray-200 text-[9px] font-black uppercase tracking-widest text-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
                             >
                               Imprimir
                             </button>
+                            {canCancelOrders && mode === 'ACTIVE' && (
+                              <button
+                                onClick={() => handleCancelOrder(order)}
+                                disabled={!isOrderCancellable(order)}
+                                className="px-2 py-0.5 rounded-full border border-red-200 bg-red-50 text-[9px] font-black uppercase tracking-widest text-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                              >
+                                {order.status === 'CANCELLED' ? 'Cancelado' : 'Cancelar Pedido'}
+                              </button>
+                            )}
                           </div>
                         </div>
                         {(order.service_type === 'RETIRADA' || order.service_type === 'ENTREGA') && (
@@ -980,6 +1251,54 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings }) => {
                 )}
               </div>
             </div>
+        </AppModal>
+      )}
+
+      {showBulkCancelModal && (
+        <AppModal
+          open={showBulkCancelModal}
+          onClose={() => {
+            if (bulkCancelLoading) return;
+            setShowBulkCancelModal(false);
+          }}
+          size="sm"
+          zIndex={230}
+          title={
+            <div>
+              <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">Confirmacao Final</h3>
+              <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest mt-2">
+                Esta acao ira cancelar {selectedBulkCancelableOrderIds.length} pedido(s) ativo(s) da sessao {selectedSessionLabel}.
+              </p>
+            </div>
+          }
+          footer={
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (bulkCancelLoading) return;
+                  setShowBulkCancelModal(false);
+                }}
+                className="px-4 py-2.5 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest"
+              >
+                Voltar
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmBulkCancel}
+                disabled={bulkCancelLoading}
+                className="px-4 py-2.5 rounded-xl border border-red-200 bg-red-50 text-red-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {bulkCancelLoading ? 'Cancelando...' : 'Sim, cancelar todos'}
+              </button>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            <p className="text-sm font-bold text-gray-700">
+              Tem certeza que deseja cancelar todos os pedidos ativos desta sessao?
+            </p>
+          </div>
         </AppModal>
       )}
     </>
