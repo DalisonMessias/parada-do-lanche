@@ -26,6 +26,26 @@ type PlanTodoItem = {
   days_to_due: number | null;
 };
 
+type PlanPaymentRequestItem = {
+  id: string;
+  plan_name: string;
+  plan_description: string | null;
+  plan_value: number | null;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
+  requester_note: string | null;
+  requester_contact: string | null;
+  created_at: string;
+  processed_at: string | null;
+  processed_by: string | null;
+  process_note: string | null;
+};
+
+type PlanPaymentRequestsResponse = {
+  success: boolean;
+  message: string;
+  requests?: PlanPaymentRequestItem[];
+};
+
 type PlanPaymentHistoryItem = {
   id: string;
   confirmed_at: string;
@@ -178,6 +198,10 @@ const PublicPlanPayment: React.FC = () => {
   const [loginError, setLoginError] = useState('');
   const [refreshMessage, setRefreshMessage] = useState('');
   const [dashboard, setDashboard] = useState<PlanDashboardResponse | null>(null);
+  const [paymentRequests, setPaymentRequests] = useState<PlanPaymentRequestItem[]>([]);
+  const [requestsLoading, setRequestsLoading] = useState(false);
+  const [requestsMessage, setRequestsMessage] = useState('');
+  const [approvingRequestId, setApprovingRequestId] = useState('');
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [paymentMessage, setPaymentMessage] = useState('');
   const [paymentNote, setPaymentNote] = useState('');
@@ -205,6 +229,7 @@ const PublicPlanPayment: React.FC = () => {
   const pendingItems = dashboard?.pending_items || [];
   const dueSoonItems = dashboard?.due_soon_items || [];
   const historyItems = dashboard?.history || [];
+  const hasAnyPending = pendingItems.length > 0 || paymentRequests.length > 0;
 
   useEffect(() => {
     if (!snapshot) return;
@@ -272,6 +297,7 @@ const PublicPlanPayment: React.FC = () => {
         .find((value) => value.length > 0) || '';
     if (!resolvedUsername || !resolvedPassword) {
       setLoginError('Sessao sem credenciais. Faca login novamente.');
+      setPaymentRequests([]);
       return false;
     }
 
@@ -288,20 +314,24 @@ const PublicPlanPayment: React.FC = () => {
 
       if (error) {
         setLoginError(error.message || 'Falha ao carregar painel de pagamento.');
+        setPaymentRequests([]);
         return false;
       }
 
       const response = (data || {}) as PlanDashboardResponse;
       if (!response.success) {
         setLoginError(response.message || 'Usuario ou senha invalidos.');
+        setPaymentRequests([]);
         return false;
       }
 
       setDashboard(response);
       setSessionCredentials({ username: resolvedUsername, password: resolvedPassword });
+      await loadPaymentRequests(resolvedUsername, resolvedPassword);
       return true;
     } catch (err: any) {
       setLoginError(err?.message || 'Falha ao carregar painel de pagamento.');
+      setPaymentRequests([]);
       return false;
     } finally {
       setLoginLoading(false);
@@ -318,6 +348,103 @@ const PublicPlanPayment: React.FC = () => {
   const handleRefresh = async () => {
     const updated = await loadDashboard();
     setRefreshMessage(updated ? 'Atualizado agora.' : 'Falha ao atualizar.');
+  };
+
+  const loadPaymentRequests = async (nextUsername?: string, nextPassword?: string): Promise<boolean> => {
+    const resolvedUsername =
+      [nextUsername, username, sessionCredentials?.username]
+        .map((value) => (value || '').trim())
+        .find((value) => value.length > 0) || '';
+    const resolvedPassword =
+      [nextPassword, password, sessionCredentials?.password]
+        .map((value) => (value || '').trim())
+        .find((value) => value.length > 0) || '';
+
+    if (!resolvedUsername || !resolvedPassword) {
+      setRequestsMessage('Sessao sem credenciais. Faca login novamente.');
+      setPaymentRequests([]);
+      return false;
+    }
+
+    setRequestsLoading(true);
+    setRequestsMessage('');
+    try {
+      const { data, error } = await supabase.rpc('list_plan_payment_requests', {
+        p_username: resolvedUsername,
+        p_password: resolvedPassword,
+        p_status: 'PENDING',
+        p_limit: 25,
+      });
+
+      if (error) {
+        setRequestsMessage(error.message || 'Falha ao carregar solicitacoes pendentes.');
+        setPaymentRequests([]);
+        return false;
+      }
+
+      const response = (data || {}) as PlanPaymentRequestsResponse;
+      if (!response.success) {
+        setRequestsMessage(response.message || 'Falha ao carregar solicitacoes pendentes.');
+        setPaymentRequests([]);
+        return false;
+      }
+
+      setPaymentRequests((response.requests || []) as PlanPaymentRequestItem[]);
+      return true;
+    } catch (err: any) {
+      setRequestsMessage(err?.message || 'Falha ao carregar solicitacoes pendentes.');
+      setPaymentRequests([]);
+      return false;
+    } finally {
+      setRequestsLoading(false);
+    }
+  };
+
+  const handleApprovePaymentRequest = async (requestId: string) => {
+    const resolvedUsername =
+      [username, sessionCredentials?.username]
+        .map((value) => (value || '').trim())
+        .find((value) => value.length > 0) || '';
+    const resolvedPassword =
+      [password, sessionCredentials?.password]
+        .map((value) => (value || '').trim())
+        .find((value) => value.length > 0) || '';
+
+    if (!resolvedUsername || !resolvedPassword) {
+      setRequestsMessage('Sessao sem credenciais. Faca login novamente.');
+      return;
+    }
+
+    if (!requestId) return;
+
+    setApprovingRequestId(requestId);
+    setRequestsMessage('');
+    try {
+      const { data, error } = await supabase.rpc('approve_plan_payment_request', {
+        p_username: resolvedUsername,
+        p_password: resolvedPassword,
+        p_request_id: requestId,
+        p_note: 'Aprovado no painel /uaitech',
+      });
+
+      if (error) {
+        setRequestsMessage(error.message || 'Falha ao aprovar solicitacao.');
+        return;
+      }
+
+      const response = (data || {}) as { success?: boolean; message?: string };
+      if (!response.success) {
+        setRequestsMessage(response.message || 'Nao foi possivel aprovar solicitacao.');
+        return;
+      }
+
+      setRequestsMessage(response.message || 'Solicitacao aprovada e plano marcado como pago.');
+      await loadDashboard(resolvedUsername, resolvedPassword);
+    } catch (err: any) {
+      setRequestsMessage(err?.message || 'Falha ao aprovar solicitacao.');
+    } finally {
+      setApprovingRequestId('');
+    }
   };
 
   const handleConfirmPayment = async () => {
@@ -560,6 +687,14 @@ const PublicPlanPayment: React.FC = () => {
           <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
+              onClick={() => window.history.pushState({}, '', '/uaitech/config-pix')}
+              className="px-5 rounded-xl bg-cyan-700 text-white font-black text-xs uppercase tracking-[0.14em] inline-flex items-center gap-2 h-12 hover:bg-cyan-800"
+            >
+              <CreditCard className="w-4 h-4" />
+              Configurar Pix
+            </button>
+            <button
+              type="button"
               onClick={handleRefresh}
               disabled={loginLoading}
               className="px-5 rounded-xl bg-cyan-700 text-white font-black text-xs uppercase tracking-[0.14em] inline-flex items-center gap-2 h-12 hover:bg-cyan-800 disabled:bg-slate-300 disabled:cursor-not-allowed"
@@ -571,9 +706,11 @@ const PublicPlanPayment: React.FC = () => {
               type="button"
               onClick={() => {
                 setDashboard(null);
+                setPaymentRequests([]);
                 setLoginError('');
                 setRefreshMessage('');
                 setPaymentMessage('');
+                setRequestsMessage('');
                 setPassword('');
                 setSessionCredentials(null);
               }}
@@ -671,13 +808,49 @@ const PublicPlanPayment: React.FC = () => {
           <div className="space-y-4">
             <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5">
               <h2 className="text-sm font-black uppercase tracking-[0.16em] text-slate-800 mb-3">Pendencias</h2>
-              {pendingItems.length === 0 ? (
+              {!hasAnyPending && !requestsLoading ? (
                 <p className="text-sm font-bold text-green-600 inline-flex items-center gap-2">
                   <CheckCircle className="w-4 h-4" />
                   Nenhuma pendencia no momento.
                 </p>
               ) : (
                 <div className="space-y-2">
+                  {requestsLoading && (
+                    <div className="rounded-xl border border-cyan-100 bg-cyan-50 p-3 text-xs font-bold text-cyan-700">
+                      Carregando solicitacoes...
+                    </div>
+                  )}
+
+                  {paymentRequests.map((request) => (
+                    <div key={request.id} className="rounded-xl border border-cyan-100 bg-cyan-50 p-3 space-y-2">
+                      <p className="text-sm font-black text-cyan-800">Comprovante enviado pelo checkout</p>
+                      <p className="text-xs font-bold text-cyan-700">
+                        Em: {formatDateTime(request.created_at)}
+                      </p>
+                      <p className="text-xs font-bold text-cyan-700">
+                        Plano: {request.plan_name || '-'}
+                      </p>
+                      <p className="text-xs font-bold text-cyan-700">
+                        Valor: {request.plan_value == null ? '-' : formatCurrency(Number(request.plan_value))}
+                      </p>
+                      {request.plan_description && (
+                        <p className="text-xs font-semibold text-cyan-700">
+                          {request.plan_description}
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleApprovePaymentRequest(request.id)}
+                        disabled={approvingRequestId === request.id}
+                        className="w-full h-11 rounded-xl bg-cyan-700 text-white text-[11px] font-black uppercase tracking-[0.14em] disabled:bg-slate-300 disabled:cursor-not-allowed hover:bg-cyan-800"
+                      >
+                        {approvingRequestId === request.id
+                          ? 'Liberando...'
+                          : 'Liberar acesso e marcar como pago'}
+                      </button>
+                    </div>
+                  ))}
+
                   {pendingItems.map((item, index) => (
                     <div key={`${item.title}-${index}`} className="rounded-xl border border-red-100 bg-red-50 p-3">
                       <p className="text-sm font-black text-red-700">{item.title}</p>
@@ -685,6 +858,11 @@ const PublicPlanPayment: React.FC = () => {
                       <p className="text-xs font-bold text-red-600">Valor: {formatCurrency(Number(item.amount || 0))}</p>
                     </div>
                   ))}
+                </div>
+              )}
+              {requestsMessage && (
+                <div className="mt-3 rounded-xl border border-cyan-100 bg-cyan-50 p-3 text-xs font-bold text-cyan-700">
+                  {requestsMessage}
                 </div>
               )}
             </div>

@@ -151,12 +151,27 @@ const PublicPixCheckout: React.FC = () => {
   const [payloadError, setPayloadError] = useState('');
   const [copying, setCopying] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [showMobileQr, setShowMobileQr] = useState(false);
+  const [requestLoading, setRequestLoading] = useState(false);
+  const [requestMessage, setRequestMessage] = useState('');
+  const [requestSuccess, setRequestSuccess] = useState(false);
 
   const planSelection = useMemo(() => parsePlanSelectionFromUrl(), []);
   const redirectToUaitech = useMemo(() => {
     const currentPath = `${window.location.pathname || ''}${window.location.search || ''}`;
     return `/uaitech?redirect=${encodeURIComponent(currentPath)}`;
   }, []);
+  const uaitechWhatsappUrl = useMemo(() => {
+    const uaitechPhone = '553598393707';
+    const message = [
+      'Ola, acabei de realizar o pagamento do plano.',
+      `Plano: ${planSelection.nome}`,
+      `Descricao: ${planSelection.descricao}`,
+      `Valor: ${formatCurrency(planSelection.valor)}`,
+      'Vou enviar o comprovante por aqui para liberar o pagamento.',
+    ].join('\n');
+    return `https://wa.me/${uaitechPhone}?text=${encodeURIComponent(message)}`;
+  }, [planSelection.descricao, planSelection.nome, planSelection.valor]);
 
   useEffect(() => {
     const fetchSettings = async () => {
@@ -260,6 +275,41 @@ const PublicPixCheckout: React.FC = () => {
     }
   };
 
+  const handleConfirmPayment = async () => {
+    if (!payload || requestLoading) return;
+
+    setRequestLoading(true);
+    setRequestMessage('');
+    setRequestSuccess(false);
+    try {
+      const { data, error } = await supabase.rpc('submit_plan_payment_request', {
+        p_plan_name: planSelection.nome,
+        p_plan_description: planSelection.descricao,
+        p_plan_value: planSelection.valor,
+        p_pix_payload: payload,
+        p_requester_note: 'Pagamento enviado no checkout /checkout/plano',
+      });
+
+      if (error) {
+        setRequestMessage(error.message || 'Falha ao registrar a solicitacao.');
+        return;
+      }
+
+      const response = (data || {}) as { success?: boolean; message?: string };
+      if (!response.success) {
+        setRequestMessage(response.message || 'Nao foi possivel registrar a solicitacao.');
+        return;
+      }
+
+      setRequestSuccess(true);
+      setRequestMessage(response.message || 'Pagamento enviado para analise no /uaitech.');
+    } catch (err: any) {
+      setRequestMessage(err?.message || 'Falha ao registrar a solicitacao.');
+    } finally {
+      setRequestLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-100 px-4 py-8 sm:px-6 sm:py-10">
       <div className="max-w-4xl mx-auto space-y-6">
@@ -348,7 +398,9 @@ const PublicPixCheckout: React.FC = () => {
 
           {!loading && !loadError && missingFields.length === 0 && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 flex flex-col items-center gap-4">
+              <div
+                className={`${showMobileQr ? 'flex' : 'hidden'} lg:flex rounded-2xl border border-slate-200 bg-slate-50 p-4 flex-col items-center gap-4`}
+              >
                 <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">QR Code Pix</p>
                 {payload ? (
                   <canvas ref={canvasRef} className="w-full max-w-[320px] h-auto rounded-lg bg-white border border-slate-200 p-2" />
@@ -363,6 +415,14 @@ const PublicPixCheckout: React.FC = () => {
               </div>
 
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-4">
+                <button
+                  type="button"
+                  onClick={() => setShowMobileQr((prev) => !prev)}
+                  className="lg:hidden h-11 px-4 w-full rounded-xl border border-cyan-200 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 text-[11px] font-black uppercase tracking-[0.14em]"
+                >
+                  {showMobileQr ? 'Ocultar QR Code' : 'Mostrar QR Code'}
+                </button>
+
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">Copia e cola</p>
@@ -387,11 +447,41 @@ const PublicPixCheckout: React.FC = () => {
                   type="button"
                   onClick={handleCopyPayload}
                   disabled={!payload || copying}
-                  className="h-12 px-5 rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-black uppercase tracking-[0.14em] disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
+                  className="h-12 px-5 w-full rounded-xl bg-cyan-700 hover:bg-cyan-800 text-white text-xs font-black uppercase tracking-[0.14em] disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
                 >
                   {copying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Copy className="w-4 h-4" />}
                   {copying ? 'Copiando...' : 'Copiar payload'}
                 </button>
+
+                <a
+                  href={uaitechWhatsappUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="h-12 w-full px-5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black uppercase tracking-[0.14em] inline-flex items-center justify-center"
+                >
+                  Enviar compronate
+                </a>
+
+                <button
+                  type="button"
+                  onClick={handleConfirmPayment}
+                  disabled={!payload || requestLoading}
+                  className="h-12 px-5 w-full rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-xs font-black uppercase tracking-[0.14em] disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center"
+                >
+                  {requestLoading ? 'Enviando...' : 'Confirmar pagamento'}
+                </button>
+
+                {requestMessage && (
+                  <div
+                    className={`rounded-xl border px-3 py-2 text-xs font-semibold ${
+                      requestSuccess
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        : 'border-red-200 bg-red-50 text-red-700'
+                    }`}
+                  >
+                    {requestMessage}
+                  </div>
+                )}
 
                 {payloadError && (
                   <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">

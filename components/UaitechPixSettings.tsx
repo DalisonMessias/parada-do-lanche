@@ -23,7 +23,7 @@ const DEFAULT_FORM: PixCredentialsForm = {
 
 const sanitizeRedirectPath = (value: string) => {
   const normalized = (value || '').trim();
-  if (!normalized.startsWith('/')) return '/checkout/pix';
+  if (!normalized.startsWith('/')) return '/checkout/plano';
   return normalized;
 };
 
@@ -206,15 +206,35 @@ const UaitechPixSettings: React.FC = () => {
               />
             </label>
 
-            <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 h-12 mt-7">
-              <input
-                type="checkbox"
-                checked={form.reutilizavel}
-                onChange={(e) => setForm((prev) => ({ ...prev, reutilizavel: e.target.checked }))}
-                className="w-4 h-4 accent-cyan-700"
-              />
-              <span className="text-xs font-black uppercase tracking-[0.18em] text-slate-600">Cobrança reutilizavel</span>
-            </label>
+            <div className="sm:col-span-2 mt-2">
+              <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-600">Cobranca reutilizavel</p>
+                  <p className="text-[11px] font-semibold text-slate-500 mt-1">
+                    {form.reutilizavel ? 'Ativado' : 'Desativado'}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={form.reutilizavel}
+                  aria-label="Alternar cobranca reutilizavel"
+                  onClick={() => setForm((prev) => ({ ...prev, reutilizavel: !prev.reutilizavel }))}
+                  className={`relative inline-flex w-12 shrink-0 rounded-full border p-1 transition-colors ${
+                    form.reutilizavel
+                      ? 'bg-cyan-600 border-cyan-600'
+                      : 'bg-slate-300 border-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`pointer-events-none inline-block w-5 aspect-square rounded-full bg-white shadow-sm transform transition-transform ${
+                      form.reutilizavel ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
           </div>
 
           {error && (
@@ -241,7 +261,7 @@ const UaitechPixSettings: React.FC = () => {
 
             <button
               type="button"
-              onClick={() => window.history.pushState({}, '', redirectPath)}
+              onClick={() => window.open(redirectPath, '_blank', 'noopener,noreferrer')}
               className="inline-flex items-center justify-center gap-2 h-12 px-6 rounded-xl border border-cyan-200 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 text-xs font-black uppercase tracking-[0.16em]"
             >
               <CreditCard className="w-4 h-4" />

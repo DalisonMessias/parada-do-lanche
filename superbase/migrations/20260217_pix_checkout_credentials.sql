@@ -1,4 +1,4 @@
--- Credenciais de checkout Pix interno (/uaitech e /checkout/pix)
+-- Credenciais de checkout Pix interno (/uaitech e /checkout/plano)
 
 alter table public.settings
   add column if not exists pix_checkout_chave text,

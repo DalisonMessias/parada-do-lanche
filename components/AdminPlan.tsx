@@ -39,7 +39,7 @@ const AdminPlan: React.FC = () => {
         descricao: String(planDescription || '').trim() || 'Assinatura mensal do sistema',
         valor: String(Number(planPrice || 0)),
     }).toString();
-    const pixCheckoutPath = `/checkout/pix?${pixCheckoutQuery}`;
+    const pixCheckoutPath = `/checkout/plano?${pixCheckoutQuery}`;
 
     // Calculate generic due date if missing
     const now = new Date();

@@ -125,7 +125,8 @@ const App: React.FC = () => {
   const tempRegisterEnabled = ((import.meta as any).env?.VITE_ENABLE_TEMP_REGISTER || '').trim().toLowerCase() === 'true';
   const adminPath = adminAccessKey ? `/admin/${adminAccessKey}` : '/admin';
   const uaitechRoute = '/uaitech';
-  const pixCheckoutRoute = '/checkout/pix';
+  const uaitechPixSettingsRoute = '/uaitech/config-pix';
+  const pixCheckoutRoute = '/checkout/plano';
   const legacyPlanPaymentRoute = '/V7B2X-QP9MW-L4N1R-Z6K0J-H3S5D';
   const [view, setView] = useState<AppView>('LANDING');
   const [publicReceiptToken, setPublicReceiptToken] = useState('');
@@ -169,6 +170,7 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [adminEmail, setAdminEmail] = useState('');
   const [user, setUser] = useState<any>(null);
+  const [authReady, setAuthReady] = useState(false);
   const swRegistrationRef = useRef<ServiceWorkerRegistration | null>(null);
   const lastNotificationRef = useRef<string>('');
   const adminKnownOrderIdsRef = useRef<Set<string>>(new Set());
@@ -184,11 +186,13 @@ const App: React.FC = () => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
       if (session?.user) fetchProfile(session.user.id);
+      setAuthReady(true);
     });
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
       if (session?.user) fetchProfile(session.user.id);
       else setProfile(null);
+      setAuthReady(true);
     });
     return () => {
       authListener.subscription.unsubscribe();
@@ -264,6 +268,14 @@ const App: React.FC = () => {
   useEffect(() => {
     fetchSettings();
   }, []);
+
+  useEffect(() => {
+    if (!authReady) return;
+    if (view !== 'UAITECH_PIX_SETTINGS') return;
+    if (user) return;
+    window.history.replaceState({}, '', adminPath);
+    setView('ADMIN_DASHBOARD');
+  }, [adminPath, authReady, user, view]);
 
   useEffect(() => {
     if (!settings) return;
@@ -376,6 +388,7 @@ const App: React.FC = () => {
             hashPath.startsWith('/entrega') ||
             hashPath === '/cadastro-temp' ||
             hashPath === uaitechRoute ||
+            hashPath === uaitechPixSettingsRoute ||
             hashPath === pixCheckoutRoute ||
             hashPath === legacyPlanPaymentRoute;
 
@@ -468,6 +481,15 @@ const App: React.FC = () => {
           setView('PUBLIC_PLAN_PAYMENT');
         } else if (path === uaitechRoute) {
           setPublicReceiptToken('');
+          setView('PUBLIC_PLAN_PAYMENT');
+        } else if (path === uaitechPixSettingsRoute) {
+          setPublicReceiptToken('');
+          const { data: { session: authSession } } = await supabase.auth.getSession();
+          if (!authSession?.user) {
+            window.history.replaceState({}, '', adminPath);
+            setView('ADMIN_DASHBOARD');
+            return;
+          }
           setView('UAITECH_PIX_SETTINGS');
         } else if (path === pixCheckoutRoute) {
           setPublicReceiptToken('');
@@ -1614,6 +1636,16 @@ const App: React.FC = () => {
   }
 
   if (view === 'UAITECH_PIX_SETTINGS') {
+    if (!authReady || !user) {
+      return (
+        <div className="min-h-screen bg-white flex items-center justify-center">
+          <div className="text-center space-y-4">
+            <div className="w-10 h-10 border-4 border-cyan-200 border-t-cyan-600 rounded-full animate-spin mx-auto"></div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Validando acesso...</p>
+          </div>
+        </div>
+      );
+    }
     return <UaitechPixSettings />;
   }
 
