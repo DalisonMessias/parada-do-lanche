@@ -359,15 +359,24 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
     return getConfirmedOrdersFrom(orders).reduce((acc, order) => acc + order.total_cents, 0);
   };
 
-  const getWaiterFeeCents = (subtotalCents: number) => {
+  const getOnTableOrdersSubtotal = (orders: (Order & { items?: OrderItem[] })[]) => {
+    return getConfirmedOrdersFrom(orders).reduce((acc, order) => {
+      return acc + ((order.service_type || 'ON_TABLE') === 'ON_TABLE' ? order.total_cents : 0);
+    }, 0);
+  };
+
+  const getWaiterFeeCents = (onTableSubtotalCents: number) => {
     if (!waiterFeeEnabled) return 0;
+    if (onTableSubtotalCents <= 0) return 0;
     if (waiterFeeMode === 'FIXED') return waiterFeeFixedCents;
-    return Math.round(subtotalCents * (waiterFeePercent / 100));
+    return Math.round(onTableSubtotalCents * (waiterFeePercent / 100));
   };
 
   const getSessionTotal = (session: SessionAggregate) => {
-    const subtotal = getOrdersTotal(getVisibleOrders(session));
-    return subtotal + getWaiterFeeCents(subtotal);
+    const visibleOrders = getVisibleOrders(session);
+    const subtotal = getOrdersTotal(visibleOrders);
+    const onTableSubtotal = getOnTableOrdersSubtotal(visibleOrders);
+    return subtotal + getWaiterFeeCents(onTableSubtotal);
   };
 
   const getPendingApprovals = (session: SessionAggregate) => {
@@ -886,20 +895,44 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
   );
   const selectedSessionCardType = selectedSession ? getSessionCardType(selectedSession) : 'MESA';
   const selectedSessionTypeLabel = sessionCardTypeLabel(selectedSessionCardType);
-  const selectedIsDeliveryOrPickup = selectedSession ? shouldUseDeliveredActionLabel(selectedSession) : false;
+  const selectedIsDeliveryOrPickup = selectedSession
+    ? (shouldUseDeliveredActionLabel(selectedSession) || isDeliveryLikeCardType(selectedSessionCardType))
+    : false;
   const selectedTotalsByGuest =
     selectedSession && !selectedIsDeliveryOrPickup ? getTotalsByGuest(selectedSession) : [];
   const selectedSubtotal = selectedSession ? getOrdersTotal(selectedVisibleOrders) : 0;
-  const selectedWaiterFee = selectedIsDeliveryOrPickup ? 0 : getWaiterFeeCents(selectedSubtotal);
+  const selectedOnTableSubtotal = selectedSession ? getOnTableOrdersSubtotal(selectedVisibleOrders) : 0;
+  const selectedWaiterFee = getWaiterFeeCents(selectedOnTableSubtotal);
   const selectedWaiterFeeLabel =
     waiterFeeMode === 'FIXED' ? 'Taxa do garcom (valor fixo)' : `Taxa do garcom (${waiterFeePercent}%)`;
   const selectedTotal = selectedSubtotal + selectedWaiterFee;
   const selectedPendingApprovals =
     selectedSession && !selectedIsDeliveryOrPickup ? getPendingApprovals(selectedSession) : [];
   const selectedUnprintedCount = selectedSession ? getUnprintedOrders(selectedSession).length : 0;
+  const selectedDeliveryFeeCents = selectedSession
+    ? getConfirmedOrdersFrom(selectedVisibleOrders).reduce((acc, order) => {
+        if (order.service_type !== 'ENTREGA') return acc;
+        return acc + Math.max(0, Number(order.delivery_fee_cents || 0));
+      }, 0)
+    : 0;
+  const selectedDisplayedSubtotal = selectedIsDeliveryOrPickup
+    ? Math.max(0, selectedSubtotal - selectedDeliveryFeeCents)
+    : selectedSubtotal;
+  const selectedPrintableAllCount = selectedVisibleOrders.length;
+  const printAllButtonLabel = selectedPrintableAllCount > 1 ? 'Imprimir Todos' : 'Imprimir';
   const selectedSessionLabel = selectedIsDeliveryOrPickup
     ? selectedSessionTypeLabel
     : (selectedSession?.table?.name || 'Mesa');
+  const selectedBulkCancelableCount = selectedBulkCancelableOrderIds.length;
+  const isBulkCancelAction = selectedBulkCancelableCount > 1;
+  const bulkCancelButtonLabel = isBulkCancelAction ? 'Cancelar Todos os Pedidos' : 'Cancelar';
+  const bulkCancelConfirmButtonLabel = isBulkCancelAction ? 'Sim, cancelar todos' : 'Sim, cancelar';
+  const bulkCancelSummaryText = isBulkCancelAction
+    ? `Esta acao ira cancelar ${selectedBulkCancelableCount} pedido(s) ativo(s) da sessao ${selectedSessionLabel}.`
+    : `Esta acao ira cancelar 1 pedido ativo da sessao ${selectedSessionLabel}.`;
+  const bulkCancelQuestionText = isBulkCancelAction
+    ? 'Tem certeza que deseja cancelar todos os pedidos ativos desta sessao?'
+    : 'Tem certeza que deseja cancelar este pedido?';
 
   useEffect(() => {
     if (!selectedSession) return;
@@ -1019,9 +1052,13 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
           onClose={() => setSelectedSessionId(null)}
           title={
             <div>
-              <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900">{selectedSession.table?.name || 'Mesa'}</h3>
+              <h3 className="text-2xl font-black uppercase tracking-tighter text-gray-900">
+                {selectedIsDeliveryOrPickup ? selectedSessionTypeLabel : (selectedSession.table?.name || 'Mesa')}
+              </h3>
               <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
-                {mode === 'ACTIVE' ? 'Mesa ativa' : 'Mesa finalizada'} • Pessoas: {selectedSession.guests?.length || 0}
+                {selectedIsDeliveryOrPickup
+                  ? (mode === 'ACTIVE' ? 'Pedido em andamento' : 'Pedido finalizado')
+                  : `${mode === 'ACTIVE' ? 'Mesa ativa' : 'Mesa finalizada'} • Pessoas: ${selectedSession.guests?.length || 0}`}
               </p>
             </div>
           }
@@ -1042,7 +1079,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
                 disabled={!hasThermalPrinter}
                 className="px-4 py-3 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                Imprimir Todos
+                {printAllButtonLabel}
               </button>
               {mode === 'ACTIVE' && canCancelOrders && (
                 <button
@@ -1050,7 +1087,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
                   disabled={selectedBulkCancelableOrderIds.length === 0}
                   className="px-4 py-3 rounded-xl border border-red-200 bg-red-50 text-red-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  Cancelar Todos os Pedidos
+                  {bulkCancelButtonLabel}
                 </button>
               )}
               {mode === 'ACTIVE' && (
@@ -1065,7 +1102,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
           }
         >
 
-          {mode === 'ACTIVE' && selectedPendingApprovals.length > 0 && (
+          {mode === 'ACTIVE' && !selectedIsDeliveryOrPickup && selectedPendingApprovals.length > 0 && (
             <div className="border border-amber-100 bg-amber-50 rounded-2xl p-4 flex flex-col gap-3">
               <h4 className="text-xs font-black uppercase tracking-widest text-amber-700">Pedidos aguardando aceite</h4>
               {selectedPendingApprovals.map((order) => (
@@ -1092,7 +1129,9 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
           )}
 
           <section className="border border-gray-100 rounded-2xl p-4 flex flex-col gap-3">
-            <h4 className="text-xs font-black uppercase tracking-widest text-gray-500">Pedidos da mesa (individuais)</h4>
+            <h4 className="text-xs font-black uppercase tracking-widest text-gray-500">
+              {selectedIsDeliveryOrPickup ? 'Pedidos' : 'Pedidos da mesa (individuais)'}
+            </h4>
             <div className="flex flex-col gap-2 max-h-[32vh] overflow-auto pr-1">
               {selectedVisibleOrders.length === 0 && (
                 <p className="text-sm text-gray-400 font-bold">Nenhum pedido enviado.</p>
@@ -1210,7 +1249,8 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
             </div>
           </section>
 
-          <div className="border border-gray-100 rounded-2xl p-4 flex flex-col gap-3">
+          {!selectedIsDeliveryOrPickup && (
+            <div className="border border-gray-100 rounded-2xl p-4 flex flex-col gap-3">
             <div className="flex flex-wrap gap-3 items-end justify-between">
               <div>
                 <h4 className="text-xs font-black uppercase tracking-widest text-gray-500">Dividir conta</h4>
@@ -1284,25 +1324,67 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
                 ))}
               </div>
             )}
-          </div>
+            </div>
+          )}
 
-          <div className="border-t border-gray-100 pt-4 flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Subtotal da mesa</p>
-              <p className="text-xl font-black text-gray-900 tracking-tighter italic">{formatCurrency(selectedSubtotal)}</p>
-              {waiterFeeEnabled && (
-                <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 mt-1">
-                  {selectedWaiterFeeLabel}: + {formatCurrency(selectedWaiterFee)}
-                </p>
-              )}
-              <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-2">Total geral da mesa</p>
-              <p className="text-2xl font-black text-gray-900 tracking-tighter italic">{formatCurrency(selectedTotal)}</p>
-              {selectedTotalsByGuest.length > 0 && (
-                <div className="mt-2 flex flex-col gap-1">
-                  {selectedTotalsByGuest.map((row) => (
-                    <p key={`total-${row.name}`} className="text-[10px] font-black uppercase tracking-widest text-gray-500">
-                      {row.name}: {formatCurrency(row.total)}
+          <div className="border-t border-gray-100 pt-4">
+            <div className="w-full rounded-2xl border border-gray-200 bg-gradient-to-br from-white to-gray-50 p-4 shadow-[0_6px_20px_rgba(15,23,42,0.05)]">
+              <div className="flex items-end justify-between gap-3">
+                <div>
+                  <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">
+                    {selectedIsDeliveryOrPickup ? 'Subtotal do pedido' : 'Subtotal da mesa'}
+                  </p>
+                  <p className="text-2xl font-black text-gray-900 tracking-tighter italic">
+                    {formatCurrency(selectedDisplayedSubtotal)}
+                  </p>
+                </div>
+                {!selectedIsDeliveryOrPickup && waiterFeeEnabled && (
+                  <div className="text-right">
+                    <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest">
+                      {selectedWaiterFeeLabel}
                     </p>
+                    <p className="text-base font-black text-gray-700 tracking-tighter">
+                      + {formatCurrency(selectedWaiterFee)}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {selectedIsDeliveryOrPickup && selectedDeliveryFeeCents > 0 && (
+                <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-blue-700">
+                    Taxa de entrega
+                  </p>
+                  <p className="text-sm font-black text-blue-800">
+                    + {formatCurrency(selectedDeliveryFeeCents)}
+                  </p>
+                </div>
+              )}
+
+              <div className="mt-4 border-t border-gray-200 pt-3 flex items-end justify-between gap-3">
+                <div>
+                  <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest">
+                    {selectedIsDeliveryOrPickup ? 'Total do pedido' : 'Total geral da mesa'}
+                  </p>
+                  <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest mt-1">
+                    Valor final para fechamento
+                  </p>
+                </div>
+                <p className="text-3xl font-black text-primary tracking-tighter italic">
+                  {formatCurrency(selectedTotal)}
+                </p>
+              </div>
+
+              {!selectedIsDeliveryOrPickup && selectedTotalsByGuest.length > 0 && (
+                <div className="mt-4 border-t border-gray-200 pt-3 flex flex-col gap-1.5">
+                  <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest">
+                    Referencia por pessoa
+                  </p>
+                  {selectedTotalsByGuest.map((row) => (
+                    <div key={`total-${row.name}`} className="flex justify-between items-center">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">{row.name}</p>
+                      <p className="text-[11px] font-black text-gray-700">{formatCurrency(row.total)}</p>
+                    </div>
                   ))}
                 </div>
               )}
@@ -1324,7 +1406,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
             <div>
               <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">Confirmacao Final</h3>
               <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest mt-2">
-                Esta acao ira cancelar {selectedBulkCancelableOrderIds.length} pedido(s) ativo(s) da sessao {selectedSessionLabel}.
+                {bulkCancelSummaryText}
               </p>
             </div>
           }
@@ -1346,14 +1428,14 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
                 disabled={bulkCancelLoading}
                 className="px-4 py-2.5 rounded-xl border border-red-200 bg-red-50 text-red-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {bulkCancelLoading ? 'Cancelando...' : 'Sim, cancelar todos'}
+                {bulkCancelLoading ? 'Cancelando...' : bulkCancelConfirmButtonLabel}
               </button>
             </div>
           }
         >
           <div className="space-y-3">
             <p className="text-sm font-bold text-gray-700">
-              Tem certeza que deseja cancelar todos os pedidos ativos desta sessao?
+              {bulkCancelQuestionText}
             </p>
           </div>
         </AppModal>

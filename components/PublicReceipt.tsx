@@ -249,7 +249,7 @@ const PublicReceipt: React.FC<PublicReceiptProps> = ({ token, onBackHome }) => {
               onClick={onBackHome}
               className="px-3 py-2 rounded-xl border border-gray-200 text-[10px] font-black uppercase tracking-widest text-gray-600"
             >
-              Inicio
+              Voltar
             </button>
           )}
         </div>

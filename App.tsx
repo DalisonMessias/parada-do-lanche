@@ -1477,6 +1477,10 @@ const App: React.FC = () => {
         <PublicReceipt
           token={publicReceiptToken}
           onBackHome={() => {
+            if (window.history.length > 1) {
+              window.history.back();
+              return;
+            }
             window.history.pushState({}, '', '/');
           }}
         />
