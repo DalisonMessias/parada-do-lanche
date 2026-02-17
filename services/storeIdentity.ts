@@ -1,4 +1,4 @@
-export const DEFAULT_STORE_NAME = 'UaiTech';
+export const DEFAULT_STORE_NAME = 'Loja';
 
 export const normalizeStoreName = (value?: string | null) => {
   const clean = String(value || '').trim();

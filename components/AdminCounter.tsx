@@ -617,7 +617,7 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
         const result = await printKitchenTicket({
           tickets: [
             {
-              storeName: settings?.store_name || 'UaiTech',
+              storeName: settings?.store_name || 'Loja',
               storeImageUrl: settings?.logo_url || null,
               orderId: order.id,
               ticketType,
@@ -1177,5 +1177,4 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
 };
 
 export default AdminCounter;
-
 

@@ -43,7 +43,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
   const [waiterFeeFixedMasked, setWaiterFeeFixedMasked] = useState('R$ 0,00');
   const [savedPixKeyValue, setSavedPixKeyValue] = useState('');
   const [formData, setFormData] = useState({
-    store_name: 'UaiTech',
+    store_name: 'Loja',
     logo_url: '',
     order_approval_mode: 'HOST' as 'HOST' | 'SELF',
     has_thermal_printer: false,
@@ -79,7 +79,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
       const pixValueMasked = maskPixInput(pixType, settings.pix_key_value || '');
 
       setFormData({
-        store_name: settings.store_name || 'UaiTech',
+        store_name: settings.store_name || 'Loja',
         logo_url: settings.logo_url || '',
         order_approval_mode: (settings.order_approval_mode || 'HOST') as 'HOST' | 'SELF',
         has_thermal_printer: settings.has_thermal_printer === true,
@@ -270,7 +270,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
                 type="text"
                 value={formData.store_name}
                 onChange={(e) => setFormData({ ...formData, store_name: e.target.value })}
-                placeholder="Ex: UaiTech"
+                placeholder="Ex: Minha Loja"
                 className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
                 required
               />

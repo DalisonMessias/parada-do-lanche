@@ -336,90 +336,108 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const handleRoute = async () => {
-      const path = window.location.pathname;
-      if (path.startsWith('/cupom/')) {
-        const token = decodeURIComponent((path.split('/cupom/')[1] || '').split(/[?#]/)[0] || '').trim();
-        if (!token) {
-          setPublicReceiptToken('');
-          setView('LANDING');
-          return;
-        }
-        setPublicReceiptToken(token);
-        setView('PUBLIC_RECEIPT');
-      } else if (path.startsWith('/m/')) {
-        setPublicReceiptToken('');
-        const token = path.split('/m/')[1];
-        const { data: table } = await supabase.from('tables').select('*').eq('token', token).single();
-        if (table) {
-          setActiveTable(table);
-          const { data: activeSession } = await supabase.from('sessions').select('*').eq('table_id', table.id).eq('status', 'OPEN').maybeSingle();
-          if (activeSession) {
-            sessionResetRef.current = null;
-            setSession(activeSession);
-            const savedGuest = localStorage.getItem(`guest_${activeSession.id}`);
-            if (savedGuest) setGuest(JSON.parse(savedGuest));
-          } else {
-            sessionResetRef.current = null;
-            setSession(null);
-            setGuest(null);
-            setCart([]);
-            setSessionOrders([]);
-            setShowCart(false);
-          }
-          setView('CUSTOMER_MENU');
-        } else {
-          // Token da mesa inválido ou mesa não encontrada
-          setView('NOT_FOUND');
-        }
-      } else if (path === '/cadastro-temp') {
-        setPublicReceiptToken('');
-        setView(tempRegisterEnabled ? 'TEMP_REGISTER' : 'LANDING');
-      } else if (path === planPaymentRoute) {
-        setPublicReceiptToken('');
-        setView('PUBLIC_PLAN_PAYMENT');
-      } else if (path.startsWith('/admin')) {
-        setPublicReceiptToken('');
-        const clean = path.replace(/^\//, '');
-        const segments = clean.split('/');
-        let providedKey = segments[1] || '';
-        let providedTabSlug = segments[2] || '';
+      try {
+        const path = window.location.pathname;
+        console.log('Routing to:', path);
 
-        // Check if providedKey is actually a tab slug (e.g. /admin/plano or /admin/pedidos)
-        if (providedKey && (SLUG_TO_TAB[providedKey.toLowerCase()] || providedKey === 'plano')) {
-          providedTabSlug = providedKey;
-          providedKey = '';
-        }
-
-        if (adminAccessKey && providedKey !== adminAccessKey) {
-          window.history.replaceState({}, '', '/');
-          setView('LANDING');
-          return;
-        }
-
-        if (providedTabSlug) {
-          const tab = SLUG_TO_TAB[providedTabSlug.toLowerCase()];
-          if (tab) {
-            setAdminTab(tab);
-          } else {
-            setView('NOT_FOUND');
+        if (path.startsWith('/cupom/')) {
+          const token = decodeURIComponent((path.split('/cupom/')[1] || '').split(/[?#]/)[0] || '').trim();
+          if (!token) {
+            setPublicReceiptToken('');
+            setView('LANDING');
             return;
           }
-        }
+          setPublicReceiptToken(token);
+          setView('PUBLIC_RECEIPT');
+        } else if (path.startsWith('/m/')) {
+          setPublicReceiptToken('');
+          const token = path.split('/m/')[1];
+          console.log('Table token identified:', token);
 
-        setView('ADMIN_DASHBOARD');
-      } else {
-        setPublicReceiptToken('');
-        // If it's the root path, LANDING. Otherwise, 404.
-        if (path === '/' || path === '') {
-          setView('LANDING');
+          const { data: table, error: tableError } = await supabase.from('tables').select('*').eq('token', token).single();
+          if (tableError) console.error('Error fetching table:', tableError);
+
+          if (table) {
+            setActiveTable(table);
+            const { data: activeSession, error: sessionError } = await supabase.from('sessions').select('*').eq('table_id', table.id).eq('status', 'OPEN').maybeSingle();
+            if (sessionError) console.error('Error fetching session:', sessionError);
+
+            if (activeSession) {
+              sessionResetRef.current = null;
+              setSession(activeSession);
+              const savedGuest = localStorage.getItem(`guest_${activeSession.id}`);
+              if (savedGuest) {
+                try {
+                  setGuest(JSON.parse(savedGuest));
+                } catch (e) {
+                  console.error('Error parsing saved guest:', e);
+                  localStorage.removeItem(`guest_${activeSession.id}`);
+                  setGuest(null);
+                }
+              }
+            } else {
+              sessionResetRef.current = null;
+              setSession(null);
+              setGuest(null);
+              setCart([]);
+              setSessionOrders([]);
+              setShowCart(false);
+            }
+            setView('CUSTOMER_MENU');
+          } else {
+            console.warn('Table not found for token:', token);
+            setView('NOT_FOUND');
+          }
+        } else if (path === '/cadastro-temp') {
+          setPublicReceiptToken('');
+          setView(tempRegisterEnabled ? 'TEMP_REGISTER' : 'LANDING');
+        } else if (path === planPaymentRoute) {
+          setPublicReceiptToken('');
+          setView('PUBLIC_PLAN_PAYMENT');
+        } else if (path.startsWith('/admin')) {
+          setPublicReceiptToken('');
+          const clean = path.replace(/^\//, '');
+          const segments = clean.split('/');
+          let providedKey = segments[1] || '';
+          let providedTabSlug = segments[2] || '';
+
+          if (providedKey && (SLUG_TO_TAB[providedKey.toLowerCase()] || providedKey === 'plano')) {
+            providedTabSlug = providedKey;
+            providedKey = '';
+          }
+
+          if (adminAccessKey && providedKey !== adminAccessKey) {
+            window.history.replaceState({}, '', '/');
+            setView('LANDING');
+            return;
+          }
+
+          if (providedTabSlug) {
+            const tab = SLUG_TO_TAB[providedTabSlug.toLowerCase()];
+            if (tab) {
+              setAdminTab(tab);
+            } else {
+              setView('NOT_FOUND');
+              return;
+            }
+          }
+
+          setView('ADMIN_DASHBOARD');
         } else {
-          setView('NOT_FOUND');
+          setPublicReceiptToken('');
+          if (path === '/' || path === '') {
+            setView('LANDING');
+          } else {
+            setView('NOT_FOUND');
+          }
         }
+      } catch (err) {
+        console.error('Critical routing error:', err);
+        setView('NOT_FOUND');
       }
     };
     handleRoute();
     window.addEventListener('popstate', handleRoute);
-    // Helper to handle internal navigation
     const originalPushState = window.history.pushState;
     window.history.pushState = function () {
       originalPushState.apply(this, arguments as any);
@@ -725,8 +743,7 @@ const App: React.FC = () => {
         const printResult = await printKitchenTicket({
           tickets: [
             {
-              storeName: settings?.store_name || 'UaiTech'
-              ,
+              storeName: settings?.store_name || 'Loja',
               storeImageUrl: settings?.logo_url || null,
               orderId: loadedOrder.id,
               ticketType,
@@ -1428,6 +1445,17 @@ const App: React.FC = () => {
     );
   }
 
+  if (!settings) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center">
+        <div className="text-center space-y-4">
+          <div className="w-12 h-12 border-4 border-primary/20 border-t-primary rounded-full animate-spin mx-auto"></div>
+          <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">Iniciando Sistema...</p>
+        </div>
+      </div>
+    );
+  }
+
   if (view === 'LANDING') {
     return (
       <Layout settings={settings} wide>
@@ -1923,7 +1951,7 @@ const App: React.FC = () => {
                 </Suspense>
 
                 <footer className="mt-8 border-t border-gray-200 pt-4 text-center">
-                  <img src={UAITECH_LOGO_URL} alt="Logo UaiTech" className="h-5 w-auto mx-auto" />
+                  <img src={UAITECH_LOGO_URL} alt="Logo da loja" className="h-5 w-auto mx-auto" />
                   <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-400">
                     © {new Date().getFullYear()}
                   </p>

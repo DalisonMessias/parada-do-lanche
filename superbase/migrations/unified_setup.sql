@@ -7,6 +7,7 @@ create extension if not exists "pgcrypto";
 create table if not exists public.settings (
   id integer primary key default 1,
   logo_url text,
+  store_name text not null default 'Loja',
   wifi_ssid text not null default '',
   wifi_password text not null default '',
   has_thermal_printer boolean not null default false,
@@ -32,7 +33,7 @@ create table if not exists public.settings (
 alter table if exists public.settings
   drop column if exists primary_color;
 alter table if exists public.settings
-  drop column if exists store_name;
+  add column if not exists store_name text not null default 'Loja';
 alter table if exists public.settings
   add column if not exists wifi_ssid text not null default '';
 alter table if exists public.settings
@@ -76,6 +77,7 @@ alter table if exists public.settings
 
 update public.settings
 set
+  store_name = coalesce(nullif(trim(coalesce(store_name, '')), ''), 'Loja'),
   has_thermal_printer = coalesce(has_thermal_printer, false),
   waiter_fee_mode = case
     when waiter_fee_mode in ('PERCENT', 'FIXED') then waiter_fee_mode
@@ -751,6 +753,7 @@ on conflict (id) do nothing;
 
 update public.settings
 set
+  store_name = coalesce(nullif(trim(coalesce(store_name, '')), ''), 'Loja'),
   wifi_ssid = coalesce(wifi_ssid, ''),
   wifi_password = coalesce(wifi_password, ''),
   has_thermal_printer = coalesce(has_thermal_printer, false),
@@ -1834,6 +1837,7 @@ declare
   v_order record;
   v_items jsonb := '[]'::jsonb;
   v_delivery_address jsonb;
+  v_store_name text := 'Loja';
 begin
   if p_token is null or btrim(p_token) = '' then
     return null;
@@ -1870,6 +1874,12 @@ begin
     return null;
   end if;
 
+  select coalesce(nullif(trim(coalesce(s.store_name, '')), ''), 'Loja')
+    into v_store_name
+  from public.settings s
+  where s.id = 1
+  limit 1;
+
   v_delivery_address := case
     when v_order.delivery_address is null then null
     when jsonb_typeof(v_order.delivery_address) = 'object' then v_order.delivery_address - 'city'
@@ -1900,7 +1910,7 @@ begin
   where oi.order_id = v_order.id;
 
   return jsonb_build_object(
-    'store_name', 'UaiTech',
+    'store_name', v_store_name,
     'order', jsonb_build_object(
       'id', v_order.id,
       'session_id', v_order.session_id,
@@ -3086,8 +3096,10 @@ to authenticated
 using (bucket_id = 'assets');
 
 
--- Migration to add store_name to settings table
-ALTER TABLE public.settings ADD COLUMN IF NOT EXISTS store_name text NOT NULL DEFAULT 'Parada do Lanche';
+-- Compatibilidade: garante store_name sem sobrescrever nome ja configurado.
+alter table public.settings
+  add column if not exists store_name text not null default 'Loja';
 
--- Update existing row if it exists
-UPDATE public.settings SET store_name = 'Parada do Lanche' WHERE id = 1 AND (store_name IS NULL OR store_name = '');
+update public.settings
+set store_name = coalesce(nullif(trim(coalesce(store_name, '')), ''), 'Loja')
+where id = 1;

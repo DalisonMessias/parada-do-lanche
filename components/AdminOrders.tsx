@@ -327,6 +327,14 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
     );
   };
 
+  const shouldUseDeliveredActionLabel = (session: SessionAggregate) => {
+    const confirmedOrders = getConfirmedOrdersFrom(getVisibleOrders(session));
+    if (confirmedOrders.length === 0) return false;
+    return confirmedOrders.every(
+      (order) => order.service_type === 'ENTREGA' || order.service_type === 'RETIRADA'
+    );
+  };
+
   const getConfirmedOrdersFrom = (orders: (Order & { items?: OrderItem[] })[]) => {
     return orders.filter((order) => order.approval_status === 'APPROVED' && order.status !== 'CANCELLED');
   };
@@ -651,7 +659,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
           Math.max(0, subtotalCents + serviceFeeCents + (ticketType === 'ENTREGA' ? deliveryFeeCents : 0));
 
         return {
-          storeName: settings?.store_name || 'UaiTech',
+          storeName: settings?.store_name || 'Loja',
           storeImageUrl: settings?.logo_url || null,
           orderId: order.id,
           ticketType,
@@ -721,6 +729,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
       );
       const latestOrder = visibleOrders[0] || null;
       const cardType = getSessionCardType(session);
+      const useDeliveredActionLabel = shouldUseDeliveredActionLabel(session);
       const cardTypeLabel =
         cardType === 'ENTREGA'
           ? 'Entrega'
@@ -837,7 +846,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
                 onClick={() => handleFinalizeSession(session)}
                 className="flex-1 border border-green-200 bg-green-50 text-green-700 py-3.5 rounded-xl text-[9px] font-black uppercase tracking-widest"
               >
-                {(cardType === 'ENTREGA' || cardType === 'RETIRADA') ? 'Entregue' : 'Marcar Pago'}
+                {useDeliveredActionLabel ? 'Entregue' : 'Marcar Pago'}
               </button>
             )}
           </div>
@@ -1018,7 +1027,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
                   onClick={() => handleFinalizeSession(selectedSession)}
                   className="px-4 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest"
                 >
-                  {(selectedSession && (getSessionCardType(selectedSession) === 'ENTREGA' || getSessionCardType(selectedSession) === 'RETIRADA')) ? 'Entregue' : 'Marcar Pago'}
+                  {(selectedSession && shouldUseDeliveredActionLabel(selectedSession)) ? 'Entregue' : 'Marcar Pago'}
                 </button>
               )}
             </div>

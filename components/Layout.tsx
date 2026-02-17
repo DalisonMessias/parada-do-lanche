@@ -30,7 +30,7 @@ const Layout: React.FC<LayoutProps> = ({
   showFooter,
 }) => {
   const primaryColor = '#dbd114';
-  const storeName = settings?.store_name || 'UaiTech';
+  const storeName = settings?.store_name || 'Loja';
   const currentYear = new Date().getFullYear();
   const shouldRenderFooter = showFooter ?? !isAdmin;
   const adminHeaderOffsetClass = isAdmin ? 'pt-[73px]' : '';
@@ -97,7 +97,7 @@ const Layout: React.FC<LayoutProps> = ({
 
       {shouldRenderFooter && (
         <footer className="border-t border-gray-100 bg-white px-4 py-3 text-center">
-          <img src={UAITECH_LOGO_URL} alt="Logo UaiTech" className="h-5 w-auto mx-auto" />
+          <img src={UAITECH_LOGO_URL} alt="Logo da loja" className="h-5 w-auto mx-auto" />
           <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-400">© {currentYear}</p>
           <p className="mt-1 text-[9px] font-black uppercase tracking-widest text-gray-500">
             Dalison Messias

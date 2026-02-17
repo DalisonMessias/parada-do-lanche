@@ -334,7 +334,7 @@ const renderTicketCore = (ticket: KitchenPrintTicket, qrDataUrl?: string) => {
       ${renderQrBlock(ticket, qrDataUrl)}
 
       <footer class="ticket-footer">
-        <img src="${uaiTechLogoUrl}" alt="Logo UaiTech" class="ticket-uaitech-logo ticket-uaitech-logo--footer" />
+        <img src="${uaiTechLogoUrl}" alt="Logo da loja" class="ticket-uaitech-logo ticket-uaitech-logo--footer" />
       </footer>
     </section>
   `;
