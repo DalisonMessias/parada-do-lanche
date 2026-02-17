@@ -32,6 +32,8 @@ type PublicReceiptResponse = {
     customer_phone?: string | null;
     delivery_address?: Record<string, any> | null;
     delivery_fee_cents?: number | null;
+    delivery_payment_method?: 'PIX' | 'CASH' | 'CARD' | null;
+    delivery_cash_change_for_cents?: number | null;
     subtotal_cents?: number | null;
     total_cents?: number | null;
     receipt_token?: string | null;
@@ -107,6 +109,8 @@ const toTicket = (
     customerName: order.customer_name || null,
     customerPhone: order.customer_phone || null,
     deliveryAddress: normalizeDeliveryAddress(order.delivery_address || null),
+    deliveryPaymentMethod: order.delivery_payment_method || null,
+    deliveryCashChangeForCents: Math.max(0, Number(order.delivery_cash_change_for_cents || 0)),
     items: (payload?.items || []).map((item) => ({
       id: item.id || undefined,
       name_snapshot: (item.name_snapshot || 'Item').trim() || 'Item',

@@ -13,6 +13,7 @@ create table if not exists public.settings (
   has_thermal_printer boolean not null default false,
   order_approval_mode text not null default 'HOST' check (order_approval_mode in ('HOST', 'SELF')),
   enable_counter_module boolean not null default true,
+  enable_delivery_module boolean not null default false,
   enable_waiter_fee boolean not null default false,
   waiter_fee_mode text not null default 'PERCENT' check (waiter_fee_mode in ('PERCENT', 'FIXED')),
   waiter_fee_value integer not null default 10,
@@ -44,6 +45,8 @@ alter table if exists public.settings
   add column if not exists order_approval_mode text not null default 'HOST';
 alter table if exists public.settings
   add column if not exists enable_counter_module boolean not null default true;
+alter table if exists public.settings
+  add column if not exists enable_delivery_module boolean not null default false;
 alter table if exists public.settings
   add column if not exists enable_waiter_fee boolean not null default false;
 alter table if exists public.settings
@@ -79,6 +82,7 @@ update public.settings
 set
   store_name = coalesce(nullif(trim(coalesce(store_name, '')), ''), 'Loja'),
   has_thermal_printer = coalesce(has_thermal_printer, false),
+  enable_delivery_module = coalesce(enable_delivery_module, false),
   waiter_fee_mode = case
     when waiter_fee_mode in ('PERCENT', 'FIXED') then waiter_fee_mode
     else 'PERCENT'
@@ -206,6 +210,8 @@ create table if not exists public.products (
   price_cents integer not null,
   image_url text,
   addon_selection_mode text not null default 'MULTIPLE' check (addon_selection_mode in ('SINGLE', 'MULTIPLE')),
+  available_on_table boolean not null default true,
+  available_on_delivery boolean not null default true,
   active boolean default true,
   is_featured boolean not null default false,
   out_of_stock boolean default false,
@@ -215,8 +221,15 @@ alter table if exists public.products
   add column if not exists addon_selection_mode text not null default 'MULTIPLE';
 alter table if exists public.products
   add column if not exists is_featured boolean not null default false;
+alter table if exists public.products
+  add column if not exists available_on_table boolean not null default true;
+alter table if exists public.products
+  add column if not exists available_on_delivery boolean not null default true;
 update public.products
-set is_featured = coalesce(is_featured, false);
+set
+  is_featured = coalesce(is_featured, false),
+  available_on_table = coalesce(available_on_table, true),
+  available_on_delivery = coalesce(available_on_delivery, true);
 do $$
 begin
   if not exists (
@@ -434,6 +447,8 @@ create table if not exists public.orders (
   service_type text not null default 'ON_TABLE' check (service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA', 'CONSUMO_LOCAL')),
   delivery_address jsonb,
   delivery_fee_cents integer not null default 0,
+  delivery_payment_method text,
+  delivery_cash_change_for_cents integer not null default 0,
   created_by_guest_id uuid references public.session_guests(id) on delete set null,
   approval_status text not null default 'PENDING_APPROVAL' check (approval_status in ('PENDING_APPROVAL', 'APPROVED', 'REJECTED')),
   approved_by_guest_id uuid references public.session_guests(id) on delete set null,
@@ -473,6 +488,10 @@ alter table if exists public.orders
   add column if not exists delivery_address jsonb;
 alter table if exists public.orders
   add column if not exists delivery_fee_cents integer not null default 0;
+alter table if exists public.orders
+  add column if not exists delivery_payment_method text;
+alter table if exists public.orders
+  add column if not exists delivery_cash_change_for_cents integer not null default 0;
 alter table if exists public.orders
   add column if not exists created_by_guest_id uuid references public.session_guests(id) on delete set null;
 alter table if exists public.orders
@@ -533,6 +552,20 @@ set
     else delivery_address
   end,
   delivery_fee_cents = greatest(coalesce(delivery_fee_cents, 0), 0);
+update public.orders
+set
+  delivery_payment_method = case
+    when coalesce(service_type, 'ON_TABLE') in ('ENTREGA', 'RETIRADA')
+      and upper(coalesce(delivery_payment_method, '')) in ('PIX', 'CASH', 'CARD')
+      then upper(coalesce(delivery_payment_method, ''))
+    else null
+  end,
+  delivery_cash_change_for_cents = case
+    when coalesce(service_type, 'ON_TABLE') in ('ENTREGA', 'RETIRADA')
+      and upper(coalesce(delivery_payment_method, '')) = 'CASH'
+      then greatest(coalesce(delivery_cash_change_for_cents, 0), 0)
+    else 0
+  end;
 
 do $$
 begin
@@ -583,6 +616,60 @@ begin
     alter table public.orders
       add constraint orders_discount_mode_check
       check (discount_mode in ('NONE', 'AMOUNT', 'PERCENT'));
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'orders_delivery_payment_method_check'
+      and conrelid = 'public.orders'::regclass
+  ) then
+    alter table public.orders
+      add constraint orders_delivery_payment_method_check
+      check (
+        delivery_payment_method is null
+        or delivery_payment_method in ('PIX', 'CASH', 'CARD')
+      );
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'orders_delivery_cash_change_for_cents_check'
+      and conrelid = 'public.orders'::regclass
+  ) then
+    alter table public.orders
+      add constraint orders_delivery_cash_change_for_cents_check
+      check (
+        delivery_cash_change_for_cents >= 0
+        and (
+          delivery_payment_method = 'CASH'
+          or coalesce(delivery_cash_change_for_cents, 0) = 0
+        )
+      );
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'orders_delivery_payment_service_type_check'
+      and conrelid = 'public.orders'::regclass
+  ) then
+    alter table public.orders
+      add constraint orders_delivery_payment_service_type_check
+      check (
+        (
+          coalesce(service_type, 'ON_TABLE') in ('ENTREGA', 'RETIRADA')
+        )
+        or
+        delivery_payment_method is null
+      );
   end if;
 end $$;
 
@@ -759,6 +846,7 @@ set
   has_thermal_printer = coalesce(has_thermal_printer, false),
   order_approval_mode = coalesce(order_approval_mode, 'HOST'),
   enable_counter_module = coalesce(enable_counter_module, true),
+  enable_delivery_module = coalesce(enable_delivery_module, false),
   enable_waiter_fee = coalesce(enable_waiter_fee, false),
   waiter_fee_mode = case
     when waiter_fee_mode in ('PERCENT', 'FIXED') then waiter_fee_mode
@@ -806,7 +894,7 @@ set
   discount_value = greatest(coalesce(discount_value, 0), 0),
   discount_cents = greatest(coalesce(discount_cents, 0), 0),
   service_type = case
-    when service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA') then service_type
+    when service_type in ('ON_TABLE', 'RETIRADA', 'ENTREGA', 'CONSUMO_LOCAL') then service_type
     when origin = 'BALCAO' then 'RETIRADA'
     else 'ON_TABLE'
   end,
@@ -815,7 +903,24 @@ set
     when jsonb_typeof(delivery_address) = 'object' then delivery_address - 'city'
     else delivery_address
   end,
-  delivery_fee_cents = greatest(coalesce(delivery_fee_cents, 0), 0);
+  delivery_fee_cents = greatest(coalesce(delivery_fee_cents, 0), 0),
+  delivery_payment_method = case
+    when coalesce(service_type, 'ON_TABLE') in ('ENTREGA', 'RETIRADA')
+      and upper(coalesce(delivery_payment_method, '')) in ('PIX', 'CASH', 'CARD')
+      then upper(coalesce(delivery_payment_method, ''))
+    else null
+  end,
+  delivery_cash_change_for_cents = case
+    when coalesce(service_type, 'ON_TABLE') in ('ENTREGA', 'RETIRADA')
+      and upper(coalesce(delivery_payment_method, '')) = 'CASH'
+      then greatest(coalesce(delivery_cash_change_for_cents, 0), 0)
+    else 0
+  end;
+
+update public.products
+set
+  available_on_table = coalesce(available_on_table, true),
+  available_on_delivery = coalesce(available_on_delivery, true);
 
 update public.orders
 set receipt_token_created_at = coalesce(receipt_token_created_at, timezone('utc'::text, now()))
@@ -1856,6 +1961,8 @@ begin
     o.customer_phone,
     o.delivery_address,
     o.delivery_fee_cents,
+    o.delivery_payment_method,
+    o.delivery_cash_change_for_cents,
     o.subtotal_cents,
     o.discount_mode,
     o.discount_value,
@@ -1925,6 +2032,8 @@ begin
       'customer_phone', v_order.customer_phone,
       'delivery_address', v_delivery_address,
       'delivery_fee_cents', greatest(coalesce(v_order.delivery_fee_cents, 0), 0),
+      'delivery_payment_method', v_order.delivery_payment_method,
+      'delivery_cash_change_for_cents', greatest(coalesce(v_order.delivery_cash_change_for_cents, 0), 0),
       'subtotal_cents', greatest(coalesce(v_order.subtotal_cents, 0), 0),
       'discount_mode', coalesce(v_order.discount_mode, 'NONE'),
       'discount_value', greatest(coalesce(v_order.discount_value, 0), 0),
@@ -1969,6 +2078,8 @@ create or replace function public.create_staff_order(
   p_delivery_fee_cents integer default 0,
   p_discount_mode text default 'NONE',
   p_discount_value integer default 0,
+  p_delivery_payment_method text default null,
+  p_delivery_cash_change_for_cents integer default 0,
   p_items jsonb default '[]'::jsonb
 )
 returns uuid
@@ -1987,6 +2098,8 @@ declare
   v_discount integer;
   v_delivery_fee integer;
   v_delivery_address jsonb;
+  v_delivery_payment_method text;
+  v_delivery_cash_change_for_cents integer;
   v_total integer;
   v_parent_order_id uuid;
 begin
@@ -2021,6 +2134,12 @@ begin
     when jsonb_typeof(p_delivery_address) = 'object' then p_delivery_address - 'city'
     else p_delivery_address
   end;
+  v_delivery_payment_method := case
+    when upper(coalesce(p_delivery_payment_method, '')) in ('PIX', 'CASH', 'CARD')
+      then upper(coalesce(p_delivery_payment_method, ''))
+    else null
+  end;
+  v_delivery_cash_change_for_cents := greatest(coalesce(p_delivery_cash_change_for_cents, 0), 0);
 
   if p_parent_order_id is not null then
     select id
@@ -2072,9 +2191,14 @@ begin
     v_service_type := 'ON_TABLE';
     v_delivery_fee := 0;
     v_delivery_address := null;
+    v_delivery_payment_method := null;
+    v_delivery_cash_change_for_cents := 0;
   else
     if v_service_type is null or v_service_type = 'ON_TABLE' then
       v_service_type := 'RETIRADA';
+    end if;
+    if v_delivery_payment_method is null then
+      v_delivery_payment_method := 'CARD';
     end if;
     if v_service_type <> 'ENTREGA' then
       v_delivery_fee := 0;
@@ -2087,6 +2211,13 @@ begin
       nullif(trim(coalesce(v_delivery_address->>'neighborhood', '')), '') is null
     then
       raise exception 'pedido de entrega requer customer_name e delivery_address com street, number e neighborhood';
+    end if;
+    if v_delivery_payment_method <> 'CASH' then
+      v_delivery_cash_change_for_cents := 0;
+    end if;
+    if v_service_type not in ('ENTREGA', 'RETIRADA') then
+      v_delivery_payment_method := null;
+      v_delivery_cash_change_for_cents := 0;
     end if;
   end if;
 
@@ -2104,6 +2235,8 @@ begin
     service_type,
     delivery_address,
     delivery_fee_cents,
+    delivery_payment_method,
+    delivery_cash_change_for_cents,
     approval_status,
     round_number,
     status,
@@ -2125,6 +2258,8 @@ begin
     v_service_type,
     v_delivery_address,
     v_delivery_fee,
+    v_delivery_payment_method,
+    v_delivery_cash_change_for_cents,
     'APPROVED',
     v_round,
     'PENDING',
@@ -2233,6 +2368,8 @@ begin
       'service_type', v_service_type,
       'delivery_fee_cents', v_delivery_fee,
       'delivery_address', v_delivery_address,
+      'delivery_payment_method', v_delivery_payment_method,
+      'delivery_cash_change_for_cents', v_delivery_cash_change_for_cents,
       'subtotal_cents', v_subtotal,
       'discount_mode', v_discount_mode,
       'discount_value', v_discount_value,
@@ -2242,6 +2379,287 @@ begin
   );
 
   return v_order_id;
+end;
+$$;
+
+create or replace function public.create_public_delivery_order(
+  p_customer_name text,
+  p_customer_phone text,
+  p_general_note text default null,
+  p_delivery_address jsonb default null,
+  p_delivery_payment_method text default 'CARD',
+  p_delivery_cash_change_for_cents integer default 0,
+  p_items jsonb default '[]'::jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  v_delivery_enabled boolean := false;
+  v_default_delivery_fee_cents integer := 0;
+  v_pix_key text;
+  v_payment_method text;
+  v_cash_change integer := 0;
+  v_delivery_address jsonb;
+  v_subtotal integer := 0;
+  v_total integer := 0;
+  v_table_id uuid;
+  v_session_id uuid;
+  v_order_id uuid;
+  v_receipt_token text;
+  v_table_token text;
+begin
+  if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
+    raise exception 'p_items precisa ser um array jsonb com itens';
+  end if;
+
+  select
+    coalesce(enable_delivery_module, false),
+    greatest(coalesce(default_delivery_fee_cents, 0), 0),
+    nullif(trim(coalesce(pix_key_value, '')), '')
+    into v_delivery_enabled, v_default_delivery_fee_cents, v_pix_key
+  from public.settings
+  where id = 1
+  limit 1;
+
+  if coalesce(v_delivery_enabled, false) = false then
+    raise exception 'modulo de entrega desativado';
+  end if;
+
+  if nullif(trim(coalesce(p_customer_name, '')), '') is null then
+    raise exception 'customer_name e obrigatorio';
+  end if;
+
+  if nullif(trim(coalesce(p_customer_phone, '')), '') is null then
+    raise exception 'customer_phone e obrigatorio';
+  end if;
+
+  v_payment_method := upper(coalesce(p_delivery_payment_method, ''));
+  if v_payment_method not in ('PIX', 'CASH', 'CARD') then
+    raise exception 'metodo de pagamento invalido';
+  end if;
+
+  if v_payment_method = 'PIX' and v_pix_key is null then
+    raise exception 'pix indisponivel: chave pix nao cadastrada';
+  end if;
+
+  v_cash_change := greatest(coalesce(p_delivery_cash_change_for_cents, 0), 0);
+  if v_payment_method <> 'CASH' then
+    v_cash_change := 0;
+  end if;
+
+  v_delivery_address := case
+    when p_delivery_address is null or p_delivery_address = 'null'::jsonb then null
+    when jsonb_typeof(p_delivery_address) = 'object' then p_delivery_address - 'city'
+    else p_delivery_address
+  end;
+
+  if v_delivery_address is null then
+    raise exception 'delivery_address e obrigatorio';
+  end if;
+  if nullif(trim(coalesce(v_delivery_address->>'street', '')), '') is null then
+    raise exception 'delivery_address.street e obrigatorio';
+  end if;
+  if nullif(trim(coalesce(v_delivery_address->>'number', '')), '') is null then
+    raise exception 'delivery_address.number e obrigatorio';
+  end if;
+  if nullif(trim(coalesce(v_delivery_address->>'neighborhood', '')), '') is null then
+    raise exception 'delivery_address.neighborhood e obrigatorio';
+  end if;
+
+  select coalesce(sum((greatest(coalesce(i.qty, 1), 1) * greatest(coalesce(i.unit_price_cents, 0), 0))::integer), 0)
+    into v_subtotal
+  from jsonb_to_recordset(p_items) as i(
+    product_id uuid,
+    name_snapshot text,
+    unit_price_cents integer,
+    original_unit_price_cents integer,
+    promo_name text,
+    promo_discount_type text,
+    promo_discount_value integer,
+    promo_discount_cents integer,
+    qty integer,
+    note text,
+    added_by_name text,
+    status text
+  );
+
+  if coalesce(v_subtotal, 0) <= 0 then
+    raise exception 'subtotal invalido para pedido de entrega';
+  end if;
+
+  v_total := greatest(v_subtotal + v_default_delivery_fee_cents, 0);
+  v_table_token := 'delivery-public-' || replace(gen_random_uuid()::text, '-', '');
+
+  insert into public.tables (name, token, table_type, status)
+  values ('ENTREGA', v_table_token, 'COUNTER', 'OCCUPIED')
+  returning id into v_table_id;
+
+  insert into public.sessions (table_id, status)
+  values (v_table_id, 'OPEN')
+  returning id into v_session_id;
+
+  insert into public.orders (
+    table_id,
+    session_id,
+    origin,
+    customer_name,
+    customer_phone,
+    general_note,
+    service_type,
+    delivery_address,
+    delivery_fee_cents,
+    delivery_payment_method,
+    delivery_cash_change_for_cents,
+    approval_status,
+    round_number,
+    status,
+    subtotal_cents,
+    discount_mode,
+    discount_value,
+    discount_cents,
+    total_cents
+  )
+  values (
+    v_table_id,
+    v_session_id,
+    'CUSTOMER',
+    nullif(trim(coalesce(p_customer_name, '')), ''),
+    nullif(trim(coalesce(p_customer_phone, '')), ''),
+    nullif(trim(coalesce(p_general_note, '')), ''),
+    'ENTREGA',
+    v_delivery_address,
+    v_default_delivery_fee_cents,
+    v_payment_method,
+    v_cash_change,
+    'APPROVED',
+    1,
+    'PENDING',
+    v_subtotal,
+    'NONE',
+    0,
+    0,
+    v_total
+  )
+  returning id into v_order_id;
+
+  perform public.ensure_order_receipt_token(v_order_id);
+
+  insert into public.order_items (
+    order_id,
+    product_id,
+    name_snapshot,
+    original_unit_price_cents,
+    unit_price_cents,
+    qty,
+    note,
+    promo_name,
+    promo_discount_type,
+    promo_discount_value,
+    promo_discount_cents,
+    added_by_name,
+    status
+  )
+  with normalized_items as (
+    select
+      i.product_id,
+      coalesce(nullif(trim(coalesce(i.name_snapshot, '')), ''), 'Item') as name_snapshot,
+      greatest(coalesce(i.original_unit_price_cents, i.unit_price_cents, 0), 0) as original_unit_price_cents,
+      greatest(coalesce(i.unit_price_cents, 0), 0) as unit_price_cents,
+      greatest(coalesce(i.qty, 1), 1) as qty,
+      nullif(trim(coalesce(i.note, '')), '') as note,
+      nullif(trim(coalesce(i.promo_name, '')), '') as promo_name,
+      case
+        when i.promo_discount_type in ('AMOUNT', 'PERCENT') then i.promo_discount_type
+        else null
+      end as promo_discount_type,
+      greatest(coalesce(i.promo_discount_value, 0), 0) as promo_discount_value,
+      greatest(coalesce(i.promo_discount_cents, 0), 0) as promo_discount_cents,
+      coalesce(nullif(trim(coalesce(i.added_by_name, '')), ''), 'Cliente') as added_by_name,
+      coalesce(nullif(i.status, ''), 'PENDING') as status
+    from jsonb_to_recordset(p_items) as i(
+      product_id uuid,
+      name_snapshot text,
+      unit_price_cents integer,
+      original_unit_price_cents integer,
+      promo_name text,
+      promo_discount_type text,
+      promo_discount_value integer,
+      promo_discount_cents integer,
+      qty integer,
+      note text,
+      added_by_name text,
+      status text
+    )
+  ),
+  grouped_items as (
+    select
+      min(product_id::text)::uuid as product_id,
+      name_snapshot,
+      original_unit_price_cents,
+      unit_price_cents,
+      sum(qty)::integer as qty,
+      note,
+      promo_name,
+      promo_discount_type,
+      promo_discount_value,
+      promo_discount_cents,
+      added_by_name,
+      status
+    from normalized_items
+    group by name_snapshot, original_unit_price_cents, unit_price_cents, note, promo_name, promo_discount_type, promo_discount_value, promo_discount_cents, added_by_name, status
+  )
+  select
+    v_order_id,
+    g.product_id,
+    g.name_snapshot,
+    g.original_unit_price_cents,
+    g.unit_price_cents,
+    g.qty,
+    g.note,
+    g.promo_name,
+    g.promo_discount_type,
+    g.promo_discount_value,
+    g.promo_discount_cents,
+    g.added_by_name,
+    g.status
+  from grouped_items g;
+
+  select receipt_token
+    into v_receipt_token
+  from public.orders
+  where id = v_order_id
+  limit 1;
+
+  perform public.register_session_event(
+    v_session_id,
+    v_table_id,
+    'ORDER_CREATED',
+    jsonb_build_object(
+      'order_id', v_order_id,
+      'origin', 'CUSTOMER',
+      'round_number', 1,
+      'service_type', 'ENTREGA',
+      'delivery_fee_cents', v_default_delivery_fee_cents,
+      'delivery_address', v_delivery_address,
+      'delivery_payment_method', v_payment_method,
+      'delivery_cash_change_for_cents', v_cash_change,
+      'subtotal_cents', v_subtotal,
+      'discount_mode', 'NONE',
+      'discount_value', 0,
+      'discount_cents', 0,
+      'total_cents', v_total
+    )
+  );
+
+  return jsonb_build_object(
+    'order_id', v_order_id,
+    'session_id', v_session_id,
+    'table_id', v_table_id,
+    'receipt_token', coalesce(v_receipt_token, '')
+  );
 end;
 $$;
 
@@ -3099,7 +3517,20 @@ using (bucket_id = 'assets');
 -- Compatibilidade: garante store_name sem sobrescrever nome ja configurado.
 alter table public.settings
   add column if not exists store_name text not null default 'Loja';
+alter table public.settings
+  add column if not exists enable_delivery_module boolean not null default false;
+alter table public.products
+  add column if not exists available_on_table boolean not null default true;
+alter table public.products
+  add column if not exists available_on_delivery boolean not null default true;
 
 update public.settings
-set store_name = coalesce(nullif(trim(coalesce(store_name, '')), ''), 'Loja')
+set
+  store_name = coalesce(nullif(trim(coalesce(store_name, '')), ''), 'Loja'),
+  enable_delivery_module = coalesce(enable_delivery_module, false)
 where id = 1;
+
+update public.products
+set
+  available_on_table = coalesce(available_on_table, true),
+  available_on_delivery = coalesce(available_on_delivery, true);

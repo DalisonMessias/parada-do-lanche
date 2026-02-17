@@ -52,6 +52,8 @@ const AdminMenu: React.FC = () => {
   const [productCategoryId, setProductCategoryId] = useState('');
   const [productAddonMode, setProductAddonMode] = useState<'SINGLE' | 'MULTIPLE'>('MULTIPLE');
   const [productIsFeatured, setProductIsFeatured] = useState(false);
+  const [productAvailableOnTable, setProductAvailableOnTable] = useState(true);
+  const [productAvailableOnDelivery, setProductAvailableOnDelivery] = useState(true);
   const [productImageUrlInput, setProductImageUrlInput] = useState('');
   const [productImageUrlUploaded, setProductImageUrlUploaded] = useState('');
   const [productImageName, setProductImageName] = useState('');
@@ -93,6 +95,8 @@ const AdminMenu: React.FC = () => {
     setProductCategoryId(categories[0]?.id || '');
     setProductAddonMode('MULTIPLE');
     setProductIsFeatured(false);
+    setProductAvailableOnTable(true);
+    setProductAvailableOnDelivery(true);
     setProductImageUrlInput('');
     setProductImageUrlUploaded('');
     setProductImageName('');
@@ -209,6 +213,8 @@ const AdminMenu: React.FC = () => {
     setProductCategoryId(product.category_id);
     setProductAddonMode(product.addon_selection_mode || 'MULTIPLE');
     setProductIsFeatured(Boolean(product.is_featured));
+    setProductAvailableOnTable(product.available_on_table !== false);
+    setProductAvailableOnDelivery(product.available_on_delivery !== false);
     setProductImageUrlInput(product.image_url || '');
     setProductImageUrlUploaded('');
     setProductImageName('');
@@ -302,6 +308,8 @@ const AdminMenu: React.FC = () => {
         image_url: productImageUrlUploaded || productImageUrlInput.trim() || '',
         addon_selection_mode: productAddonMode,
         is_featured: productIsFeatured,
+        available_on_table: productAvailableOnTable,
+        available_on_delivery: productAvailableOnDelivery,
         active: editingProduct ? editingProduct.active : true,
       };
 
@@ -572,6 +580,33 @@ const AdminMenu: React.FC = () => {
                     {productIsFeatured ? 'Ativo no topo do menu digital' : 'Inativo'}
                   </button>
                 </div>
+                <div className="space-y-2">
+                  <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Disponibilidade por canal</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setProductAvailableOnTable((prev) => !prev)}
+                      className={`p-3 rounded-xl border text-[10px] font-black uppercase tracking-widest ${
+                        productAvailableOnTable
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-white text-gray-500 border-gray-200'
+                      }`}
+                    >
+                      Mesa {productAvailableOnTable ? 'ON' : 'OFF'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProductAvailableOnDelivery((prev) => !prev)}
+                      className={`p-3 rounded-xl border text-[10px] font-black uppercase tracking-widest ${
+                        productAvailableOnDelivery
+                          ? 'bg-blue-50 text-blue-700 border-blue-200'
+                          : 'bg-white text-gray-500 border-gray-200'
+                      }`}
+                    >
+                      Entrega {productAvailableOnDelivery ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div className="space-y-6">
@@ -770,6 +805,9 @@ const AdminMenu: React.FC = () => {
                         <p className="text-primary font-black text-xl tracking-tighter italic">{formatCurrency(product.price_cents)}</p>
                         <p className="text-[8px] font-black uppercase tracking-widest text-gray-400">
                           adicionais: {productAddons.length} | modo: {product.addon_selection_mode === 'SINGLE' ? '1 opcao' : 'multiplos'}
+                        </p>
+                        <p className="text-[8px] font-black uppercase tracking-widest text-gray-400">
+                          mesa: {product.available_on_table !== false ? 'ON' : 'OFF'} | entrega: {product.available_on_delivery !== false ? 'ON' : 'OFF'}
                         </p>
                       </div>
                       <div className="grid grid-cols-2 gap-2 border-t border-gray-100 pt-4">

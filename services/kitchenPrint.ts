@@ -29,6 +29,8 @@ export type KitchenPrintTicket = {
   customerName?: string | null;
   customerPhone?: string | null;
   deliveryAddress?: DeliveryAddress | null;
+  deliveryPaymentMethod?: 'PIX' | 'CASH' | 'CARD' | null;
+  deliveryCashChangeForCents?: number;
   items: KitchenPrintItem[];
   subtotalCents: number;
   serviceFeeCents?: number;
@@ -144,6 +146,13 @@ const renderFieldRow = (label: string, value: string) => `
   </div>
 `;
 
+const getDeliveryPaymentLabel = (paymentMethod?: string | null) => {
+  if (paymentMethod === 'PIX') return 'Pix';
+  if (paymentMethod === 'CASH') return 'Dinheiro';
+  if (paymentMethod === 'CARD') return 'Cartao';
+  return '';
+};
+
 const renderDeliverySection = (ticket: KitchenPrintTicket) => {
   if (ticket.ticketType !== 'ENTREGA') return '';
   const address = ticket.deliveryAddress || null;
@@ -185,6 +194,18 @@ const renderCustomerBlock = (ticket: KitchenPrintTicket) => {
   }
   if ((ticket.customerPhone || '').trim() && ticket.ticketType === 'RETIRADA') {
     rows.push(renderFieldRow('Telefone', ticket.customerPhone || ''));
+  }
+  const paymentLabel = getDeliveryPaymentLabel(ticket.deliveryPaymentMethod);
+  if (paymentLabel) {
+    rows.push(renderFieldRow('Pagamento', paymentLabel));
+  }
+  if (
+    ticket.deliveryPaymentMethod === 'CASH' &&
+    Math.max(0, Number(ticket.deliveryCashChangeForCents || 0)) > 0
+  ) {
+    rows.push(
+      renderFieldRow('Troco para', formatCurrency(Math.max(0, Number(ticket.deliveryCashChangeForCents || 0))))
+    );
   }
 
   if (rows.length === 0) return '';

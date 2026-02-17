@@ -546,6 +546,9 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
         : serviceType === 'ENTREGA'
           ? 'ENTREGA'
           : 'RETIRADA';
+    const shouldPersistDeliveryPayment =
+      mode === 'NEW' && (rpcServiceType === 'ENTREGA' || rpcServiceType === 'RETIRADA');
+    const cashChangeForCents = paymentMethod === 'CASH' ? parseMaskedCurrencyToCents(cashChangeInput) : 0;
 
     const { data: orderId, error } = await supabase.rpc('create_staff_order', {
       p_session_id: target.session_id,
@@ -567,6 +570,9 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
       p_delivery_fee_cents: mode === 'NEW' ? deliveryFeeCents : 0,
       p_discount_mode: effectiveDiscountMode,
       p_discount_value: effectiveDiscountValueNormalized,
+      p_delivery_payment_method: shouldPersistDeliveryPayment ? paymentMethod : null,
+      p_delivery_cash_change_for_cents:
+        shouldPersistDeliveryPayment && paymentMethod === 'CASH' ? cashChangeForCents : 0,
       p_items: payloadItems,
     });
 
@@ -632,6 +638,8 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
               customerName: order.customer_name || null,
               customerPhone: order.customer_phone || null,
               deliveryAddress: order.delivery_address || null,
+              deliveryPaymentMethod: order.delivery_payment_method || null,
+              deliveryCashChangeForCents: Number(order.delivery_cash_change_for_cents || 0),
               items: (order.items || []).map((item) => ({
                 name_snapshot: item.name_snapshot,
                 qty: item.qty || 0,
@@ -1177,4 +1185,3 @@ const AdminCounter: React.FC<AdminCounterProps> = ({ profile, settings }) => {
 };
 
 export default AdminCounter;
-

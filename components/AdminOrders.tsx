@@ -126,6 +126,13 @@ const serviceTypeLabel = (serviceType?: string | null) => {
   return 'Mesa';
 };
 
+const deliveryPaymentLabel = (paymentMethod?: string | null) => {
+  if (paymentMethod === 'PIX') return 'Pix';
+  if (paymentMethod === 'CASH') return 'Dinheiro';
+  if (paymentMethod === 'CARD') return 'Cartao';
+  return null;
+};
+
 type SessionCardType = 'MESA' | 'BALCAO' | 'RETIRADA' | 'ENTREGA';
 
 const getTicketTypeFromOrder = (order?: Order | null): SessionCardType => {
@@ -674,6 +681,8 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
           customerName: order.customer_name || null,
           customerPhone: order.customer_phone || null,
           deliveryAddress: order.delivery_address || null,
+          deliveryPaymentMethod: order.delivery_payment_method || null,
+          deliveryCashChangeForCents: Number(order.delivery_cash_change_for_cents || 0),
           items: (order.items || []).map((item) => ({
             name_snapshot: item.name_snapshot,
             qty: item.qty || 0,
@@ -1134,6 +1143,17 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
                           {order.customer_phone && (
                             <p className="text-[10px] text-blue-700 font-black">Telefone: {order.customer_phone}</p>
                           )}
+                          {deliveryPaymentLabel(order.delivery_payment_method) && (
+                            <p className="text-[10px] text-blue-700 font-black">
+                              Pagamento: {deliveryPaymentLabel(order.delivery_payment_method)}
+                            </p>
+                          )}
+                          {order.delivery_payment_method === 'CASH' &&
+                            Number(order.delivery_cash_change_for_cents || 0) > 0 && (
+                              <p className="text-[10px] text-blue-700 font-black">
+                                Troco para: {formatCurrency(Number(order.delivery_cash_change_for_cents || 0))}
+                              </p>
+                            )}
                           {order.service_type === 'ENTREGA' &&
                             getDeliveryLines(order).map((line, index) => (
                               <p key={`${order.id}-delivery-${index}`} className="text-[10px] text-blue-700 font-black">

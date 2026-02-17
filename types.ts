@@ -11,6 +11,7 @@ export type WaiterFeeMode = 'PERCENT' | 'FIXED';
 export type PixKeyType = 'cpf' | 'cnpj' | 'phone' | 'email' | 'random';
 export type PromotionScope = 'GLOBAL' | 'PRODUCT';
 export type PromotionDiscountType = 'AMOUNT' | 'PERCENT';
+export type DeliveryPaymentMethod = 'PIX' | 'CASH' | 'CARD';
 
 export interface DeliveryAddress {
   street: string;
@@ -39,6 +40,7 @@ export interface StoreSettings {
   sticker_qr_frame_color: string;
   order_approval_mode?: OrderApprovalMode;
   enable_counter_module?: boolean;
+  enable_delivery_module?: boolean;
   default_delivery_fee_cents?: number;
   enable_waiter_fee?: boolean;
   waiter_fee_mode?: WaiterFeeMode;
@@ -74,6 +76,8 @@ export interface Product {
   price_cents: number;
   image_url: string;
   addon_selection_mode: 'SINGLE' | 'MULTIPLE';
+  available_on_table?: boolean;
+  available_on_delivery?: boolean;
   is_featured?: boolean;
   active: boolean;
   out_of_stock: boolean;
@@ -191,6 +195,8 @@ export interface Order {
   service_type?: ServiceType;
   delivery_fee_cents?: number;
   delivery_address?: DeliveryAddress | null;
+  delivery_payment_method?: DeliveryPaymentMethod | null;
+  delivery_cash_change_for_cents?: number | null;
   total_cents: number;
   created_at: string;
   table_name?: string;
@@ -215,4 +221,17 @@ export interface OrderItem {
   added_by_name: string;
 }
 
-export type AppView = 'LANDING' | 'CUSTOMER_MENU' | 'ADMIN_LOGIN' | 'ADMIN_DASHBOARD' | 'TEMP_REGISTER' | 'PUBLIC_RECEIPT' | 'ADMIN_PLAN' | 'PUBLIC_PLAN_PAYMENT' | 'MAINTENANCE' | 'NOT_FOUND';
+export type AppView =
+  | 'LANDING'
+  | 'CUSTOMER_MENU'
+  | 'DELIVERY_INTRO'
+  | 'DELIVERY_MENU'
+  | 'DELIVERY_CHECKOUT'
+  | 'ADMIN_LOGIN'
+  | 'ADMIN_DASHBOARD'
+  | 'TEMP_REGISTER'
+  | 'PUBLIC_RECEIPT'
+  | 'ADMIN_PLAN'
+  | 'PUBLIC_PLAN_PAYMENT'
+  | 'MAINTENANCE'
+  | 'NOT_FOUND';

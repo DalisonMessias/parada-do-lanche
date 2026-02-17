@@ -48,6 +48,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
     order_approval_mode: 'HOST' as 'HOST' | 'SELF',
     has_thermal_printer: false,
     enable_counter_module: true,
+    enable_delivery_module: false,
     enable_waiter_fee: false,
     waiter_fee_mode: 'PERCENT' as WaiterFeeMode,
     waiter_fee_value: 10,
@@ -84,6 +85,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
         order_approval_mode: (settings.order_approval_mode || 'HOST') as 'HOST' | 'SELF',
         has_thermal_printer: settings.has_thermal_printer === true,
         enable_counter_module: settings.enable_counter_module !== false,
+        enable_delivery_module: settings.enable_delivery_module === true,
         enable_waiter_fee: settings.enable_waiter_fee === true,
         waiter_fee_mode: waiterFeeMode,
         waiter_fee_value: normalizedWaiterFeeValue,
@@ -299,6 +301,18 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
                   checked={formData.enable_counter_module}
                   onChange={(e) => setFormData({ ...formData, enable_counter_module: e.target.checked })}
                   aria-label="Habilitar modulo Balcao"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-4 bg-white border border-gray-200 rounded-xl px-4 py-3 cursor-pointer">
+                <div>
+                  <p className="text-sm font-black text-gray-800">Habilitar modulo Entrega</p>
+                  <p className="text-[10px] text-gray-500 font-bold">Libera atalho publico de entrega com menu e checkout proprios.</p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={formData.enable_delivery_module}
+                  onChange={(e) => setFormData({ ...formData, enable_delivery_module: e.target.checked })}
+                  aria-label="Habilitar modulo Entrega"
                 />
               </label>
             </div>

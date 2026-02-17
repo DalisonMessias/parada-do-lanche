@@ -25,6 +25,9 @@ const AdminPerformance = lazy(() => import('./components/AdminPerformance'));
 const PublicReceipt = lazy(() => import('./components/PublicReceipt'));
 const AdminPlan = lazy(() => import('./components/AdminPlan'));
 const PublicPlanPayment = lazy(() => import('./components/PublicPlanPayment'));
+const PublicDeliveryIntro = lazy(() => import('./components/PublicDeliveryIntro'));
+const PublicDeliveryMenu = lazy(() => import('./components/PublicDeliveryMenu'));
+const PublicDeliveryCheckout = lazy(() => import('./components/PublicDeliveryCheckout'));
 const Maintenance = lazy(() => import('./components/Maintenance'));
 const QRScanner = lazy(() => import('./components/QRScanner'));
 
@@ -256,6 +259,16 @@ const App: React.FC = () => {
     fetchSettings();
   }, []);
 
+  useEffect(() => {
+    if (!settings) return;
+    if (settings.enable_delivery_module === true) return;
+    if (view !== 'DELIVERY_INTRO' && view !== 'DELIVERY_MENU' && view !== 'DELIVERY_CHECKOUT') {
+      return;
+    }
+    window.history.replaceState({}, '', '/');
+    setView('LANDING');
+  }, [settings?.enable_delivery_module, settings, view]);
+
   // Check Plan Status (Lazy Update)
   useEffect(() => {
     if (!settings) return;
@@ -337,7 +350,8 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleRoute = async () => {
       try {
-        const path = window.location.pathname;
+        const rawPath = window.location.pathname;
+        const path = rawPath.length > 1 ? rawPath.replace(/\/+$/, '') : rawPath;
         console.log('Routing to:', path);
 
         if (path.startsWith('/cupom/')) {
@@ -349,6 +363,15 @@ const App: React.FC = () => {
           }
           setPublicReceiptToken(token);
           setView('PUBLIC_RECEIPT');
+        } else if (path === '/entrega/checkout') {
+          setPublicReceiptToken('');
+          setView('DELIVERY_CHECKOUT');
+        } else if (path === '/entrega/menu') {
+          setPublicReceiptToken('');
+          setView('DELIVERY_MENU');
+        } else if (path === '/entrega') {
+          setPublicReceiptToken('');
+          setView('DELIVERY_INTRO');
         } else if (path.startsWith('/m/')) {
           setPublicReceiptToken('');
           const token = path.split('/m/')[1];
@@ -704,7 +727,7 @@ const App: React.FC = () => {
       try {
         const { data: freshOrder, error: loadError } = await supabase
           .from('orders')
-          .select('id,session_id,table_id,origin,service_type,created_by_guest_id,status,approval_status,created_at,customer_name,customer_phone,delivery_address,delivery_fee_cents,subtotal_cents,total_cents,printed_at,items:order_items(*),session:sessions(created_at,closed_at,table:tables(name))')
+          .select('id,session_id,table_id,origin,service_type,created_by_guest_id,status,approval_status,created_at,customer_name,customer_phone,delivery_address,delivery_fee_cents,delivery_payment_method,delivery_cash_change_for_cents,subtotal_cents,total_cents,printed_at,items:order_items(*),session:sessions(created_at,closed_at,table:tables(name))')
           .eq('id', orderId)
           .maybeSingle();
 
@@ -760,6 +783,8 @@ const App: React.FC = () => {
               customerName: loadedOrder.customer_name || null,
               customerPhone: loadedOrder.customer_phone || null,
               deliveryAddress: loadedOrder.delivery_address || null,
+              deliveryPaymentMethod: loadedOrder.delivery_payment_method || null,
+              deliveryCashChangeForCents: Number(loadedOrder.delivery_cash_change_for_cents || 0),
               items: items.map((item: any) => ({
                 name_snapshot: String(item.name_snapshot || 'Item'),
                 qty: Number(item.qty || 0),
@@ -1030,6 +1055,10 @@ const App: React.FC = () => {
     const promotion = resolvePromotionForProduct(product.id, promotions);
     return applyPromotionToPrice(product.price_cents || 0, promotion);
   };
+  const tableMenuProducts = useMemo(
+    () => products.filter((product) => product.available_on_table !== false),
+    [products]
+  );
 
   const normalizedCustomerSearch = customerSearchTerm.trim().toLowerCase();
   const selectedCategoryId =
@@ -1037,14 +1066,14 @@ const App: React.FC = () => {
   const showPromotionsOnly = selectedCategory === PROMOTIONS_TAB_ID;
 
   const filteredProductsBySearch = useMemo(() => {
-    if (!normalizedCustomerSearch) return products;
-    return products.filter((product) => {
+    if (!normalizedCustomerSearch) return tableMenuProducts;
+    return tableMenuProducts.filter((product) => {
       const categoryName =
         categories.find((category) => category.id === product.category_id)?.name || '';
       const searchableText = `${product.name} ${product.description || ''} ${categoryName}`.toLowerCase();
       return searchableText.includes(normalizedCustomerSearch);
     });
-  }, [products, categories, normalizedCustomerSearch]);
+  }, [tableMenuProducts, categories, normalizedCustomerSearch]);
 
   const filteredProductIds = useMemo(
     () => new Set(filteredProductsBySearch.map((product) => product.id)),
@@ -1053,25 +1082,25 @@ const App: React.FC = () => {
 
   const promotionProductIds = useMemo(() => {
     const ids = new Set<string>();
-    products.forEach((product) => {
+    tableMenuProducts.forEach((product) => {
       const pricing = getProductPricing(product);
       if (pricing.hasPromotion) ids.add(product.id);
     });
     return ids;
-  }, [products, promotions]);
+  }, [tableMenuProducts, promotions]);
 
   const featuredProducts = useMemo(() => {
     if (showPromotionsOnly || selectedCategoryId) return [] as Product[];
-    return products
+    return tableMenuProducts
       .filter((product) => Boolean(product.is_featured) && filteredProductIds.has(product.id))
       .filter((product) => !showPromotionsOnly || promotionProductIds.has(product.id))
       .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'pt-BR'));
-  }, [products, filteredProductIds, showPromotionsOnly, selectedCategoryId, promotionProductIds]);
+  }, [tableMenuProducts, filteredProductIds, showPromotionsOnly, selectedCategoryId, promotionProductIds]);
 
   const visibleMenuCategories = useMemo(() => {
     return categories.filter((category) => {
       if (selectedCategoryId && category.id !== selectedCategoryId) return false;
-      const categoryProducts = products.filter(
+      const categoryProducts = tableMenuProducts.filter(
         (product) => product.category_id === category.id && filteredProductIds.has(product.id)
       );
       if (categoryProducts.length === 0) return false;
@@ -1080,7 +1109,7 @@ const App: React.FC = () => {
       }
       return true;
     });
-  }, [categories, products, filteredProductIds, selectedCategoryId, showPromotionsOnly, promotionProductIds]);
+  }, [categories, tableMenuProducts, filteredProductIds, selectedCategoryId, showPromotionsOnly, promotionProductIds]);
 
   const openAddonSelector = (product: Product) => {
     if (hasOwnPendingApproval) return;
@@ -1494,7 +1523,7 @@ const App: React.FC = () => {
               O cardapio de pedidos e liberado somente apos o escaneamento.
             </p>
 
-            <div className="pt-4">
+            <div className="pt-4 space-y-3">
               <button
                 onClick={() => setShowQRScanner(true)}
                 className="w-full bg-primary text-white p-5 rounded-xl font-black uppercase tracking-widest text-base shadow-[0_8px_20px_rgba(255,159,10,0.25)] transition-transform active:scale-95 flex items-center justify-center gap-3"
@@ -1508,6 +1537,20 @@ const App: React.FC = () => {
                 </svg>
                 Escanear QR Code com o Sistema
               </button>
+              {settings.enable_delivery_module === true && (
+                <button
+                  onClick={() => window.history.pushState({}, '', '/entrega')}
+                  className="w-full bg-gray-900 text-white p-5 rounded-xl font-black uppercase tracking-widest text-base shadow-[0_8px_20px_rgba(15,23,42,0.2)] transition-transform active:scale-95 flex items-center justify-center gap-3"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 3h2l.4 2" />
+                    <path d="M7 13h10l4-8H6.4" />
+                    <circle cx="9" cy="19" r="2" />
+                    <circle cx="17" cy="19" r="2" />
+                  </svg>
+                  Entrega
+                </button>
+              )}
             </div>
 
             <Suspense fallback={null}>
@@ -1544,7 +1587,14 @@ const App: React.FC = () => {
 
   // Blocking Logic
   if (isSuspended) {
-    const isPublicView = view === 'CUSTOMER_MENU' || view === 'LANDING' || view === 'TEMP_REGISTER' || view === 'PUBLIC_RECEIPT';
+    const isPublicView =
+      view === 'CUSTOMER_MENU' ||
+      view === 'LANDING' ||
+      view === 'TEMP_REGISTER' ||
+      view === 'PUBLIC_RECEIPT' ||
+      view === 'DELIVERY_INTRO' ||
+      view === 'DELIVERY_MENU' ||
+      view === 'DELIVERY_CHECKOUT';
     if (isPublicView) {
       return <Maintenance />;
     }
@@ -1559,6 +1609,36 @@ const App: React.FC = () => {
         </Layout>
       );
     }
+  }
+
+  if (view === 'DELIVERY_INTRO') {
+    return (
+      <Layout settings={settings} wide>
+        <Suspense fallback={lazyFallback}>
+          <PublicDeliveryIntro />
+        </Suspense>
+      </Layout>
+    );
+  }
+
+  if (view === 'DELIVERY_MENU') {
+    return (
+      <Layout settings={settings} wide>
+        <Suspense fallback={lazyFallback}>
+          <PublicDeliveryMenu />
+        </Suspense>
+      </Layout>
+    );
+  }
+
+  if (view === 'DELIVERY_CHECKOUT') {
+    return (
+      <Layout settings={settings} wide>
+        <Suspense fallback={lazyFallback}>
+          <PublicDeliveryCheckout settings={settings} />
+        </Suspense>
+      </Layout>
+    );
   }
 
   if (view === 'TEMP_REGISTER') {
@@ -2287,7 +2367,7 @@ const App: React.FC = () => {
               )}
 
               {visibleMenuCategories.map((cat) => {
-                let categoryProducts = products.filter(
+                let categoryProducts = tableMenuProducts.filter(
                   (p) => p.category_id === cat.id && filteredProductIds.has(p.id)
                 );
                 if (showPromotionsOnly) {
