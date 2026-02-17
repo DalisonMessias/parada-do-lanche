@@ -25,6 +25,8 @@ const AdminPerformance = lazy(() => import('./components/AdminPerformance'));
 const PublicReceipt = lazy(() => import('./components/PublicReceipt'));
 const AdminPlan = lazy(() => import('./components/AdminPlan'));
 const PublicPlanPayment = lazy(() => import('./components/PublicPlanPayment'));
+const UaitechPixSettings = lazy(() => import('./components/UaitechPixSettings'));
+const PublicPixCheckout = lazy(() => import('./components/PublicPixCheckout'));
 const PublicDeliveryIntro = lazy(() => import('./components/PublicDeliveryIntro'));
 const PublicDeliveryMenu = lazy(() => import('./components/PublicDeliveryMenu'));
 const PublicDeliveryCheckout = lazy(() => import('./components/PublicDeliveryCheckout'));
@@ -122,7 +124,8 @@ const App: React.FC = () => {
   const adminAccessKey = ((import.meta as any).env?.VITE_ADMIN_ACCESS_KEY || '').trim();
   const tempRegisterEnabled = ((import.meta as any).env?.VITE_ENABLE_TEMP_REGISTER || '').trim().toLowerCase() === 'true';
   const adminPath = adminAccessKey ? `/admin/${adminAccessKey}` : '/admin';
-  const planPaymentRoute = '/uaitech';
+  const uaitechRoute = '/uaitech';
+  const pixCheckoutRoute = '/checkout/pix';
   const legacyPlanPaymentRoute = '/V7B2X-QP9MW-L4N1R-Z6K0J-H3S5D';
   const [view, setView] = useState<AppView>('LANDING');
   const [publicReceiptToken, setPublicReceiptToken] = useState('');
@@ -372,7 +375,8 @@ const App: React.FC = () => {
             hashPath.startsWith('/menudigital') ||
             hashPath.startsWith('/entrega') ||
             hashPath === '/cadastro-temp' ||
-            hashPath === planPaymentRoute ||
+            hashPath === uaitechRoute ||
+            hashPath === pixCheckoutRoute ||
             hashPath === legacyPlanPaymentRoute;
 
           if (isLegacyHashRoute) {
@@ -460,12 +464,14 @@ const App: React.FC = () => {
           setPublicReceiptToken('');
           setView(tempRegisterEnabled ? 'TEMP_REGISTER' : 'LANDING');
         } else if (path === legacyPlanPaymentRoute) {
-          window.history.replaceState({}, '', planPaymentRoute);
           setPublicReceiptToken('');
           setView('PUBLIC_PLAN_PAYMENT');
-        } else if (path === planPaymentRoute) {
+        } else if (path === uaitechRoute) {
           setPublicReceiptToken('');
-          setView('PUBLIC_PLAN_PAYMENT');
+          setView('UAITECH_PIX_SETTINGS');
+        } else if (path === pixCheckoutRoute) {
+          setPublicReceiptToken('');
+          setView('PIX_CHECKOUT');
         } else if (path.startsWith('/admin')) {
           setPublicReceiptToken('');
           const clean = path.replace(/^\//, '');
@@ -1607,6 +1613,14 @@ const App: React.FC = () => {
     return <PublicPlanPayment />;
   }
 
+  if (view === 'UAITECH_PIX_SETTINGS') {
+    return <UaitechPixSettings />;
+  }
+
+  if (view === 'PIX_CHECKOUT') {
+    return <PublicPixCheckout />;
+  }
+
 
 
   // Blocking Logic
@@ -1871,7 +1885,7 @@ const App: React.FC = () => {
       );
     }
 
-    if (view === 'ADMIN_DASHBOARD' || (adminTab === 'ADMIN_PLAN' && view !== 'PUBLIC_PLAN_PAYMENT')) {
+    if (view === 'ADMIN_DASHBOARD') {
       const role = profile?.role || 'WAITER';
       const isWaiter = role === 'WAITER';
       const canAccessCounter = settings?.enable_counter_module !== false;

@@ -32,7 +32,14 @@ const AdminPlan: React.FC = () => {
     const dueDateStr = (settings as any).plan_current_due_date; // 'YYYY-MM-DD'
     const dueDay = (settings as any).plan_due_day || 15;
     const planPrice = (settings as any).plan_price || 19.90;
+    const planDescription = `Assinatura mensal do plano ${planName}`;
     const paidAt = (settings as any).plan_paid_at;
+    const pixCheckoutQuery = new URLSearchParams({
+        nome: String(planName || '').trim() || 'Plano mensal',
+        descricao: String(planDescription || '').trim() || 'Assinatura mensal do sistema',
+        valor: String(Number(planPrice || 0)),
+    }).toString();
+    const pixCheckoutPath = `/checkout/pix?${pixCheckoutQuery}`;
 
     // Calculate generic due date if missing
     const now = new Date();
@@ -153,16 +160,15 @@ const AdminPlan: React.FC = () => {
                         {/* Button Logic: Show if late OR close to due date (5 days) */}
                         {(isLate || isCloseToDue) && (
                             <div className="w-full">
-                                <a
-                                    href="https://invoice.infinitepay.io/plans/dalison_messias/6KthFvygjZ"
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="block w-full py-4 px-6 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white font-bold text-center rounded-lg shadow-lg transform transition hover:scale-[1.02] active:scale-95"
+                                <button
+                                    type="button"
+                                    onClick={() => window.history.pushState({}, '', pixCheckoutPath)}
+                                    className="block w-full py-4 px-6 bg-gradient-to-r from-cyan-600 to-cyan-700 hover:from-cyan-700 hover:to-cyan-800 text-white font-bold text-center rounded-lg shadow-lg transform transition hover:scale-[1.02] active:scale-95"
                                 >
-                                    Pagar Agora
-                                </a>
+                                    Pagar com Pix
+                                </button>
                                 <p className="text-xs text-center text-gray-500 mt-3">
-                                    Após o pagamento, envie o comprovante no suporte receber a liberação.
+                                    O checkout abre internamente com QR Code e copia e cola.
                                 </p>
                             </div>
                         )}
@@ -203,3 +209,4 @@ const AdminPlan: React.FC = () => {
 };
 
 export default AdminPlan;
+

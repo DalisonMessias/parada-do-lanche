@@ -30,6 +30,12 @@ export interface StoreSettings {
   has_thermal_printer?: boolean;
   pix_key_type?: PixKeyType | null;
   pix_key_value?: string | null;
+  pix_checkout_chave?: string | null;
+  pix_checkout_nome_recebedor?: string | null;
+  pix_checkout_cidade_recebedor?: string | null;
+  pix_checkout_descricao?: string | null;
+  pix_checkout_txid?: string | null;
+  pix_checkout_reutilizavel?: boolean | null;
   notification_sound_enabled?: boolean;
   notification_sound_url?: string;
   auto_print_menu_digital?: boolean;
@@ -233,5 +239,7 @@ export type AppView =
   | 'PUBLIC_RECEIPT'
   | 'ADMIN_PLAN'
   | 'PUBLIC_PLAN_PAYMENT'
+  | 'UAITECH_PIX_SETTINGS'
+  | 'PIX_CHECKOUT'
   | 'MAINTENANCE'
   | 'NOT_FOUND';
