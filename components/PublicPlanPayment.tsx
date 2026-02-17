@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../services/supabase';
 import { AlertTriangle, Calendar, CheckCircle, CreditCard, Lock, RefreshCcw, User, XCircle } from 'lucide-react';
 
@@ -45,6 +45,13 @@ type PlanDashboardResponse = {
   history?: PlanPaymentHistoryItem[];
 };
 
+type PlanManagementResponse = {
+  success: boolean;
+  message: string;
+  current_due_date?: string | null;
+  plan_status?: PlanStatus;
+};
+
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat('pt-BR', {
     style: 'currency',
@@ -81,12 +88,23 @@ const PublicPlanPayment: React.FC = () => {
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [paymentMessage, setPaymentMessage] = useState('');
   const [paymentNote, setPaymentNote] = useState('');
+  const [managementDueDate, setManagementDueDate] = useState('');
+  const [managementStatus, setManagementStatus] = useState<PlanStatus>('OPEN');
+  const [managementNote, setManagementNote] = useState('');
+  const [managementLoading, setManagementLoading] = useState(false);
+  const [managementMessage, setManagementMessage] = useState('');
 
   const isLogged = Boolean(dashboard?.success);
   const snapshot = dashboard?.snapshot || null;
   const pendingItems = dashboard?.pending_items || [];
   const dueSoonItems = dashboard?.due_soon_items || [];
   const historyItems = dashboard?.history || [];
+
+  useEffect(() => {
+    if (!snapshot) return;
+    setManagementDueDate((snapshot.current_due_date || '').slice(0, 10));
+    setManagementStatus((snapshot.plan_status || 'OPEN') as PlanStatus);
+  }, [snapshot?.current_due_date, snapshot?.plan_status]);
 
   const canTryLogin = useMemo(
     () => username.trim().length > 0 && password.trim().length > 0 && !loginLoading,
@@ -167,6 +185,44 @@ const PublicPlanPayment: React.FC = () => {
       setPaymentMessage(err?.message || 'Falha ao confirmar pagamento.');
     } finally {
       setPaymentLoading(false);
+    }
+  };
+
+  const handleApplyManagementUpdate = async (forcedStatus?: PlanStatus) => {
+    const resolvedUsername = username.trim();
+    const resolvedPassword = password.trim();
+    if (!resolvedUsername || !resolvedPassword) return;
+
+    setManagementLoading(true);
+    setManagementMessage('');
+    try {
+      const nextStatus = forcedStatus || managementStatus;
+      const { data, error } = await supabase.rpc('set_plan_management_state', {
+        p_username: resolvedUsername,
+        p_password: resolvedPassword,
+        p_new_due_date: managementDueDate || null,
+        p_new_status: nextStatus || null,
+        p_note: managementNote.trim() || null,
+      });
+
+      if (error) {
+        setManagementMessage(error.message || 'Falha ao aplicar ajustes administrativos.');
+        return;
+      }
+
+      const response = (data || {}) as PlanManagementResponse;
+      if (!response.success) {
+        setManagementMessage(response.message || 'Nao foi possivel aplicar ajustes.');
+        return;
+      }
+
+      setManagementMessage(response.message || 'Ajustes aplicados com sucesso.');
+      setManagementNote('');
+      await loadDashboard(resolvedUsername, resolvedPassword);
+    } catch (err: any) {
+      setManagementMessage(err?.message || 'Falha ao aplicar ajustes administrativos.');
+    } finally {
+      setManagementLoading(false);
     }
   };
 
@@ -408,6 +464,85 @@ const PublicPlanPayment: React.FC = () => {
                 </div>
               )}
             </div>
+
+            <div className="bg-white rounded-2xl border border-gray-200 p-5 space-y-3">
+              <h2 className="text-sm font-black uppercase tracking-wider text-gray-800">Ajustes administrativos</h2>
+              <p className="text-xs font-bold text-gray-500">
+                Altere vencimento e status manualmente. Pode bloquear a loja imediatamente, se necessario.
+              </p>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase tracking-wider text-gray-400">Data de vencimento</label>
+                <input
+                  type="date"
+                  value={managementDueDate}
+                  onChange={(e) => setManagementDueDate(e.target.value)}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-400"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase tracking-wider text-gray-400">Status do plano</label>
+                <select
+                  value={managementStatus}
+                  onChange={(e) => setManagementStatus(e.target.value as PlanStatus)}
+                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-400 bg-white"
+                >
+                  <option value="PAID">PAID (Pago)</option>
+                  <option value="OPEN">OPEN (Em aberto)</option>
+                  <option value="OVERDUE">OVERDUE (Vencido)</option>
+                  <option value="SUSPENDED">SUSPENDED (Bloqueado)</option>
+                </select>
+              </div>
+
+              <textarea
+                value={managementNote}
+                onChange={(e) => setManagementNote(e.target.value)}
+                placeholder="Motivo/observacao (opcional)"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm outline-none focus:border-blue-400"
+                rows={2}
+              />
+
+              <button
+                type="button"
+                onClick={() => handleApplyManagementUpdate()}
+                disabled={managementLoading}
+                className={`w-full py-3 rounded-lg text-sm font-black uppercase tracking-wider text-white ${
+                  managementLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700'
+                }`}
+              >
+                {managementLoading ? 'Aplicando...' : 'Aplicar ajuste'}
+              </button>
+
+              <div className="grid grid-cols-1 gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleApplyManagementUpdate('SUSPENDED')}
+                  disabled={managementLoading}
+                  className={`w-full py-2.5 rounded-lg text-xs font-black uppercase tracking-wider text-white ${
+                    managementLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-red-600 hover:bg-red-700'
+                  }`}
+                >
+                  Bloquear imediato
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleApplyManagementUpdate('OPEN')}
+                  disabled={managementLoading}
+                  className={`w-full py-2.5 rounded-lg text-xs font-black uppercase tracking-wider text-white ${
+                    managementLoading ? 'bg-gray-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700'
+                  }`}
+                >
+                  Desbloquear (em aberto)
+                </button>
+              </div>
+
+              {managementMessage && (
+                <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-3 text-xs font-bold text-indigo-700">
+                  {managementMessage}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -426,4 +561,3 @@ const PublicPlanPayment: React.FC = () => {
 };
 
 export default PublicPlanPayment;
-
