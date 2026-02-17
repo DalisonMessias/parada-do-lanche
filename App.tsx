@@ -361,15 +361,27 @@ const App: React.FC = () => {
           }
           setPublicReceiptToken(token);
           setView('PUBLIC_RECEIPT');
+        } else if (path === '/menudigital/checkout') {
+          setPublicReceiptToken('');
+          setView('DELIVERY_CHECKOUT');
+        } else if (path === '/menudigital/menu') {
+          setPublicReceiptToken('');
+          setView('DELIVERY_MENU');
+        } else if (path === '/menudigital') {
+          setPublicReceiptToken('');
+          setView('DELIVERY_MENU');
         } else if (path === '/entrega/checkout') {
+          window.history.replaceState({}, '', '/menudigital/checkout');
           setPublicReceiptToken('');
           setView('DELIVERY_CHECKOUT');
         } else if (path === '/entrega/menu') {
+          window.history.replaceState({}, '', '/menudigital');
           setPublicReceiptToken('');
           setView('DELIVERY_MENU');
         } else if (path === '/entrega') {
+          window.history.replaceState({}, '', '/menudigital');
           setPublicReceiptToken('');
-          setView('DELIVERY_INTRO');
+          setView('DELIVERY_MENU');
         } else if (path.startsWith('/m/')) {
           setPublicReceiptToken('');
           const token = path.split('/m/')[1];
@@ -1521,22 +1533,11 @@ const App: React.FC = () => {
               O cardapio de pedidos e liberado somente apos o escaneamento.
             </p>
 
-            <div className="pt-4 space-y-3">
-              {settings.enable_delivery_module === true && (
-                <button
-                  onClick={() => window.history.pushState({}, '', '/entrega')}
-                  className="w-full bg-gray-900 text-white p-5 rounded-xl font-black uppercase tracking-widest text-base shadow-[0_8px_20px_rgba(15,23,42,0.2)] transition-transform active:scale-95 flex items-center justify-center gap-3"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3 3h2l.4 2" />
-                    <path d="M7 13h10l4-8H6.4" />
-                    <circle cx="9" cy="19" r="2" />
-                    <circle cx="17" cy="19" r="2" />
-                  </svg>
-                  Entrega
-                </button>
-              )}
-            </div>
+            {settings.enable_delivery_module === true && (
+              <p className="text-[10px] text-gray-500 font-black uppercase tracking-[0.18em]">
+                Pedidos de entrega em /menudigital
+              </p>
+            )}
           </section>
         </div>
       </Layout>

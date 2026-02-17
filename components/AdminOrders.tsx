@@ -135,6 +135,15 @@ const deliveryPaymentLabel = (paymentMethod?: string | null) => {
 
 type SessionCardType = 'MESA' | 'BALCAO' | 'RETIRADA' | 'ENTREGA';
 
+const sessionCardTypeLabel = (type: SessionCardType) => {
+  if (type === 'ENTREGA') return 'Entrega';
+  if (type === 'RETIRADA') return 'Retirada';
+  if (type === 'BALCAO') return 'Balcao';
+  return 'Mesa';
+};
+
+const isDeliveryLikeCardType = (type: SessionCardType) => type === 'ENTREGA' || type === 'RETIRADA';
+
 const getTicketTypeFromOrder = (order?: Order | null): SessionCardType => {
   if (!order) return 'MESA';
   if (order.service_type === 'ENTREGA') return 'ENTREGA';
@@ -539,7 +548,15 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
   };
 
   const handleFinalizeSession = async (session: SessionAggregate) => {
-    const ok = await confirm(`Marcar ${session.table?.name || 'mesa'} como paga e encerrar ciclo?`);
+    const shouldUseDeliveredLabel = shouldUseDeliveredActionLabel(session);
+    const referenceLabel = shouldUseDeliveredLabel
+      ? `pedido de ${sessionCardTypeLabel(getSessionCardType(session)).toLowerCase()}`
+      : (session.table?.name || 'mesa');
+    const ok = await confirm(
+      shouldUseDeliveredLabel
+        ? `Marcar ${referenceLabel} como entregue e encerrar ciclo?`
+        : `Marcar ${referenceLabel} como paga e encerrar ciclo?`
+    );
     if (!ok) return;
 
     const { error: finalizeError } = await supabase.rpc('finalize_session_with_history', {
@@ -586,7 +603,12 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
     }
 
     setSelectedSessionId(null);
-    toast('Pagamento concluido. Mesa liberada para novo ciclo.', 'success');
+    toast(
+      shouldUseDeliveredLabel
+        ? 'Pedido marcado como entregue e encerrado.'
+        : 'Pagamento concluido. Mesa liberada para novo ciclo.',
+      'success'
+    );
     fetchSessions();
   };
 
@@ -739,14 +761,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
       const latestOrder = visibleOrders[0] || null;
       const cardType = getSessionCardType(session);
       const useDeliveredActionLabel = shouldUseDeliveredActionLabel(session);
-      const cardTypeLabel =
-        cardType === 'ENTREGA'
-          ? 'Entrega'
-          : cardType === 'RETIRADA'
-            ? 'Retirada'
-            : cardType === 'BALCAO'
-              ? 'Balcao'
-              : 'Mesa';
+      const cardTypeLabel = sessionCardTypeLabel(cardType);
       const referenceOrderId = latestOrder?.id || null;
       const referenceTime = latestOrder?.created_at || session.created_at;
       const total = getSessionTotal(session);
@@ -864,20 +879,27 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
     });
   };
 
-  const selectedTotalsByGuest = selectedSession ? getTotalsByGuest(selectedSession) : [];
-  const selectedSubtotal = selectedSession ? getOrdersTotal(getVisibleOrders(selectedSession)) : 0;
-  const selectedWaiterFee = getWaiterFeeCents(selectedSubtotal);
-  const selectedWaiterFeeLabel =
-    waiterFeeMode === 'FIXED' ? 'Taxa do garcom (valor fixo)' : `Taxa do garcom (${waiterFeePercent}%)`;
-  const selectedTotal = selectedSubtotal + selectedWaiterFee;
-  const selectedPendingApprovals = selectedSession ? getPendingApprovals(selectedSession) : [];
   const selectedVisibleOrders = selectedSession ? getVisibleOrders(selectedSession) : [];
   const selectedOrderGroups = useMemo(
     () => groupOrdersByRoot(selectedVisibleOrders),
     [selectedVisibleOrders]
   );
+  const selectedSessionCardType = selectedSession ? getSessionCardType(selectedSession) : 'MESA';
+  const selectedSessionTypeLabel = sessionCardTypeLabel(selectedSessionCardType);
+  const selectedIsDeliveryOrPickup = selectedSession ? shouldUseDeliveredActionLabel(selectedSession) : false;
+  const selectedTotalsByGuest =
+    selectedSession && !selectedIsDeliveryOrPickup ? getTotalsByGuest(selectedSession) : [];
+  const selectedSubtotal = selectedSession ? getOrdersTotal(selectedVisibleOrders) : 0;
+  const selectedWaiterFee = selectedIsDeliveryOrPickup ? 0 : getWaiterFeeCents(selectedSubtotal);
+  const selectedWaiterFeeLabel =
+    waiterFeeMode === 'FIXED' ? 'Taxa do garcom (valor fixo)' : `Taxa do garcom (${waiterFeePercent}%)`;
+  const selectedTotal = selectedSubtotal + selectedWaiterFee;
+  const selectedPendingApprovals =
+    selectedSession && !selectedIsDeliveryOrPickup ? getPendingApprovals(selectedSession) : [];
   const selectedUnprintedCount = selectedSession ? getUnprintedOrders(selectedSession).length : 0;
-  const selectedSessionLabel = selectedSession?.table?.name || 'Mesa';
+  const selectedSessionLabel = selectedIsDeliveryOrPickup
+    ? selectedSessionTypeLabel
+    : (selectedSession?.table?.name || 'Mesa');
 
   useEffect(() => {
     if (!selectedSession) return;

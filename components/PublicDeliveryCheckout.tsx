@@ -10,7 +10,9 @@ import {
   getDeliveryCartPromotionDiscount,
   getDeliveryCartTotal,
   readDeliveryCart,
+  readDeliveryCheckoutDraft,
   readDeliveryPrompt,
+  saveDeliveryCheckoutDraft,
 } from '../services/deliverySession';
 import { StoreSettings } from '../types';
 import { useFeedback } from './feedback/FeedbackProvider';
@@ -48,24 +50,27 @@ const PublicDeliveryCheckout: React.FC<PublicDeliveryCheckoutProps> = ({ setting
   const [cart, setCart] = useState(() => readDeliveryCart());
   const [loading, setLoading] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const checkoutDraft = useMemo(() => readDeliveryCheckoutDraft(), []);
 
-  const [customerName, setCustomerName] = useState('');
-  const [customerPhone, setCustomerPhone] = useState('');
-  const [street, setStreet] = useState('');
-  const [number, setNumber] = useState('');
-  const [neighborhood, setNeighborhood] = useState('');
-  const [complement, setComplement] = useState('');
-  const [reference, setReference] = useState('');
-  const [observation, setObservation] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<DeliveryPaymentMethod>('CARD');
-  const [needsChange, setNeedsChange] = useState(false);
-  const [changeForInput, setChangeForInput] = useState('0,00');
+  const [customerName, setCustomerName] = useState(checkoutDraft.customer_name);
+  const [customerPhone, setCustomerPhone] = useState(checkoutDraft.customer_phone);
+  const [street, setStreet] = useState(checkoutDraft.street);
+  const [number, setNumber] = useState(checkoutDraft.number);
+  const [neighborhood, setNeighborhood] = useState(checkoutDraft.neighborhood);
+  const [complement, setComplement] = useState(checkoutDraft.complement);
+  const [reference, setReference] = useState(checkoutDraft.reference);
+  const [observation, setObservation] = useState(checkoutDraft.observation);
+  const [paymentMethod, setPaymentMethod] = useState<DeliveryPaymentMethod>(checkoutDraft.payment_method);
+  const [needsChange, setNeedsChange] = useState(checkoutDraft.needs_change);
+  const [changeForInput, setChangeForInput] = useState(
+    formatCentsToMaskedCurrency(checkoutDraft.cash_change_for_cents)
+  );
 
   useEffect(() => {
     const stored = readDeliveryCart();
     setCart(stored);
     if (stored.length === 0) {
-      window.history.pushState({}, '', '/entrega/menu');
+      window.history.pushState({}, '', '/menudigital/menu');
     }
   }, []);
 
@@ -79,6 +84,34 @@ const PublicDeliveryCheckout: React.FC<PublicDeliveryCheckoutProps> = ({ setting
     }
   }, [paymentMethod, hasPixKey]);
 
+  useEffect(() => {
+    saveDeliveryCheckoutDraft({
+      customer_name: customerName,
+      customer_phone: customerPhone,
+      street,
+      number,
+      neighborhood,
+      complement,
+      reference,
+      observation,
+      payment_method: paymentMethod,
+      needs_change: needsChange,
+      cash_change_for_cents: parseMaskedCurrencyToCents(changeForInput),
+    });
+  }, [
+    customerName,
+    customerPhone,
+    street,
+    number,
+    neighborhood,
+    complement,
+    reference,
+    observation,
+    paymentMethod,
+    needsChange,
+    changeForInput,
+  ]);
+
   const cartCount = getDeliveryCartCount(cart);
   const subtotal = getDeliveryCartTotal(cart);
   const promotionDiscount = getDeliveryCartPromotionDiscount(cart);
@@ -89,7 +122,7 @@ const PublicDeliveryCheckout: React.FC<PublicDeliveryCheckoutProps> = ({ setting
   const validatePayload = (): DeliveryCheckoutPayload | null => {
     if (cart.length === 0) {
       toast('Seu carrinho esta vazio.', 'info');
-      window.history.pushState({}, '', '/entrega/menu');
+      window.history.pushState({}, '', '/menudigital/menu');
       return null;
     }
 
@@ -376,7 +409,7 @@ const PublicDeliveryCheckout: React.FC<PublicDeliveryCheckoutProps> = ({ setting
         <div className="max-w-md mx-auto flex gap-2">
           <button
             type="button"
-            onClick={() => window.history.pushState({}, '', '/entrega/menu')}
+            onClick={() => window.history.pushState({}, '', '/menudigital/menu')}
             className="flex-1 py-4 rounded-xl border border-gray-200 text-[10px] font-black uppercase tracking-widest text-gray-700"
           >
             Voltar
@@ -429,4 +462,3 @@ const PublicDeliveryCheckout: React.FC<PublicDeliveryCheckoutProps> = ({ setting
 };
 
 export default PublicDeliveryCheckout;
-

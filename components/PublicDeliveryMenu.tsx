@@ -456,7 +456,7 @@ const PublicDeliveryMenu: React.FC = () => {
               </div>
               <button
                 type="button"
-                onClick={() => window.history.pushState({}, '', '/entrega/checkout')}
+                onClick={() => window.history.pushState({}, '', '/menudigital/checkout')}
                 className="w-full py-4 rounded-xl bg-primary text-white text-[11px] font-black uppercase tracking-widest"
               >
                 Pedir
@@ -566,4 +566,3 @@ const PublicDeliveryMenu: React.FC = () => {
 };
 
 export default PublicDeliveryMenu;
-

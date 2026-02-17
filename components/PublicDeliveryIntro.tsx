@@ -24,7 +24,7 @@ const PublicDeliveryIntro: React.FC = () => {
       return;
     }
     saveDeliveryPrompt(normalized);
-    window.history.pushState({}, '', '/entrega/menu');
+    window.history.pushState({}, '', '/menudigital/menu');
   };
 
   return (
@@ -95,4 +95,3 @@ const PublicDeliveryIntro: React.FC = () => {
 };
 
 export default PublicDeliveryIntro;
-
