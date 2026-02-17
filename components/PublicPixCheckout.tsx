@@ -157,6 +157,14 @@ const PublicPixCheckout: React.FC = () => {
   const [requestSuccess, setRequestSuccess] = useState(false);
 
   const planSelection = useMemo(() => parsePlanSelectionFromUrl(), []);
+  const configuredPlanValue = useMemo(() => {
+    const raw = Number((settings as any)?.plan_price);
+    return Number.isFinite(raw) && raw >= 0 ? raw : null;
+  }, [settings]);
+  const resolvedPlanValue = useMemo(
+    () => (planSelection.valor != null ? planSelection.valor : configuredPlanValue),
+    [configuredPlanValue, planSelection.valor]
+  );
   const redirectToUaitech = useMemo(() => {
     const currentPath = `${window.location.pathname || ''}${window.location.search || ''}`;
     return `/uaitech?redirect=${encodeURIComponent(currentPath)}`;
@@ -167,11 +175,11 @@ const PublicPixCheckout: React.FC = () => {
       'Ola, acabei de realizar o pagamento do plano.',
       `Plano: ${planSelection.nome}`,
       `Descricao: ${planSelection.descricao}`,
-      `Valor: ${formatCurrency(planSelection.valor)}`,
+      `Valor: ${formatCurrency(resolvedPlanValue)}`,
       'Vou enviar o comprovante por aqui para liberar o pagamento.',
     ].join('\n');
     return `https://wa.me/${uaitechPhone}?text=${encodeURIComponent(message)}`;
-  }, [planSelection.descricao, planSelection.nome, planSelection.valor]);
+  }, [planSelection.descricao, planSelection.nome, resolvedPlanValue]);
 
   useEffect(() => {
     const fetchSettings = async () => {
@@ -223,7 +231,7 @@ const PublicPixCheckout: React.FC = () => {
         chavePix: pixConfig.chavePix,
         nomeRecebedor: pixConfig.nomeRecebedor,
         cidadeRecebedor: pixConfig.cidadeRecebedor,
-        valor: planSelection.valor,
+        valor: resolvedPlanValue,
         txid: pixConfig.txid || '***',
         descricao: planSelection.descricao || pixConfig.descricao || null,
         reutilizavel: pixConfig.reutilizavel,
@@ -246,7 +254,7 @@ const PublicPixCheckout: React.FC = () => {
     pixConfig.reutilizavel,
     pixConfig.txid,
     planSelection.descricao,
-    planSelection.valor,
+    resolvedPlanValue,
   ]);
 
   useEffect(() => {
@@ -285,7 +293,7 @@ const PublicPixCheckout: React.FC = () => {
       const { data, error } = await supabase.rpc('submit_plan_payment_request', {
         p_plan_name: planSelection.nome,
         p_plan_description: planSelection.descricao,
-        p_plan_value: planSelection.valor,
+        p_plan_value: resolvedPlanValue,
         p_pix_payload: payload,
         p_requester_note: 'Pagamento enviado no checkout /checkout/plano',
       });
@@ -343,7 +351,7 @@ const PublicPixCheckout: React.FC = () => {
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
               <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Valor</p>
-              <p className="mt-1 text-base font-black text-slate-900">{formatCurrency(planSelection.valor)}</p>
+              <p className="mt-1 text-base font-black text-slate-900">{formatCurrency(resolvedPlanValue)}</p>
             </div>
             <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
               <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Recebedor</p>
