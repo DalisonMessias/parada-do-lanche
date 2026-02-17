@@ -118,6 +118,16 @@ const playLocalBeep = () => {
   }
 };
 
+type SessionClosedSummary = {
+  sessionId: string;
+  tableName: string;
+  closedAt: string | null;
+  itemsTotal: number;
+  ordersTotalCents: number;
+  waiterFeeCents: number;
+  totalFinalCents: number;
+};
+
 const App: React.FC = () => {
   const adminAccessKey = ((import.meta as any).env?.VITE_ADMIN_ACCESS_KEY || '').trim();
   const tempRegisterEnabled = ((import.meta as any).env?.VITE_ENABLE_TEMP_REGISTER || '').trim().toLowerCase() === 'true';
@@ -155,6 +165,7 @@ const App: React.FC = () => {
   const [productObservation, setProductObservation] = useState('');
   const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [sessionOrders, setSessionOrders] = useState<Order[]>([]);
+  const [sessionClosedSummary, setSessionClosedSummary] = useState<SessionClosedSummary | null>(null);
   const [tempRegisterStatus, setTempRegisterStatus] = useState('');
   const [tempRegisterRole, setTempRegisterRole] = useState<UserRole>('WAITER');
   const [adminTab, setAdminTab] = useState<AdminTab>('ACTIVE_TABLES');
@@ -237,7 +248,13 @@ const App: React.FC = () => {
     }
   }, [settings?.notification_sound_enabled, settings?.notification_sound_url, toast, view]);
 
-  const forceCloseCustomerSession = useCallback(async (sessionId: string) => {
+  const parseNonNegativeInt = useCallback((value: unknown, fallback = 0) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(0, Math.round(parsed));
+  }, []);
+
+  const forceCloseCustomerSession = useCallback(async (sessionId: string, opts?: { notify?: boolean }) => {
     if (!sessionId) return;
     if (sessionResetRef.current === sessionId) return;
     sessionResetRef.current = sessionId;
@@ -248,10 +265,87 @@ const App: React.FC = () => {
     setSession(null);
     setActiveTable(null);
     setSessionOrders([]);
+    setSessionClosedSummary(null);
     setShowCart(false);
-    await pushLocalNotification('Mesa finalizada', 'A mesa foi encerrada pelo atendimento.', `session-closed-${sessionId}`);
+    if (opts?.notify !== false) {
+      await pushLocalNotification('Mesa finalizada', 'A mesa foi encerrada pelo atendimento.', `session-closed-${sessionId}`);
+    }
     window.history.pushState({}, '', '/');
   }, [pushLocalNotification]);
+
+  const loadSessionClosedSummary = useCallback(async (sessionId: string): Promise<SessionClosedSummary | null> => {
+    if (!sessionId) return null;
+
+    const [{ data: sessionRow }, { data: finalizedEventRow }] = await Promise.all([
+      supabase
+        .from('sessions')
+        .select('id,closed_at,total_final,items_total_final,table:tables(name)')
+        .eq('id', sessionId)
+        .maybeSingle(),
+      supabase
+        .from('session_events')
+        .select('payload,created_at')
+        .eq('session_id', sessionId)
+        .eq('event_type', 'SESSION_FINALIZED')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    if (!sessionRow) return null;
+
+    const payload = (finalizedEventRow?.payload && typeof finalizedEventRow.payload === 'object')
+      ? (finalizedEventRow.payload as Record<string, unknown>)
+      : {};
+
+    const totalFinalCents = parseNonNegativeInt(payload.total_final, parseNonNegativeInt(sessionRow.total_final, 0));
+    const ordersTotalCents = parseNonNegativeInt(payload.orders_total_cents, totalFinalCents);
+    const waiterFeeCents = parseNonNegativeInt(payload.waiter_fee_cents, Math.max(totalFinalCents - ordersTotalCents, 0));
+    const itemsTotal = parseNonNegativeInt(payload.items_total_final, parseNonNegativeInt(sessionRow.items_total_final, 0));
+
+    return {
+      sessionId,
+      tableName: (sessionRow as any)?.table?.name || 'Mesa',
+      closedAt: sessionRow.closed_at || finalizedEventRow?.created_at || null,
+      itemsTotal,
+      ordersTotalCents,
+      waiterFeeCents,
+      totalFinalCents,
+    };
+  }, [parseNonNegativeInt]);
+
+  const handleCustomerSessionExpired = useCallback(async (sessionId: string) => {
+    if (!sessionId) return;
+    if (sessionResetRef.current === sessionId) return;
+
+    if (!guest?.is_host) {
+      await forceCloseCustomerSession(sessionId);
+      return;
+    }
+
+    sessionResetRef.current = sessionId;
+    const summary = await loadSessionClosedSummary(sessionId);
+    if (!summary) {
+      sessionResetRef.current = null;
+      await forceCloseCustomerSession(sessionId);
+      return;
+    }
+
+    setSessionClosedSummary(summary);
+    setShowCart(false);
+    await pushLocalNotification(
+      'Mesa finalizada',
+      'A mesa foi encerrada. Confira o resumo final para confirmar.',
+      `session-closed-${sessionId}`
+    );
+  }, [forceCloseCustomerSession, guest?.is_host, loadSessionClosedSummary, pushLocalNotification]);
+
+  const confirmSessionClosedSummary = useCallback(async () => {
+    const sessionId = sessionClosedSummary?.sessionId;
+    if (!sessionId) return;
+    sessionResetRef.current = null;
+    await forceCloseCustomerSession(sessionId, { notify: false });
+  }, [forceCloseCustomerSession, sessionClosedSummary?.sessionId]);
 
   useEffect(() => {
     fetchSettings();
@@ -617,7 +711,7 @@ const App: React.FC = () => {
         async (payload) => {
           const row = payload.new as Session;
           if (row.status === 'EXPIRED') {
-            await forceCloseCustomerSession(session.id);
+            await handleCustomerSessionExpired(session.id);
           } else {
             sessionResetRef.current = null;
             setSession(row);
@@ -629,7 +723,7 @@ const App: React.FC = () => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [forceCloseCustomerSession, session?.id]);
+  }, [handleCustomerSessionExpired, session?.id]);
 
   useEffect(() => {
     if (view !== 'CUSTOMER_MENU' || !session?.id) return;
@@ -645,7 +739,7 @@ const App: React.FC = () => {
 
       if (!active || error) return;
       if (!data || data.status === 'EXPIRED') {
-        await forceCloseCustomerSession(session.id);
+        await handleCustomerSessionExpired(session.id);
       }
     };
 
@@ -674,7 +768,7 @@ const App: React.FC = () => {
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [forceCloseCustomerSession, session?.id, view]);
+  }, [handleCustomerSessionExpired, session?.id, view]);
 
   useEffect(() => {
     if (view !== 'ADMIN_DASHBOARD' || !user?.id) return;
@@ -1180,6 +1274,18 @@ const App: React.FC = () => {
     () => myCartItems.reduce((acc, item) => acc + Math.max(0, Number(item.promo_discount_cents || 0)) * (item.qty || 0), 0),
     [myCartItems]
   );
+  const waiterFeeEnabledForCustomer = settings?.enable_waiter_fee === true;
+  const waiterFeeModeForCustomer = settings?.waiter_fee_mode === 'FIXED' ? 'FIXED' : 'PERCENT';
+  const waiterFeeRawValueForCustomer = Number(
+    settings?.waiter_fee_value ?? (waiterFeeModeForCustomer === 'PERCENT' ? 10 : 0)
+  );
+  const waiterFeePercentForCustomer = Math.min(100, Math.max(0, waiterFeeRawValueForCustomer));
+  const waiterFeeFixedCentsForCustomer = Math.max(0, waiterFeeRawValueForCustomer);
+  const estimatedMyWaiterFeeCents =
+    waiterFeeEnabledForCustomer && waiterFeeModeForCustomer === 'PERCENT'
+      ? Math.round(myCartTotal * (waiterFeePercentForCustomer / 100))
+      : 0;
+  const estimatedMyTotalWithWaiterFee = myCartTotal + estimatedMyWaiterFeeCents;
 
   const handleApprovePendingOrder = async (order: Order, approve: boolean) => {
     if (!guest?.is_host) return;
@@ -1318,7 +1424,7 @@ const App: React.FC = () => {
     setIsLoading(false);
 
     if (requiresHostApproval) {
-      toast(`Seus itens foram enviados para a ${activeTable?.name}. Aguardando aceite do responsavel.`, 'info');
+      toast(`Seus itens foram enviados para a ${activeTable?.name}. Aguardando aceite do responsavel da mesa.`, 'info');
       await pushLocalNotification('Pedido enviado', 'Aguardando aceite do responsavel da mesa.', `pending-approval-${order.id}`);
     } else {
       toast('Pedido enviado para a cozinha.', 'success');
@@ -2184,7 +2290,7 @@ const App: React.FC = () => {
               {pendingApprovalOrders.length > 0 && (
                 <section className="bg-amber-50 border border-amber-100 rounded-2xl p-4 space-y-3">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-black text-amber-800 uppercase tracking-widest">Aguardando Aceite</h3>
+                    <h3 className="text-sm font-black text-amber-800 uppercase tracking-widest">Aguardando Responsavel da Mesa</h3>
                     <span className="text-[9px] text-amber-700 font-black uppercase tracking-widest">
                       {pendingApprovalOrders.length} pedido(s)
                     </span>
@@ -2213,7 +2319,7 @@ const App: React.FC = () => {
                           </button>
                         </div>
                       ) : (
-                        <p className="text-[9px] text-amber-700 font-black uppercase tracking-widest">Aguardando responsavel</p>
+                        <p className="text-[9px] text-amber-700 font-black uppercase tracking-widest">Aguardando responsavel da mesa</p>
                       )}
                     </div>
                   ))}
@@ -2615,12 +2721,29 @@ const App: React.FC = () => {
                       <span className="text-gray-400 text-[8px] uppercase tracking-[0.3em] font-black italic">Total do Meu Pedido</span>
                       <span className="text-primary text-3xl tracking-tighter italic">{formatCurrency(myCartTotal)}</span>
                     </div>
+                    {waiterFeeEnabledForCustomer && (
+                      <div className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2.5 flex flex-col gap-1.5">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-amber-700">
+                          Taxa de garcom no fechamento
+                        </p>
+                        <p className="text-[10px] font-black text-amber-700">
+                          {waiterFeeModeForCustomer === 'PERCENT'
+                            ? `${waiterFeePercentForCustomer}% aplicado sobre o total da mesa (ON_TABLE).`
+                            : `${formatCurrency(waiterFeeFixedCentsForCustomer)} fixa por mesa (ON_TABLE).`}
+                        </p>
+                        {waiterFeeModeForCustomer === 'PERCENT' && (
+                          <p className="text-[10px] font-black text-amber-800">
+                            Estimativa do seu total com taxa: {formatCurrency(estimatedMyTotalWithWaiterFee)}
+                          </p>
+                        )}
+                      </div>
+                    )}
                     <button
                       onClick={handleSendMyCart}
                       disabled={isLoading || myCartItems.length === 0 || hasOwnPendingApproval}
                       className="w-full bg-primary text-white py-4 rounded-xl font-black text-base uppercase tracking-widest transition-transform active:scale-95 italic disabled:opacity-60"
                     >
-                      {isLoading ? 'Enviando...' : hasOwnPendingApproval ? 'Aguardando Aceite' : 'Finalizar e Enviar'}
+                      {isLoading ? 'Enviando...' : hasOwnPendingApproval ? 'Aguardando Responsavel' : 'Finalizar e Enviar'}
                     </button>
                   </div>
                 }
@@ -2730,6 +2853,57 @@ const App: React.FC = () => {
                     <p className="text-[9px] font-black uppercase tracking-widest text-gray-400 text-right">
                       {ratingComment.length}/400
                     </p>
+                  </div>
+                </div>
+              </AppModal>
+            )}
+
+            {sessionClosedSummary && (
+              <AppModal
+                open={Boolean(sessionClosedSummary)}
+                onClose={confirmSessionClosedSummary}
+                title="Resumo Final da Mesa"
+                size="sm"
+                zIndex={140}
+                footer={(
+                  <button
+                    type="button"
+                    onClick={confirmSessionClosedSummary}
+                    className="w-full py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest"
+                  >
+                    Confirmar e sair
+                  </button>
+                )}
+              >
+                <div className="space-y-3">
+                  <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
+                    <p className="text-[9px] font-black uppercase tracking-widest text-gray-500">Mesa</p>
+                    <p className="text-sm font-black text-gray-800">{sessionClosedSummary.tableName}</p>
+                    {sessionClosedSummary.closedAt && (
+                      <p className="text-[9px] text-gray-500 font-black uppercase tracking-widest mt-1">
+                        Fechada em {new Date(sessionClosedSummary.closedAt).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="rounded-xl border border-gray-100 bg-white px-3 py-2.5 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Itens</span>
+                      <span className="text-sm font-black text-gray-900">{sessionClosedSummary.itemsTotal}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Subtotal pedidos</span>
+                      <span className="text-sm font-black text-gray-900">{formatCurrency(sessionClosedSummary.ordersTotalCents)}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Taxa de garcom</span>
+                      <span className="text-sm font-black text-gray-900">{formatCurrency(sessionClosedSummary.waiterFeeCents)}</span>
+                    </div>
+                    <div className="h-px bg-gray-100" />
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-black uppercase tracking-widest text-gray-600">Total final</span>
+                      <span className="text-base font-black text-primary">{formatCurrency(sessionClosedSummary.totalFinalCents)}</span>
+                    </div>
                   </div>
                 </div>
               </AppModal>
