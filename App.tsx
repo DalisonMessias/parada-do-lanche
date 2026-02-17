@@ -29,7 +29,6 @@ const PublicDeliveryIntro = lazy(() => import('./components/PublicDeliveryIntro'
 const PublicDeliveryMenu = lazy(() => import('./components/PublicDeliveryMenu'));
 const PublicDeliveryCheckout = lazy(() => import('./components/PublicDeliveryCheckout'));
 const Maintenance = lazy(() => import('./components/Maintenance'));
-const QRScanner = lazy(() => import('./components/QRScanner'));
 
 type AdminTab =
   | 'ACTIVE_TABLES'
@@ -152,7 +151,6 @@ const App: React.FC = () => {
     count: 0,
   });
   const [pendingProduct, setPendingProduct] = useState<Product | null>(null);
-  const [showQRScanner, setShowQRScanner] = useState(false);
   const [selectedAddonIds, setSelectedAddonIds] = useState<string[]>([]);
   const [productObservation, setProductObservation] = useState('');
   const [promotions, setPromotions] = useState<Promotion[]>([]);
@@ -1524,19 +1522,6 @@ const App: React.FC = () => {
             </p>
 
             <div className="pt-4 space-y-3">
-              <button
-                onClick={() => setShowQRScanner(true)}
-                className="w-full bg-primary text-white p-5 rounded-xl font-black uppercase tracking-widest text-base shadow-[0_8px_20px_rgba(255,159,10,0.25)] transition-transform active:scale-95 flex items-center justify-center gap-3"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M3 7V5a2 2 0 0 1 2-2h2" />
-                  <path d="M17 3h2a2 2 0 0 1 2 2v2" />
-                  <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
-                  <path d="M3 17v2a2 2 0 0 0 2 2h2" />
-                  <rect x="7" y="7" width="10" height="10" rx="1" />
-                </svg>
-                Escanear QR Code com o Sistema
-              </button>
               {settings.enable_delivery_module === true && (
                 <button
                   onClick={() => window.history.pushState({}, '', '/entrega')}
@@ -1552,23 +1537,6 @@ const App: React.FC = () => {
                 </button>
               )}
             </div>
-
-            <Suspense fallback={null}>
-              {showQRScanner && (
-                <QRScanner
-                  onClose={() => setShowQRScanner(false)}
-                  onScanSuccess={(text) => {
-                    setShowQRScanner(false);
-                    // Extract token from URL if it's a full URL
-                    let token = text;
-                    if (text.includes('/m/')) {
-                      token = text.split('/m/')[1].split(/[?#]/)[0];
-                    }
-                    window.history.pushState({}, '', `/m/${token}`);
-                  }}
-                />
-              )}
-            </Suspense>
           </section>
         </div>
       </Layout>
