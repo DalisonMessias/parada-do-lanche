@@ -3,6 +3,7 @@
 alter table public.settings
   add column if not exists plan_name text not null default 'Basico',
   add column if not exists plan_price numeric not null default 19.90,
+  add column if not exists plan_next_price numeric,
   add column if not exists plan_due_day integer not null default 15,
   add column if not exists plan_current_due_date date not null default (date_trunc('month', current_date)::date + 14),
   add column if not exists plan_status text not null default 'PAID',
@@ -48,6 +49,19 @@ begin
   end if;
 end $$;
 
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'settings_plan_next_price_check'
+      and conrelid = 'public.settings'::regclass
+  ) then
+    alter table public.settings
+      add constraint settings_plan_next_price_check
+      check (plan_next_price is null or plan_next_price >= 0);
+  end if;
+end $$;
+
 insert into public.settings (id)
 values (1)
 on conflict (id) do nothing;
@@ -56,6 +70,10 @@ update public.settings
 set
   plan_name = coalesce(nullif(trim(coalesce(plan_name, '')), ''), 'Basico'),
   plan_price = greatest(coalesce(plan_price, 19.90), 0),
+  plan_next_price = case
+    when plan_next_price is null then null
+    else greatest(plan_next_price, 0)
+  end,
   plan_due_day = least(greatest(coalesce(plan_due_day, 15), 1), 28),
   plan_status = case
     when plan_status in ('PAID', 'OPEN', 'OVERDUE', 'SUSPENDED') then plan_status
@@ -134,6 +152,10 @@ begin
     id,
     coalesce(nullif(trim(coalesce(plan_name, '')), ''), 'Basico') as plan_name,
     greatest(coalesce(plan_price, 19.90), 0) as plan_price,
+    case
+      when plan_next_price is null then null
+      else greatest(plan_next_price, 0)
+    end as plan_next_price,
     least(greatest(coalesce(plan_due_day, 15), 1), 28) as plan_due_day,
     case
       when plan_status in ('PAID', 'OPEN', 'OVERDUE', 'SUSPENDED') then plan_status
@@ -213,6 +235,7 @@ begin
     'snapshot', jsonb_build_object(
       'plan_name', v_settings.plan_name,
       'plan_price', v_settings.plan_price,
+      'next_plan_price', v_settings.plan_next_price,
       'plan_due_day', v_settings.plan_due_day,
       'plan_status', v_settings.plan_status,
       'current_due_date', v_settings.plan_current_due_date,
@@ -246,6 +269,7 @@ declare
   v_due_day integer := 15;
   v_previous_status text := 'PAID';
   v_plan_price numeric := 0;
+  v_next_plan_price numeric := null;
   v_actor_username text;
   v_history_id uuid;
 begin
@@ -266,8 +290,12 @@ begin
       when plan_status in ('PAID', 'OPEN', 'OVERDUE', 'SUSPENDED') then plan_status
       else 'PAID'
     end,
-    greatest(coalesce(plan_price, 0), 0)
-    into v_current_due_date, v_due_day, v_previous_status, v_plan_price
+    greatest(coalesce(plan_price, 0), 0),
+    case
+      when plan_next_price is null then null
+      else greatest(plan_next_price, 0)
+    end
+    into v_current_due_date, v_due_day, v_previous_status, v_plan_price, v_next_plan_price
   from public.settings
   where id = v_settings_id
   for update;
@@ -286,6 +314,11 @@ begin
     plan_status = 'PAID',
     plan_paid_at = timezone('utc'::text, now()),
     plan_current_due_date = v_new_due_date,
+    plan_price = coalesce(v_next_plan_price, plan_price),
+    plan_next_price = case
+      when v_next_plan_price is null then plan_next_price
+      else null
+    end,
     updated_at = timezone('utc'::text, now())
   where id = v_settings_id;
 
@@ -307,7 +340,8 @@ begin
     v_new_due_date,
     jsonb_build_object(
       'note', nullif(trim(coalesce(p_note, '')), ''),
-      'confirmed_by', v_actor_username
+      'confirmed_by', v_actor_username,
+      'applied_next_price', v_next_plan_price
     )
   )
   returning id into v_history_id;
@@ -317,6 +351,99 @@ begin
     'message', 'Pagamento confirmado com sucesso!',
     'new_due_date', v_new_due_date,
     'history_id', v_history_id
+  );
+end;
+$$;
+
+create or replace function public.set_plan_next_price(
+  p_username text,
+  p_password text,
+  p_next_price numeric,
+  p_note text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_settings_id integer := 1;
+  v_actor_username text;
+  v_previous_due_date date;
+  v_previous_status text;
+  v_previous_next_price numeric := null;
+  v_next_price numeric := 0;
+begin
+  if not public.is_plan_access_valid(p_username, p_password) then
+    return jsonb_build_object(
+      'success', false,
+      'message', 'Usuario ou senha incorretos.'
+    );
+  end if;
+
+  if p_next_price is null or p_next_price < 0 then
+    return jsonb_build_object(
+      'success', false,
+      'message', 'Valor invalido. Informe um numero maior ou igual a zero.'
+    );
+  end if;
+
+  v_actor_username := lower(trim(coalesce(p_username, '')));
+  v_next_price := round(greatest(coalesce(p_next_price, 0), 0)::numeric, 2);
+
+  insert into public.settings (id)
+  values (v_settings_id)
+  on conflict (id) do nothing;
+
+  select
+    plan_current_due_date,
+    case
+      when plan_status in ('PAID', 'OPEN', 'OVERDUE', 'SUSPENDED') then plan_status
+      else 'PAID'
+    end,
+    case
+      when plan_next_price is null then null
+      else greatest(plan_next_price, 0)
+    end
+    into v_previous_due_date, v_previous_status, v_previous_next_price
+  from public.settings
+  where id = v_settings_id
+  for update;
+
+  update public.settings
+  set
+    plan_next_price = v_next_price,
+    updated_at = timezone('utc'::text, now())
+  where id = v_settings_id;
+
+  insert into public.plan_payment_history (
+    settings_id,
+    actor_username,
+    paid_amount,
+    previous_status,
+    previous_due_date,
+    new_due_date,
+    payload
+  )
+  values (
+    v_settings_id,
+    v_actor_username,
+    0,
+    coalesce(v_previous_status, 'PAID'),
+    v_previous_due_date,
+    coalesce(v_previous_due_date, current_date),
+    jsonb_build_object(
+      'action', 'SET_NEXT_PRICE',
+      'previous_next_price', v_previous_next_price,
+      'new_next_price', v_next_price,
+      'note', nullif(trim(coalesce(p_note, '')), '')
+    )
+  );
+
+  return jsonb_build_object(
+    'success', true,
+    'message', 'Valor do proximo mes atualizado.',
+    'next_plan_price', v_next_price
   );
 end;
 $$;
