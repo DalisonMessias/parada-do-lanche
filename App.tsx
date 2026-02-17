@@ -118,16 +118,6 @@ const playLocalBeep = () => {
   }
 };
 
-type SessionClosedSummary = {
-  sessionId: string;
-  tableName: string;
-  closedAt: string | null;
-  itemsTotal: number;
-  ordersTotalCents: number;
-  waiterFeeCents: number;
-  totalFinalCents: number;
-};
-
 const App: React.FC = () => {
   const adminAccessKey = ((import.meta as any).env?.VITE_ADMIN_ACCESS_KEY || '').trim();
   const tempRegisterEnabled = ((import.meta as any).env?.VITE_ENABLE_TEMP_REGISTER || '').trim().toLowerCase() === 'true';
@@ -165,7 +155,6 @@ const App: React.FC = () => {
   const [productObservation, setProductObservation] = useState('');
   const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [sessionOrders, setSessionOrders] = useState<Order[]>([]);
-  const [sessionClosedSummary, setSessionClosedSummary] = useState<SessionClosedSummary | null>(null);
   const [tempRegisterStatus, setTempRegisterStatus] = useState('');
   const [tempRegisterRole, setTempRegisterRole] = useState<UserRole>('WAITER');
   const [adminTab, setAdminTab] = useState<AdminTab>('ACTIVE_TABLES');
@@ -248,13 +237,7 @@ const App: React.FC = () => {
     }
   }, [settings?.notification_sound_enabled, settings?.notification_sound_url, toast, view]);
 
-  const parseNonNegativeInt = useCallback((value: unknown, fallback = 0) => {
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return fallback;
-    return Math.max(0, Math.round(parsed));
-  }, []);
-
-  const forceCloseCustomerSession = useCallback(async (sessionId: string, opts?: { notify?: boolean }) => {
+  const forceCloseCustomerSession = useCallback(async (sessionId: string) => {
     if (!sessionId) return;
     if (sessionResetRef.current === sessionId) return;
     sessionResetRef.current = sessionId;
@@ -265,87 +248,14 @@ const App: React.FC = () => {
     setSession(null);
     setActiveTable(null);
     setSessionOrders([]);
-    setSessionClosedSummary(null);
     setShowCart(false);
-    if (opts?.notify !== false) {
-      await pushLocalNotification('Mesa finalizada', 'A mesa foi encerrada pelo atendimento.', `session-closed-${sessionId}`);
-    }
+    await pushLocalNotification('Mesa finalizada', 'A mesa foi encerrada pelo atendimento.', `session-closed-${sessionId}`);
     window.history.pushState({}, '', '/');
   }, [pushLocalNotification]);
 
-  const loadSessionClosedSummary = useCallback(async (sessionId: string): Promise<SessionClosedSummary | null> => {
-    if (!sessionId) return null;
-
-    const [{ data: sessionRow }, { data: finalizedEventRow }] = await Promise.all([
-      supabase
-        .from('sessions')
-        .select('id,closed_at,total_final,items_total_final,table:tables(name)')
-        .eq('id', sessionId)
-        .maybeSingle(),
-      supabase
-        .from('session_events')
-        .select('payload,created_at')
-        .eq('session_id', sessionId)
-        .eq('event_type', 'SESSION_FINALIZED')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-    ]);
-
-    if (!sessionRow) return null;
-
-    const payload = (finalizedEventRow?.payload && typeof finalizedEventRow.payload === 'object')
-      ? (finalizedEventRow.payload as Record<string, unknown>)
-      : {};
-
-    const totalFinalCents = parseNonNegativeInt(payload.total_final, parseNonNegativeInt(sessionRow.total_final, 0));
-    const ordersTotalCents = parseNonNegativeInt(payload.orders_total_cents, totalFinalCents);
-    const waiterFeeCents = parseNonNegativeInt(payload.waiter_fee_cents, Math.max(totalFinalCents - ordersTotalCents, 0));
-    const itemsTotal = parseNonNegativeInt(payload.items_total_final, parseNonNegativeInt(sessionRow.items_total_final, 0));
-
-    return {
-      sessionId,
-      tableName: (sessionRow as any)?.table?.name || 'Mesa',
-      closedAt: sessionRow.closed_at || finalizedEventRow?.created_at || null,
-      itemsTotal,
-      ordersTotalCents,
-      waiterFeeCents,
-      totalFinalCents,
-    };
-  }, [parseNonNegativeInt]);
-
   const handleCustomerSessionExpired = useCallback(async (sessionId: string) => {
-    if (!sessionId) return;
-    if (sessionResetRef.current === sessionId) return;
-
-    if (!guest?.is_host) {
-      await forceCloseCustomerSession(sessionId);
-      return;
-    }
-
-    sessionResetRef.current = sessionId;
-    const summary = await loadSessionClosedSummary(sessionId);
-    if (!summary) {
-      sessionResetRef.current = null;
-      await forceCloseCustomerSession(sessionId);
-      return;
-    }
-
-    setSessionClosedSummary(summary);
-    setShowCart(false);
-    await pushLocalNotification(
-      'Mesa finalizada',
-      'A mesa foi encerrada. Confira o resumo final para confirmar.',
-      `session-closed-${sessionId}`
-    );
-  }, [forceCloseCustomerSession, guest?.is_host, loadSessionClosedSummary, pushLocalNotification]);
-
-  const confirmSessionClosedSummary = useCallback(async () => {
-    const sessionId = sessionClosedSummary?.sessionId;
-    if (!sessionId) return;
-    sessionResetRef.current = null;
-    await forceCloseCustomerSession(sessionId, { notify: false });
-  }, [forceCloseCustomerSession, sessionClosedSummary?.sessionId]);
+    await forceCloseCustomerSession(sessionId);
+  }, [forceCloseCustomerSession]);
 
   useEffect(() => {
     fetchSettings();
@@ -2858,56 +2768,6 @@ const App: React.FC = () => {
               </AppModal>
             )}
 
-            {sessionClosedSummary && (
-              <AppModal
-                open={Boolean(sessionClosedSummary)}
-                onClose={confirmSessionClosedSummary}
-                title="Resumo Final da Mesa"
-                size="sm"
-                zIndex={140}
-                footer={(
-                  <button
-                    type="button"
-                    onClick={confirmSessionClosedSummary}
-                    className="w-full py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest"
-                  >
-                    Confirmar e sair
-                  </button>
-                )}
-              >
-                <div className="space-y-3">
-                  <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
-                    <p className="text-[9px] font-black uppercase tracking-widest text-gray-500">Mesa</p>
-                    <p className="text-sm font-black text-gray-800">{sessionClosedSummary.tableName}</p>
-                    {sessionClosedSummary.closedAt && (
-                      <p className="text-[9px] text-gray-500 font-black uppercase tracking-widest mt-1">
-                        Fechada em {new Date(sessionClosedSummary.closedAt).toLocaleString()}
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="rounded-xl border border-gray-100 bg-white px-3 py-2.5 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Itens</span>
-                      <span className="text-sm font-black text-gray-900">{sessionClosedSummary.itemsTotal}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Subtotal pedidos</span>
-                      <span className="text-sm font-black text-gray-900">{formatCurrency(sessionClosedSummary.ordersTotalCents)}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Taxa de garcom</span>
-                      <span className="text-sm font-black text-gray-900">{formatCurrency(sessionClosedSummary.waiterFeeCents)}</span>
-                    </div>
-                    <div className="h-px bg-gray-100" />
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-black uppercase tracking-widest text-gray-600">Total final</span>
-                      <span className="text-base font-black text-primary">{formatCurrency(sessionClosedSummary.totalFinalCents)}</span>
-                    </div>
-                  </div>
-                </div>
-              </AppModal>
-            )}
           </div>
         )}
       </Layout>

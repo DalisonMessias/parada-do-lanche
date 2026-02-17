@@ -16,6 +16,16 @@ type SessionAggregate = Session & {
   orders?: (Order & { items?: OrderItem[] })[];
 };
 
+type FinalizationSummaryData = {
+  sessionId: string;
+  referenceLabel: string;
+  closedAt: string | null;
+  itemsTotal: number;
+  ordersTotalCents: number;
+  waiterFeeCents: number;
+  totalFinalCents: number;
+};
+
 interface AdminOrdersProps {
   mode: AdminOrdersMode;
   settings: StoreSettings | null;
@@ -187,6 +197,9 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
   const [splitPeople, setSplitPeople] = useState(2);
   const [showBulkCancelModal, setShowBulkCancelModal] = useState(false);
   const [bulkCancelLoading, setBulkCancelLoading] = useState(false);
+  const [finalizingSessionId, setFinalizingSessionId] = useState<string | null>(null);
+  const [finalizationSummary, setFinalizationSummary] = useState<FinalizationSummaryData | null>(null);
+  const [finalizationWhatsapp, setFinalizationWhatsapp] = useState('');
   const initializedSeenRef = useRef(false);
   const refreshTimerRef = useRef<number | null>(null);
 
@@ -430,6 +443,150 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
     return getTotalsByGuestFromOrders(getVisibleOrders(session));
   };
 
+  const parseNonNegativeInt = (value: unknown, fallback = 0) => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.max(0, Math.round(parsed));
+  };
+
+  const getConfirmedItemsCountFromOrders = (orders: (Order & { items?: OrderItem[] })[]) => {
+    return getConfirmedOrdersFrom(orders).reduce((acc, order) => {
+      return acc + (order.items || []).reduce((itemsAcc, item) => itemsAcc + Math.max(0, Number(item.qty || 0)), 0);
+    }, 0);
+  };
+
+  const getSessionReferenceLabel = (session: SessionAggregate) => {
+    return shouldUseDeliveredActionLabel(session)
+      ? sessionCardTypeLabel(getSessionCardType(session))
+      : (session.table?.name || 'Mesa');
+  };
+
+  const getSuggestedWhatsAppFromSession = (session: SessionAggregate) => {
+    const visibleOrders = [...getVisibleOrders(session)].sort(
+      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+    const orderWithPhone = visibleOrders.find((order) => (order.customer_phone || '').trim().length > 0);
+    return (orderWithPhone?.customer_phone || '').trim();
+  };
+
+  const buildFinalizationSummaryFallback = (session: SessionAggregate, closedAtIso: string): FinalizationSummaryData => {
+    const visibleOrders = getVisibleOrders(session);
+    const ordersTotalCents = getOrdersTotal(visibleOrders);
+    const onTableSubtotal = getOnTableOrdersSubtotal(visibleOrders);
+    const waiterFeeCents = getWaiterFeeCents(onTableSubtotal);
+    return {
+      sessionId: session.id,
+      referenceLabel: getSessionReferenceLabel(session),
+      closedAt: closedAtIso,
+      itemsTotal: getConfirmedItemsCountFromOrders(visibleOrders),
+      ordersTotalCents,
+      waiterFeeCents,
+      totalFinalCents: Math.max(0, ordersTotalCents + waiterFeeCents),
+    };
+  };
+
+  const resolveFinalizationSummary = async (
+    session: SessionAggregate,
+    fallbackSummary: FinalizationSummaryData
+  ): Promise<FinalizationSummaryData> => {
+    const [{ data: sessionRow }, { data: finalizedEventRow }] = await Promise.all([
+      supabase
+        .from('sessions')
+        .select('id,closed_at,total_final,items_total_final,table:tables(name)')
+        .eq('id', session.id)
+        .maybeSingle(),
+      supabase
+        .from('session_events')
+        .select('payload,created_at')
+        .eq('session_id', session.id)
+        .eq('event_type', 'SESSION_FINALIZED')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    if (!sessionRow) return fallbackSummary;
+
+    const payload = (finalizedEventRow?.payload && typeof finalizedEventRow.payload === 'object')
+      ? (finalizedEventRow.payload as Record<string, unknown>)
+      : {};
+
+    const totalFinalCents = parseNonNegativeInt(
+      payload.total_final,
+      parseNonNegativeInt(sessionRow.total_final, fallbackSummary.totalFinalCents)
+    );
+    const ordersTotalCents = parseNonNegativeInt(payload.orders_total_cents, fallbackSummary.ordersTotalCents);
+    const waiterFeeCents = parseNonNegativeInt(
+      payload.waiter_fee_cents,
+      Math.max(totalFinalCents - ordersTotalCents, fallbackSummary.waiterFeeCents)
+    );
+    const itemsTotal = parseNonNegativeInt(
+      payload.items_total_final,
+      parseNonNegativeInt(sessionRow.items_total_final, fallbackSummary.itemsTotal)
+    );
+
+    return {
+      sessionId: session.id,
+      referenceLabel:
+        shouldUseDeliveredActionLabel(session)
+          ? sessionCardTypeLabel(getSessionCardType(session))
+          : ((sessionRow as any)?.table?.name || fallbackSummary.referenceLabel),
+      closedAt: sessionRow.closed_at || finalizedEventRow?.created_at || fallbackSummary.closedAt,
+      itemsTotal,
+      ordersTotalCents,
+      waiterFeeCents,
+      totalFinalCents,
+    };
+  };
+
+  const closeFinalizationSummaryModal = () => {
+    setFinalizationSummary(null);
+    setFinalizationWhatsapp('');
+  };
+
+  const normalizeWhatsAppNumber = (rawNumber: string) => {
+    const digits = (rawNumber || '').replace(/\D/g, '');
+    if (!digits) return '';
+    if (digits.startsWith('55')) return digits;
+    if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+    return digits;
+  };
+
+  const buildWhatsAppSummaryMessage = (summary: FinalizationSummaryData) => {
+    const lines = [
+      `Resumo do fechamento - ${summary.referenceLabel}`,
+      `Itens: ${summary.itemsTotal}`,
+      `Subtotal pedidos: ${formatCurrency(summary.ordersTotalCents)}`,
+      `Taxa de garcom: ${formatCurrency(summary.waiterFeeCents)}`,
+      `Total final: ${formatCurrency(summary.totalFinalCents)}`,
+    ];
+
+    if (summary.closedAt) {
+      lines.push(`Fechado em: ${new Date(summary.closedAt).toLocaleString('pt-BR')}`);
+    }
+    return lines.join('\n');
+  };
+
+  const handleSendSummaryToWhatsApp = () => {
+    if (!finalizationSummary) return;
+    const normalized = normalizeWhatsAppNumber(finalizationWhatsapp);
+
+    if (!normalized) {
+      closeFinalizationSummaryModal();
+      return;
+    }
+
+    if (normalized.length < 12) {
+      toast('Numero de WhatsApp invalido.', 'error');
+      return;
+    }
+
+    const message = buildWhatsAppSummaryMessage(finalizationSummary);
+    const url = `https://wa.me/${normalized}?text=${encodeURIComponent(message)}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+    closeFinalizationSummaryModal();
+  };
+
   const selectedBulkCancelableOrderIds = useMemo(() => {
     if (mode !== 'ACTIVE' || !selectedSession) return [] as string[];
     const ids = new Set<string>();
@@ -557,68 +714,72 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
   };
 
   const handleFinalizeSession = async (session: SessionAggregate) => {
+    if (finalizingSessionId === session.id) return;
+    setFinalizingSessionId(session.id);
+
     const shouldUseDeliveredLabel = shouldUseDeliveredActionLabel(session);
     const referenceLabel = shouldUseDeliveredLabel
       ? `pedido de ${sessionCardTypeLabel(getSessionCardType(session)).toLowerCase()}`
       : (session.table?.name || 'mesa');
-    const ok = await confirm(
-      shouldUseDeliveredLabel
-        ? `Marcar ${referenceLabel} como entregue e encerrar ciclo?`
-        : `Marcar ${referenceLabel} como paga e encerrar ciclo?`
-    );
-    if (!ok) return;
+    const nowIso = new Date().toISOString();
+    const fallbackSummary = buildFinalizationSummaryFallback(session, nowIso);
 
-    const { error: finalizeError } = await supabase.rpc('finalize_session_with_history', {
-      p_session_id: session.id,
-    });
+    try {
+      const { error: finalizeError } = await supabase.rpc('finalize_session_with_history', {
+        p_session_id: session.id,
+      });
 
-    if (finalizeError) {
-      const nowIso = new Date().toISOString();
-
-      let { error: sessionError } = await supabase
-        .from('sessions')
-        .update({ status: 'EXPIRED', closed_at: nowIso })
-        .eq('id', session.id);
-
-      if (sessionError && /closed_at/i.test(sessionError.message || '')) {
-        const retry = await supabase
+      if (finalizeError) {
+        let { error: sessionError } = await supabase
           .from('sessions')
-          .update({ status: 'EXPIRED' })
+          .update({ status: 'EXPIRED', closed_at: nowIso })
           .eq('id', session.id);
-        sessionError = retry.error;
 
-        if (!sessionError) {
-          toast('Pagamento concluido sem campo closed_at (atualize o SQL unificado no banco).', 'info');
+        if (sessionError && /closed_at/i.test(sessionError.message || '')) {
+          const retry = await supabase
+            .from('sessions')
+            .update({ status: 'EXPIRED' })
+            .eq('id', session.id);
+          sessionError = retry.error;
+
+          if (!sessionError) {
+            toast('Pagamento concluido sem campo closed_at (atualize o SQL unificado no banco).', 'info');
+          }
         }
+
+        if (sessionError) {
+          toast(`Erro ao confirmar pagamento: ${sessionError.message}`, 'error');
+          return;
+        }
+
+        await supabase.from('tables').update({ status: 'FREE' }).eq('id', session.table_id);
+        await supabase
+          .from('orders')
+          .update({ status: 'FINISHED' })
+          .eq('session_id', session.id)
+          .eq('approval_status', 'APPROVED');
+
+        await supabase
+          .from('orders')
+          .update({ status: 'CANCELLED', approval_status: 'REJECTED' })
+          .eq('session_id', session.id)
+          .eq('approval_status', 'PENDING_APPROVAL');
       }
 
-      if (sessionError) {
-        toast(`Erro ao confirmar pagamento: ${sessionError.message}`, 'error');
-        return;
-      }
-
-      await supabase.from('tables').update({ status: 'FREE' }).eq('id', session.table_id);
-      await supabase
-        .from('orders')
-        .update({ status: 'FINISHED' })
-        .eq('session_id', session.id)
-        .eq('approval_status', 'APPROVED');
-
-      await supabase
-        .from('orders')
-        .update({ status: 'CANCELLED', approval_status: 'REJECTED' })
-        .eq('session_id', session.id)
-        .eq('approval_status', 'PENDING_APPROVAL');
+      const summary = await resolveFinalizationSummary(session, fallbackSummary);
+      setFinalizationSummary(summary);
+      setFinalizationWhatsapp(getSuggestedWhatsAppFromSession(session));
+      setSelectedSessionId(null);
+      toast(
+        shouldUseDeliveredLabel
+          ? `Fechamento concluido para ${referenceLabel}.`
+          : 'Pagamento concluido. Mesa liberada para novo ciclo.',
+        'success'
+      );
+      fetchSessions();
+    } finally {
+      setFinalizingSessionId(null);
     }
-
-    setSelectedSessionId(null);
-    toast(
-      shouldUseDeliveredLabel
-        ? 'Pedido marcado como entregue e encerrado.'
-        : 'Pagamento concluido. Mesa liberada para novo ciclo.',
-      'success'
-    );
-    fetchSessions();
   };
 
   const printSession = async (
@@ -877,9 +1038,10 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
             {mode === 'ACTIVE' && (
               <button
                 onClick={() => handleFinalizeSession(session)}
-                className="flex-1 border border-green-200 bg-green-50 text-green-700 py-3.5 rounded-xl text-[9px] font-black uppercase tracking-widest"
+                disabled={finalizingSessionId === session.id}
+                className="flex-1 border border-green-200 bg-green-50 text-green-700 py-3.5 rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {useDeliveredActionLabel ? 'Entregue' : 'Marcar Pago'}
+                {finalizingSessionId === session.id ? 'Finalizando...' : (useDeliveredActionLabel ? 'Entregue' : 'Marcar Pago')}
               </button>
             )}
           </div>
@@ -1093,9 +1255,12 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
               {mode === 'ACTIVE' && (
                 <button
                   onClick={() => handleFinalizeSession(selectedSession)}
-                  className="px-4 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest"
+                  disabled={finalizingSessionId === selectedSession.id}
+                  className="px-4 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  {(selectedSession && shouldUseDeliveredActionLabel(selectedSession)) ? 'Entregue' : 'Marcar Pago'}
+                  {finalizingSessionId === selectedSession.id
+                    ? 'Finalizando...'
+                    : ((selectedSession && shouldUseDeliveredActionLabel(selectedSession)) ? 'Entregue' : 'Marcar Pago')}
                 </button>
               )}
             </div>
