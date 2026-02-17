@@ -122,7 +122,8 @@ const App: React.FC = () => {
   const adminAccessKey = ((import.meta as any).env?.VITE_ADMIN_ACCESS_KEY || '').trim();
   const tempRegisterEnabled = ((import.meta as any).env?.VITE_ENABLE_TEMP_REGISTER || '').trim().toLowerCase() === 'true';
   const adminPath = adminAccessKey ? `/admin/${adminAccessKey}` : '/admin';
-  const planPaymentRoute = '/V7B2X-QP9MW-L4N1R-Z6K0J-H3S5D';
+  const planPaymentRoute = '/uaitech';
+  const legacyPlanPaymentRoute = '/V7B2X-QP9MW-L4N1R-Z6K0J-H3S5D';
   const [view, setView] = useState<AppView>('LANDING');
   const [publicReceiptToken, setPublicReceiptToken] = useState('');
   const [activeTable, setActiveTable] = useState<Table | null>(null);
@@ -371,7 +372,8 @@ const App: React.FC = () => {
             hashPath.startsWith('/menudigital') ||
             hashPath.startsWith('/entrega') ||
             hashPath === '/cadastro-temp' ||
-            hashPath === planPaymentRoute;
+            hashPath === planPaymentRoute ||
+            hashPath === legacyPlanPaymentRoute;
 
           if (isLegacyHashRoute) {
             window.history.replaceState({}, '', hashPath);
@@ -457,6 +459,10 @@ const App: React.FC = () => {
         } else if (path === '/cadastro-temp') {
           setPublicReceiptToken('');
           setView(tempRegisterEnabled ? 'TEMP_REGISTER' : 'LANDING');
+        } else if (path === legacyPlanPaymentRoute) {
+          window.history.replaceState({}, '', planPaymentRoute);
+          setPublicReceiptToken('');
+          setView('PUBLIC_PLAN_PAYMENT');
         } else if (path === planPaymentRoute) {
           setPublicReceiptToken('');
           setView('PUBLIC_PLAN_PAYMENT');
