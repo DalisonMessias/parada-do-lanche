@@ -9,6 +9,8 @@ type AppErrorBoundaryState = {
 };
 
 class AppErrorBoundary extends React.Component<AppErrorBoundaryProps, AppErrorBoundaryState> {
+  // explicit prop declaration to satisfy TypeScript's inference in some setups
+  props!: AppErrorBoundaryProps;
   state: AppErrorBoundaryState = {
     error: null,
   };
