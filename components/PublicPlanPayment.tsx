@@ -83,7 +83,7 @@ const getStatusUi = (status: PlanStatus) => {
   if (status === 'PAID') return { label: 'Pago', classes: 'bg-green-100 text-green-700 border-green-200' };
   if (status === 'OPEN') return { label: 'Em aberto', classes: 'bg-amber-100 text-amber-700 border-amber-200' };
   if (status === 'OVERDUE') return { label: 'Vencido', classes: 'bg-red-100 text-red-700 border-red-200' };
-  return { label: 'Suspenso', classes: 'bg-gray-100 text-gray-700 border-gray-200' };
+  return { label: 'Bloqueado', classes: 'bg-gray-100 text-gray-700 border-gray-200' };
 };
 
 const isoDateToMaskedDate = (value?: string | null) => {
@@ -139,11 +139,44 @@ const parseCurrencyInput = (raw: string) => {
   return Number(digits) / 100;
 };
 
+const PLAN_STATUS_OPTIONS: Array<{ value: PlanStatus; label: string }> = [
+  { value: 'PAID', label: 'Pago' },
+  { value: 'OPEN', label: 'Em aberto' },
+  { value: 'OVERDUE', label: 'Vencido' },
+  { value: 'SUSPENDED', label: 'Bloqueado' },
+];
+
+const getPlanStatusLabel = (status: PlanStatus) => {
+  const match = PLAN_STATUS_OPTIONS.find((opt) => opt.value === status);
+  return match?.label || status;
+};
+
+const translatePlanStatus = (value?: string | null) => {
+  if (!value) return '-';
+  const normalized = String(value).toUpperCase();
+  if (normalized === 'PAID') return 'Pago';
+  if (normalized === 'OPEN') return 'Em aberto';
+  if (normalized === 'OVERDUE') return 'Vencido';
+  if (normalized === 'SUSPENDED') return 'Bloqueado';
+  return value;
+};
+
+const datePartsFromMasked = (value: string) => {
+  const digits = value.replace(/\D/g, '').slice(0, 8);
+  return {
+    day: digits.slice(0, 2),
+    month: digits.slice(2, 4),
+    year: digits.slice(4, 8),
+  };
+};
+
 const PublicPlanPayment: React.FC = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [sessionCredentials, setSessionCredentials] = useState<{ username: string; password: string } | null>(null);
   const [loginLoading, setLoginLoading] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [refreshMessage, setRefreshMessage] = useState('');
   const [dashboard, setDashboard] = useState<PlanDashboardResponse | null>(null);
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [paymentMessage, setPaymentMessage] = useState('');
@@ -156,6 +189,16 @@ const PublicPlanPayment: React.FC = () => {
   const [nextPlanPriceInput, setNextPlanPriceInput] = useState('');
   const [nextPlanPriceLoading, setNextPlanPriceLoading] = useState(false);
   const [nextPlanPriceMessage, setNextPlanPriceMessage] = useState('');
+  const [isStatusMenuOpen, setIsStatusMenuOpen] = useState(false);
+  const [isDueDateModalOpen, setIsDueDateModalOpen] = useState(false);
+  const [dueDateDraftDay, setDueDateDraftDay] = useState('');
+  const [dueDateDraftMonth, setDueDateDraftMonth] = useState('');
+  const [dueDateDraftYear, setDueDateDraftYear] = useState('');
+
+  const primaryButtonClasses =
+    'h-12 rounded-xl bg-cyan-700 text-white text-xs font-black uppercase tracking-[0.14em] transition hover:bg-cyan-800 disabled:bg-slate-300 disabled:cursor-not-allowed';
+  const secondaryButtonClasses =
+    'h-12 rounded-xl bg-cyan-700 text-white text-xs font-black uppercase tracking-[0.14em] transition hover:bg-cyan-800 disabled:bg-slate-300 disabled:cursor-not-allowed';
 
   const isLogged = Boolean(dashboard?.success);
   const snapshot = dashboard?.snapshot || null;
@@ -174,15 +217,63 @@ const PublicPlanPayment: React.FC = () => {
     );
   }, [snapshot?.current_due_date, snapshot?.next_plan_price, snapshot?.plan_status]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsDueDateModalOpen(false);
+        setIsStatusMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!refreshMessage) return;
+    const timer = window.setTimeout(() => setRefreshMessage(''), 2800);
+    return () => window.clearTimeout(timer);
+  }, [refreshMessage]);
+
+  const openDueDateModal = () => {
+    const parts = datePartsFromMasked(managementDueDateInput);
+    setDueDateDraftDay(parts.day);
+    setDueDateDraftMonth(parts.month);
+    setDueDateDraftYear(parts.year);
+    setIsDueDateModalOpen(true);
+  };
+
+  const applyDueDateFromModal = () => {
+    const rawDay = dueDateDraftDay.replace(/\D/g, '').slice(0, 2);
+    const rawMonth = dueDateDraftMonth.replace(/\D/g, '').slice(0, 2);
+    const rawYear = dueDateDraftYear.replace(/\D/g, '').slice(0, 4);
+    const masked = maskDateInput(`${rawDay}${rawMonth}${rawYear}`);
+    const parsed = parseMaskedDateToIso(masked);
+    if (!parsed.valid) {
+      setManagementMessage('Data invalida. Use uma data valida no modal.');
+      return;
+    }
+    setManagementDueDateInput(masked);
+    setIsDueDateModalOpen(false);
+  };
+
   const canTryLogin = useMemo(
     () => username.trim().length > 0 && password.trim().length > 0 && !loginLoading,
     [username, password, loginLoading]
   );
 
-  const loadDashboard = async (nextUsername?: string, nextPassword?: string) => {
-    const resolvedUsername = (nextUsername ?? username).trim();
-    const resolvedPassword = (nextPassword ?? password).trim();
-    if (!resolvedUsername || !resolvedPassword) return;
+  const loadDashboard = async (nextUsername?: string, nextPassword?: string): Promise<boolean> => {
+    const resolvedUsername =
+      [nextUsername, username, sessionCredentials?.username]
+        .map((value) => (value || '').trim())
+        .find((value) => value.length > 0) || '';
+    const resolvedPassword =
+      [nextPassword, password, sessionCredentials?.password]
+        .map((value) => (value || '').trim())
+        .find((value) => value.length > 0) || '';
+    if (!resolvedUsername || !resolvedPassword) {
+      setLoginError('Sessao sem credenciais. Faca login novamente.');
+      return false;
+    }
 
     setLoginLoading(true);
     setLoginError('');
@@ -196,22 +287,22 @@ const PublicPlanPayment: React.FC = () => {
       });
 
       if (error) {
-        setDashboard(null);
         setLoginError(error.message || 'Falha ao carregar painel de pagamento.');
-        return;
+        return false;
       }
 
       const response = (data || {}) as PlanDashboardResponse;
       if (!response.success) {
-        setDashboard(null);
         setLoginError(response.message || 'Usuario ou senha invalidos.');
-        return;
+        return false;
       }
 
       setDashboard(response);
+      setSessionCredentials({ username: resolvedUsername, password: resolvedPassword });
+      return true;
     } catch (err: any) {
-      setDashboard(null);
       setLoginError(err?.message || 'Falha ao carregar painel de pagamento.');
+      return false;
     } finally {
       setLoginLoading(false);
     }
@@ -219,13 +310,29 @@ const PublicPlanPayment: React.FC = () => {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    await loadDashboard();
+    const updated = await loadDashboard();
+    if (!updated) return;
+    setRefreshMessage('Painel carregado com sucesso.');
+  };
+
+  const handleRefresh = async () => {
+    const updated = await loadDashboard();
+    setRefreshMessage(updated ? 'Atualizado agora.' : 'Falha ao atualizar.');
   };
 
   const handleConfirmPayment = async () => {
-    const resolvedUsername = username.trim();
-    const resolvedPassword = password.trim();
-    if (!resolvedUsername || !resolvedPassword) return;
+    const resolvedUsername =
+      [username, sessionCredentials?.username]
+        .map((value) => (value || '').trim())
+        .find((value) => value.length > 0) || '';
+    const resolvedPassword =
+      [password, sessionCredentials?.password]
+        .map((value) => (value || '').trim())
+        .find((value) => value.length > 0) || '';
+    if (!resolvedUsername || !resolvedPassword) {
+      setPaymentMessage('Sessao sem credenciais. Faca login novamente.');
+      return;
+    }
 
     setPaymentLoading(true);
     setPaymentMessage('');
@@ -258,9 +365,18 @@ const PublicPlanPayment: React.FC = () => {
   };
 
   const handleApplyManagementUpdate = async (forcedStatus?: PlanStatus) => {
-    const resolvedUsername = username.trim();
-    const resolvedPassword = password.trim();
-    if (!resolvedUsername || !resolvedPassword) return;
+    const resolvedUsername =
+      [username, sessionCredentials?.username]
+        .map((value) => (value || '').trim())
+        .find((value) => value.length > 0) || '';
+    const resolvedPassword =
+      [password, sessionCredentials?.password]
+        .map((value) => (value || '').trim())
+        .find((value) => value.length > 0) || '';
+    if (!resolvedUsername || !resolvedPassword) {
+      setManagementMessage('Sessao sem credenciais. Faca login novamente.');
+      return;
+    }
 
     const parsedDueDate = parseMaskedDateToIso(managementDueDateInput);
     if (!parsedDueDate.valid) {
@@ -302,9 +418,18 @@ const PublicPlanPayment: React.FC = () => {
   };
 
   const handleSetNextPlanPrice = async () => {
-    const resolvedUsername = username.trim();
-    const resolvedPassword = password.trim();
-    if (!resolvedUsername || !resolvedPassword) return;
+    const resolvedUsername =
+      [username, sessionCredentials?.username]
+        .map((value) => (value || '').trim())
+        .find((value) => value.length > 0) || '';
+    const resolvedPassword =
+      [password, sessionCredentials?.password]
+        .map((value) => (value || '').trim())
+        .find((value) => value.length > 0) || '';
+    if (!resolvedUsername || !resolvedPassword) {
+      setNextPlanPriceMessage('Sessao sem credenciais. Faca login novamente.');
+      return;
+    }
 
     const parsedNextPrice = parseCurrencyInput(nextPlanPriceInput);
     if (parsedNextPrice == null || !Number.isFinite(parsedNextPrice) || parsedNextPrice < 0) {
@@ -352,9 +477,9 @@ const PublicPlanPayment: React.FC = () => {
         </div>
 
         <div className="relative min-h-screen flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-[28px] border border-slate-200/70 bg-white/90 backdrop-blur-xl shadow-[0_28px_90px_rgba(15,23,42,0.18)] p-8">
+          <div className="w-full max-w-md rounded-[28px] border border-slate-200/70 bg-white/90 backdrop-blur-xl p-8">
             <div className="mb-8">
-              <div className="h-16 w-16 rounded-2xl bg-slate-900 text-white flex items-center justify-center shadow-lg">
+              <div className="h-16 w-16 rounded-2xl bg-slate-900 text-white flex items-center justify-center">
                 <Lock className="w-8 h-8" />
               </div>
               <p className="mt-5 inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.18em] text-cyan-700">
@@ -402,11 +527,7 @@ const PublicPlanPayment: React.FC = () => {
               <button
                 type="submit"
                 disabled={!canTryLogin}
-                className={`w-full py-3.5 rounded-xl font-black uppercase tracking-[0.16em] text-white transition ${
-                  !canTryLogin
-                    ? 'bg-slate-300 cursor-not-allowed'
-                    : 'bg-gradient-to-r from-slate-900 via-slate-800 to-cyan-700 hover:brightness-110 active:scale-[0.99]'
-                }`}
+                className={`w-full ${primaryButtonClasses}`}
               >
                 {loginLoading ? 'Verificando...' : 'Entrar no painel'}
               </button>
@@ -427,7 +548,7 @@ const PublicPlanPayment: React.FC = () => {
       </div>
 
       <div className="relative max-w-7xl mx-auto space-y-6">
-        <div className="rounded-[30px] border border-slate-200/80 bg-white/90 backdrop-blur-xl p-6 md:p-8 shadow-[0_28px_90px_rgba(15,23,42,0.14)] flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div className="rounded-[30px] border border-slate-200/80 bg-white/90 backdrop-blur-xl p-6 md:p-8 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <p className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.18em] text-cyan-700">
               <Sparkles className="w-4 h-4" />
@@ -439,36 +560,45 @@ const PublicPlanPayment: React.FC = () => {
           <div className="flex items-center gap-2 flex-wrap">
             <button
               type="button"
-              onClick={() => loadDashboard()}
-              className="px-4 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-700 font-black text-xs uppercase tracking-[0.14em] hover:bg-slate-50 inline-flex items-center gap-2"
+              onClick={handleRefresh}
+              disabled={loginLoading}
+              className="px-5 rounded-xl bg-cyan-700 text-white font-black text-xs uppercase tracking-[0.14em] inline-flex items-center gap-2 h-12 hover:bg-cyan-800 disabled:bg-slate-300 disabled:cursor-not-allowed"
             >
               <RefreshCcw className="w-4 h-4" />
-              Atualizar
+              {loginLoading ? 'Atualizando...' : 'Atualizar'}
             </button>
             <button
               type="button"
               onClick={() => {
                 setDashboard(null);
                 setLoginError('');
+                setRefreshMessage('');
                 setPaymentMessage('');
                 setPassword('');
+                setSessionCredentials(null);
               }}
-              className="px-4 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-700 font-black text-xs uppercase tracking-[0.14em] hover:bg-slate-50"
+              className="px-5 rounded-xl bg-cyan-700 text-white font-black text-xs uppercase tracking-[0.14em] h-12 hover:bg-cyan-800"
             >
               Sair
             </button>
           </div>
         </div>
 
+        {(refreshMessage || loginError) && (
+          <div className="rounded-xl border border-cyan-100 bg-cyan-50 p-3 text-xs font-bold text-cyan-700">
+            {refreshMessage || loginError}
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-          <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+          <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5">
             <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Status atual</p>
             <div className={`mt-3 inline-flex items-center px-3 py-1.5 rounded-full border text-xs font-black uppercase tracking-wider ${statusUi.classes}`}>
               {statusUi.label}
             </div>
           </div>
 
-          <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+          <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5">
             <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Valor do plano</p>
             <p className="mt-3 text-2xl font-black text-slate-900">{formatCurrency(Number(snapshot?.plan_price || 0))}</p>
             <p className="mt-1 text-xs font-bold text-slate-500">
@@ -476,7 +606,7 @@ const PublicPlanPayment: React.FC = () => {
             </p>
           </div>
 
-          <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+          <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5">
             <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Vencimento atual</p>
             <p className="mt-3 text-xl font-black text-slate-900 inline-flex items-center gap-2">
               <Calendar className="w-4 h-4 text-cyan-700" />
@@ -487,7 +617,7 @@ const PublicPlanPayment: React.FC = () => {
             </p>
           </div>
 
-          <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+          <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5">
             <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Ultimo pagamento</p>
             <p className="mt-3 text-sm font-black text-slate-900 inline-flex items-center gap-2">
               <Clock3 className="w-4 h-4 text-cyan-700" />
@@ -498,7 +628,7 @@ const PublicPlanPayment: React.FC = () => {
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-          <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5 xl:col-span-2 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+          <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5 xl:col-span-2">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-black uppercase tracking-[0.16em] text-slate-800">Historico de pagamentos</h2>
               <span className="text-xs font-black uppercase tracking-[0.14em] text-slate-500">{historyItems.length} registro(s)</span>
@@ -526,7 +656,7 @@ const PublicPlanPayment: React.FC = () => {
                       <tr key={item.id} className="border-t border-slate-100">
                         <td className="py-3 px-3 font-bold text-slate-700">{formatDateTime(item.confirmed_at)}</td>
                         <td className="py-3 px-3 font-black text-slate-900">{formatCurrency(Number(item.paid_amount || 0))}</td>
-                        <td className="py-3 px-3 text-slate-700">{item.previous_status || '-'}</td>
+                        <td className="py-3 px-3 text-slate-700">{translatePlanStatus(item.previous_status)}</td>
                         <td className="py-3 px-3 text-slate-700">{formatDate(item.previous_due_date)}</td>
                         <td className="py-3 px-3 text-slate-700">{formatDate(item.new_due_date)}</td>
                         <td className="py-3 px-3 text-slate-700">{item.actor_username || '-'}</td>
@@ -539,7 +669,7 @@ const PublicPlanPayment: React.FC = () => {
           </div>
 
           <div className="space-y-4">
-            <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+            <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5">
               <h2 className="text-sm font-black uppercase tracking-[0.16em] text-slate-800 mb-3">Pendencias</h2>
               {pendingItems.length === 0 ? (
                 <p className="text-sm font-bold text-green-600 inline-flex items-center gap-2">
@@ -559,7 +689,7 @@ const PublicPlanPayment: React.FC = () => {
               )}
             </div>
 
-            <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+            <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5">
               <h2 className="text-sm font-black uppercase tracking-[0.16em] text-slate-800 mb-3">A vencer</h2>
               {dueSoonItems.length === 0 ? (
                 <p className="text-sm font-bold text-slate-500">Sem vencimento critico nos proximos dias.</p>
@@ -576,7 +706,7 @@ const PublicPlanPayment: React.FC = () => {
               )}
             </div>
 
-            <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5 space-y-3 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+            <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5 space-y-3">
               <h2 className="text-sm font-black uppercase tracking-[0.16em] text-slate-800">Acao de pagamento</h2>
               <p className="text-xs font-bold text-slate-500">
                 Registre o pagamento do ciclo atual para atualizar vencimento e historico.
@@ -585,16 +715,14 @@ const PublicPlanPayment: React.FC = () => {
                 value={paymentNote}
                 onChange={(e) => setPaymentNote(e.target.value)}
                 placeholder="Observacao (opcional)"
-                className="appearance-none w-full rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5 text-sm font-semibold outline-none focus:border-cyan-400 focus:bg-white"
+                className="appearance-none resize-none w-full rounded-2xl border border-cyan-200 bg-cyan-50/40 px-4 py-3 text-sm font-semibold outline-none focus:border-cyan-500 focus:bg-white"
                 rows={3}
               />
               <button
                 type="button"
                 onClick={handleConfirmPayment}
                 disabled={paymentLoading}
-                className={`w-full py-3 rounded-xl text-xs font-black uppercase tracking-[0.14em] text-white ${
-                  paymentLoading ? 'bg-slate-400 cursor-not-allowed' : 'bg-gradient-to-r from-cyan-700 to-indigo-700 hover:brightness-110'
-                }`}
+                className={`w-full ${primaryButtonClasses}`}
               >
                 {paymentLoading ? 'Processando...' : 'Confirmar pagamento'}
               </button>
@@ -610,7 +738,7 @@ const PublicPlanPayment: React.FC = () => {
               )}
             </div>
 
-            <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5 space-y-3 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+            <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-5 space-y-3">
               <h2 className="text-sm font-black uppercase tracking-[0.16em] text-slate-800">Ajustes administrativos</h2>
               <p className="text-xs font-bold text-slate-500">
                 Altere vencimento e status manualmente. Pode bloquear a loja imediatamente, se necessario.
@@ -618,31 +746,45 @@ const PublicPlanPayment: React.FC = () => {
 
               <div className="space-y-2">
                 <label className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">Data de vencimento</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={managementDueDateInput}
-                  onChange={(e) => setManagementDueDateInput(maskDateInput(e.target.value))}
-                  maxLength={10}
-                  placeholder="DD/MM/AAAA"
-                  className="appearance-none w-full rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5 text-sm font-bold outline-none focus:border-cyan-400 focus:bg-white"
-                />
+                <button
+                  type="button"
+                  onClick={openDueDateModal}
+                  className="w-full h-12 rounded-2xl border border-cyan-200 bg-cyan-50/40 px-4 text-left text-sm font-bold text-slate-900 hover:bg-cyan-50"
+                >
+                  {managementDueDateInput || 'Selecionar data'}
+                </button>
               </div>
 
               <div className="space-y-2">
                 <label className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">Status do plano</label>
                 <div className="relative">
-                  <select
-                    value={managementStatus}
-                    onChange={(e) => setManagementStatus(e.target.value as PlanStatus)}
-                    className="appearance-none w-full rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5 pr-10 text-sm font-bold outline-none focus:border-cyan-400 focus:bg-white"
+                  <button
+                    type="button"
+                    onClick={() => setIsStatusMenuOpen((prev) => !prev)}
+                    className="w-full h-12 rounded-2xl border border-cyan-200 bg-cyan-50/40 px-4 pr-10 text-left text-sm font-bold text-slate-900 hover:bg-cyan-50"
                   >
-                    <option value="PAID">PAID (Pago)</option>
-                    <option value="OPEN">OPEN (Em aberto)</option>
-                    <option value="OVERDUE">OVERDUE (Vencido)</option>
-                    <option value="SUSPENDED">SUSPENDED (Bloqueado)</option>
-                  </select>
+                    {getPlanStatusLabel(managementStatus)}
+                  </button>
                   <ChevronDown className="w-4 h-4 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  {isStatusMenuOpen && (
+                    <div className="absolute z-20 mt-2 w-full rounded-2xl border border-cyan-200 bg-white overflow-hidden">
+                      {PLAN_STATUS_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => {
+                            setManagementStatus(opt.value);
+                            setIsStatusMenuOpen(false);
+                          }}
+                          className={`w-full h-11 px-4 text-left text-sm font-bold ${
+                            managementStatus === opt.value ? 'bg-cyan-100 text-cyan-900' : 'bg-white text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -650,7 +792,7 @@ const PublicPlanPayment: React.FC = () => {
                 value={managementNote}
                 onChange={(e) => setManagementNote(e.target.value)}
                 placeholder="Motivo/observacao (opcional)"
-                className="appearance-none w-full rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5 text-sm font-semibold outline-none focus:border-cyan-400 focus:bg-white"
+                className="appearance-none resize-none w-full rounded-2xl border border-cyan-200 bg-cyan-50/40 px-4 py-3 text-sm font-semibold outline-none focus:border-cyan-500 focus:bg-white"
                 rows={2}
               />
 
@@ -664,15 +806,13 @@ const PublicPlanPayment: React.FC = () => {
                   value={nextPlanPriceInput}
                   onChange={(e) => setNextPlanPriceInput(maskCurrencyInput(e.target.value))}
                   placeholder="R$ 0,00"
-                  className="appearance-none w-full rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2.5 text-sm font-bold outline-none focus:border-cyan-400 focus:bg-white"
+                  className="appearance-none w-full rounded-2xl border border-cyan-200 bg-cyan-50/40 px-4 py-3 text-sm font-bold outline-none focus:border-cyan-500 focus:bg-white"
                 />
                 <button
                   type="button"
                   onClick={handleSetNextPlanPrice}
                   disabled={nextPlanPriceLoading}
-                  className={`w-full py-2.5 rounded-xl text-xs font-black uppercase tracking-[0.14em] text-white ${
-                    nextPlanPriceLoading ? 'bg-slate-400 cursor-not-allowed' : 'bg-gradient-to-r from-slate-800 to-slate-700 hover:brightness-110'
-                  }`}
+                  className={`w-full ${primaryButtonClasses}`}
                 >
                   {nextPlanPriceLoading ? 'Salvando valor...' : 'Salvar valor do proximo mes'}
                 </button>
@@ -687,9 +827,7 @@ const PublicPlanPayment: React.FC = () => {
                 type="button"
                 onClick={() => handleApplyManagementUpdate()}
                 disabled={managementLoading}
-                className={`w-full py-3 rounded-xl text-xs font-black uppercase tracking-[0.14em] text-white ${
-                  managementLoading ? 'bg-slate-400 cursor-not-allowed' : 'bg-gradient-to-r from-indigo-700 to-blue-700 hover:brightness-110'
-                }`}
+                className={`w-full ${primaryButtonClasses}`}
               >
                 {managementLoading ? 'Aplicando...' : 'Aplicar ajuste'}
               </button>
@@ -699,9 +837,7 @@ const PublicPlanPayment: React.FC = () => {
                   type="button"
                   onClick={() => handleApplyManagementUpdate('SUSPENDED')}
                   disabled={managementLoading}
-                  className={`w-full py-2.5 rounded-xl text-xs font-black uppercase tracking-[0.14em] text-white ${
-                    managementLoading ? 'bg-slate-400 cursor-not-allowed' : 'bg-gradient-to-r from-red-700 to-rose-700 hover:brightness-110'
-                  }`}
+                  className={`w-full ${secondaryButtonClasses}`}
                 >
                   Bloquear imediato
                 </button>
@@ -709,9 +845,7 @@ const PublicPlanPayment: React.FC = () => {
                   type="button"
                   onClick={() => handleApplyManagementUpdate('OPEN')}
                   disabled={managementLoading}
-                  className={`w-full py-2.5 rounded-xl text-xs font-black uppercase tracking-[0.14em] text-white ${
-                    managementLoading ? 'bg-slate-400 cursor-not-allowed' : 'bg-gradient-to-r from-emerald-700 to-green-700 hover:brightness-110'
-                  }`}
+                  className={`w-full ${secondaryButtonClasses}`}
                 >
                   Desbloquear (em aberto)
                 </button>
@@ -726,7 +860,74 @@ const PublicPlanPayment: React.FC = () => {
           </div>
         </div>
 
-        <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-4 md:p-5 flex items-start gap-3 shadow-[0_12px_30px_rgba(15,23,42,0.08)]">
+        {isDueDateModalOpen && (
+          <div className="fixed inset-0 z-40 bg-slate-900/35 flex items-center justify-center p-4">
+            <div className="w-full max-w-md rounded-3xl border border-cyan-200 bg-white p-5 space-y-4">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">Data de vencimento</p>
+                <h3 className="text-xl font-black text-slate-900 mt-1">Selecionar data</h3>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">Dia</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={dueDateDraftDay}
+                    onChange={(e) => setDueDateDraftDay(e.target.value.replace(/\D/g, '').slice(0, 2))}
+                    className="w-full h-12 rounded-2xl border border-cyan-200 bg-cyan-50/40 px-3 text-center text-base font-black text-slate-900 outline-none focus:border-cyan-500 focus:bg-white"
+                    placeholder="DD"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">Mes</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={2}
+                    value={dueDateDraftMonth}
+                    onChange={(e) => setDueDateDraftMonth(e.target.value.replace(/\D/g, '').slice(0, 2))}
+                    className="w-full h-12 rounded-2xl border border-cyan-200 bg-cyan-50/40 px-3 text-center text-base font-black text-slate-900 outline-none focus:border-cyan-500 focus:bg-white"
+                    placeholder="MM"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">Ano</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={4}
+                    value={dueDateDraftYear}
+                    onChange={(e) => setDueDateDraftYear(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                    className="w-full h-12 rounded-2xl border border-cyan-200 bg-cyan-50/40 px-3 text-center text-base font-black text-slate-900 outline-none focus:border-cyan-500 focus:bg-white"
+                    placeholder="AAAA"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2">
+                <button
+                  type="button"
+                  onClick={applyDueDateFromModal}
+                  className={`w-full ${primaryButtonClasses}`}
+                >
+                  Aplicar data
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsDueDateModalOpen(false)}
+                  className={`w-full ${secondaryButtonClasses}`}
+                >
+                  Fechar modal
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="bg-white/95 rounded-2xl border border-slate-200/80 p-4 md:p-5 flex items-start gap-3">
           <CreditCard className="w-5 h-5 text-cyan-700 mt-0.5 shrink-0" />
           <div>
             <p className="text-sm font-black text-slate-800">Acesso interno Uaitech</p>
