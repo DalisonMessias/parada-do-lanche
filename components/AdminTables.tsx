@@ -104,10 +104,27 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
     const ok = await confirm('Deseja excluir esta mesa? A exclusao falha se o SQL atualizado nao foi aplicado.');
     if (!ok) return;
 
-    const { error } = await supabase.from('tables').delete().eq('id', id);
+    const { data, error } = await supabase.rpc('delete_table_safe', { p_table_id: id });
     if (error) {
-      console.error('Erro ao excluir mesa:', error);
-      toast(`Nao foi possivel excluir: ${error.message}`, 'error');
+      // Fallback para bases antigas sem a funcao RPC.
+      if (error.code === '42883') {
+        const { error: legacyError } = await supabase.from('tables').delete().eq('id', id);
+        if (legacyError) {
+          console.error('Erro ao excluir mesa:', legacyError);
+          if (legacyError.code === '23503') {
+            toast('Nao foi possivel excluir: existem sessoes vinculadas. Aplique a migration 20260217_table_safe_delete.sql.', 'error');
+          } else {
+            toast(`Nao foi possivel excluir: ${legacyError.message}`, 'error');
+          }
+          return;
+        }
+      } else {
+        console.error('Erro ao excluir mesa:', error);
+        toast(`Nao foi possivel excluir: ${error.message}`, 'error');
+        return;
+      }
+    } else if (data === false) {
+      toast('Mesa nao encontrada.', 'info');
       return;
     }
 
@@ -146,7 +163,7 @@ const AdminTables: React.FC<AdminTablesProps> = ({ settings }) => {
     pageRefs.current = pageRefs.current.slice(0, printPages.length);
   }, [printPages.length]);
 
-  const generateMenuUrl = (token: string) => `${window.location.origin}/#/m/${token}`;
+  const generateMenuUrl = (token: string) => `${window.location.origin}/m/${token}`;
   const generateWifiString = () => `WIFI:S:${wifiSsid};T:WPA;P:${wifiPass};;`;
   const getQrUrl = (data: string) => `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(data)}&margin=0`;
   const getQrFallbackUrl = (data: string) => `https://quickchart.io/qr?size=300&text=${encodeURIComponent(data)}`;

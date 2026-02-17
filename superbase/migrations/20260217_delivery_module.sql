@@ -204,7 +204,7 @@ begin
       'discount_cents', greatest(coalesce(v_order.discount_cents, 0), 0),
       'total_cents', greatest(coalesce(v_order.total_cents, 0), 0),
       'receipt_token', p_token,
-      'receipt_url', '/#/cupom/' || p_token
+      'receipt_url', '/cupom/' || p_token
     ),
     'items', v_items
   );

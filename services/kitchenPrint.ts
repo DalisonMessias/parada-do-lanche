@@ -111,11 +111,11 @@ const generateQrDataUrl = async (data: string) => {
 export const buildReceiptUrlFromToken = (token: string, origin?: string) => {
   const cleanToken = (token || '').trim();
   if (!cleanToken) return '';
-  if (origin && origin.trim()) return `${origin.replace(/\/$/, '')}/#/cupom/${cleanToken}`;
+  if (origin && origin.trim()) return `${origin.replace(/\/$/, '')}/cupom/${cleanToken}`;
   if (typeof window !== 'undefined' && window.location?.origin) {
-    return `${window.location.origin}/#/cupom/${cleanToken}`;
+    return `${window.location.origin}/cupom/${cleanToken}`;
   }
-  return `/#/cupom/${cleanToken}`;
+  return `/cupom/${cleanToken}`;
 };
 
 const resolveReceiptUrl = (ticket: KitchenPrintTicket) => {

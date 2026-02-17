@@ -187,7 +187,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
   const previewWifiPassword = settings?.wifi_password || '';
   const showWifiQr = Boolean(previewWifiSsid && previewWifiPassword);
 
-  const buildMenuUrl = () => `${window.location.origin}/#/m/preview-settings`;
+  const buildMenuUrl = () => `${window.location.origin}/m/preview-settings`;
   const buildWifiString = () => `WIFI:S:${previewWifiSsid};T:WPA;P:${previewWifiPassword};;`;
   const getQrUrl = (data: string) => `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(data)}&margin=0`;
   const getQrFallbackUrl = (data: string) => `https://quickchart.io/qr?size=300&text=${encodeURIComponent(data)}`;

@@ -352,8 +352,33 @@ const App: React.FC = () => {
   useEffect(() => {
     const handleRoute = async () => {
       try {
-        const rawPath = window.location.pathname;
-        const path = rawPath.length > 1 ? rawPath.replace(/\/+$/, '') : rawPath;
+        const normalizePath = (value: string) => {
+          const withoutQuery = (value || '').split(/[?#]/)[0] || '/';
+          return withoutQuery.length > 1 ? withoutQuery.replace(/\/+$/, '') : withoutQuery;
+        };
+
+        const rawPath = window.location.pathname || '/';
+        const rawHash = window.location.hash || '';
+        const hashPath = rawHash.startsWith('#/') ? normalizePath(rawHash.slice(1)) : '';
+        let path = normalizePath(rawPath);
+
+        // Compatibilidade com links antigos em hash (/#/m/... e /#/cupom/...).
+        if ((path === '/' || path === '') && hashPath) {
+          const isLegacyHashRoute =
+            hashPath.startsWith('/m/') ||
+            hashPath.startsWith('/cupom/') ||
+            hashPath.startsWith('/admin') ||
+            hashPath.startsWith('/menudigital') ||
+            hashPath.startsWith('/entrega') ||
+            hashPath === '/cadastro-temp' ||
+            hashPath === planPaymentRoute;
+
+          if (isLegacyHashRoute) {
+            window.history.replaceState({}, '', hashPath);
+            path = hashPath;
+          }
+        }
+
         console.log('Routing to:', path);
 
         if (path.startsWith('/cupom/')) {
@@ -388,7 +413,11 @@ const App: React.FC = () => {
           setView('DELIVERY_MENU');
         } else if (path.startsWith('/m/')) {
           setPublicReceiptToken('');
-          const token = path.split('/m/')[1];
+          const token = decodeURIComponent((path.split('/m/')[1] || '').split(/[?#]/)[0] || '').trim();
+          if (!token) {
+            setView('NOT_FOUND');
+            return;
+          }
           console.log('Table token identified:', token);
 
           const { data: table, error: tableError } = await supabase.from('tables').select('*').eq('token', token).single();

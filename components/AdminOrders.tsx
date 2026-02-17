@@ -1558,6 +1558,83 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
         </AppModal>
       )}
 
+      {finalizationSummary && (
+        <AppModal
+          open={Boolean(finalizationSummary)}
+          onClose={closeFinalizationSummaryModal}
+          size="sm"
+          zIndex={240}
+          title={(
+            <div>
+              <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">Resumo Final</h3>
+              <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest mt-2">
+                {finalizationSummary.referenceLabel}
+              </p>
+            </div>
+          )}
+          footer={(
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeFinalizationSummaryModal}
+                className="px-4 py-2.5 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest"
+              >
+                Fechar
+              </button>
+              <button
+                type="button"
+                onClick={handleSendSummaryToWhatsApp}
+                className="px-4 py-2.5 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 text-[10px] font-black uppercase tracking-widest"
+              >
+                Enviar WhatsApp
+              </button>
+            </div>
+          )}
+        >
+          <div className="space-y-4">
+            <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Itens</span>
+                <span className="text-sm font-black text-gray-900">{finalizationSummary.itemsTotal}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Subtotal pedidos</span>
+                <span className="text-sm font-black text-gray-900">{formatCurrency(finalizationSummary.ordersTotalCents)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Taxa de garcom</span>
+                <span className="text-sm font-black text-gray-900">{formatCurrency(finalizationSummary.waiterFeeCents)}</span>
+              </div>
+              <div className="h-px bg-gray-200" />
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-600">Total final</span>
+                <span className="text-base font-black text-primary">{formatCurrency(finalizationSummary.totalFinalCents)}</span>
+              </div>
+              {finalizationSummary.closedAt && (
+                <p className="text-[9px] text-gray-500 font-black uppercase tracking-widest">
+                  Fechado em {new Date(finalizationSummary.closedAt).toLocaleString('pt-BR')}
+                </p>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[9px] font-black uppercase tracking-widest text-gray-500">
+                WhatsApp do cliente (opcional)
+              </label>
+              <input
+                value={finalizationWhatsapp}
+                onChange={(e) => setFinalizationWhatsapp(e.target.value)}
+                placeholder="Ex.: 11999998888"
+                className="w-full p-3 rounded-xl border border-gray-200 font-bold"
+              />
+              <p className="text-[9px] text-gray-400 font-black uppercase tracking-widest">
+                Se deixar vazio, apenas fecha sem enviar.
+              </p>
+            </div>
+          </div>
+        </AppModal>
+      )}
+
       {showBulkCancelModal && (
         <AppModal
           open={showBulkCancelModal}
