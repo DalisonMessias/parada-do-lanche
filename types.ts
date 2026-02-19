@@ -51,6 +51,7 @@ export interface StoreSettings {
   enable_waiter_fee?: boolean;
   waiter_fee_mode?: WaiterFeeMode;
   waiter_fee_value?: number;
+  estimated_prep_time_min?: number;
   plan_name?: string;
   plan_price?: number;
   plan_due_day?: number;

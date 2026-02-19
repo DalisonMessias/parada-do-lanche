@@ -17,6 +17,7 @@ create table if not exists public.settings (
   enable_waiter_fee boolean not null default false,
   waiter_fee_mode text not null default 'PERCENT' check (waiter_fee_mode in ('PERCENT', 'FIXED')),
   waiter_fee_value integer not null default 10,
+  estimated_prep_time_min integer not null default 25,
   default_delivery_fee_cents integer not null default 0,
   pix_key_type text,
   pix_key_value text,
@@ -53,6 +54,8 @@ alter table if exists public.settings
   add column if not exists waiter_fee_mode text not null default 'PERCENT';
 alter table if exists public.settings
   add column if not exists waiter_fee_value integer not null default 10;
+alter table if exists public.settings
+  add column if not exists estimated_prep_time_min integer not null default 25;
 alter table if exists public.settings
   add column if not exists default_delivery_fee_cents integer not null default 0;
 alter table if exists public.settings
@@ -92,6 +95,7 @@ set
       then least(greatest(coalesce(waiter_fee_value, 10), 0), 100)
     else greatest(coalesce(waiter_fee_value, 0), 0)
   end,
+  estimated_prep_time_min = least(greatest(coalesce(estimated_prep_time_min, 25), 5), 180),
   pix_key_type = case
     when pix_key_type in ('cpf', 'cnpj', 'phone', 'email', 'random') then pix_key_type
     else null
@@ -170,6 +174,19 @@ begin
     alter table public.settings
       add constraint settings_notification_sound_url_check
       check (notification_sound_url is not null);
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'settings_estimated_prep_time_min_check'
+      and conrelid = 'public.settings'::regclass
+  ) then
+    alter table public.settings
+      add constraint settings_estimated_prep_time_min_check
+      check (estimated_prep_time_min between 5 and 180);
   end if;
 end $$;
 
@@ -857,6 +874,7 @@ set
       then least(greatest(coalesce(waiter_fee_value, 10), 0), 100)
     else greatest(coalesce(waiter_fee_value, 0), 0)
   end,
+  estimated_prep_time_min = least(greatest(coalesce(estimated_prep_time_min, 25), 5), 180),
   default_delivery_fee_cents = greatest(coalesce(default_delivery_fee_cents, 0), 0),
   pix_key_type = case
     when pix_key_type in ('cpf', 'cnpj', 'phone', 'email', 'random') then pix_key_type
@@ -4060,7 +4078,8 @@ end;
 $$;
 
 create or replace function public.finalize_session_with_history(
-  p_session_id uuid
+  p_session_id uuid,
+  p_optional_tip_cents integer default 0
 )
 returns void
 language plpgsql
@@ -4077,7 +4096,10 @@ declare
   v_waiter_fee_value integer := 10;
   v_on_table_subtotal integer := 0;
   v_waiter_fee_cents integer := 0;
+  v_optional_tip_cents integer := 0;
 begin
+  v_optional_tip_cents := greatest(coalesce(p_optional_tip_cents, 0), 0);
+
   select table_id into v_table_id
   from public.sessions
   where id = p_session_id
@@ -4126,7 +4148,7 @@ begin
     end if;
   end if;
 
-  v_total := greatest(v_orders_total + v_waiter_fee_cents, 0);
+  v_total := greatest(v_orders_total + v_waiter_fee_cents + v_optional_tip_cents, 0);
 
   select coalesce(sum(oi.qty), 0)
     into v_items
@@ -4166,6 +4188,7 @@ begin
     jsonb_build_object(
       'orders_total_cents', v_orders_total,
       'waiter_fee_cents', v_waiter_fee_cents,
+      'optional_tip_cents', v_optional_tip_cents,
       'total_final', v_total,
       'items_total_final', v_items
     )
@@ -4179,6 +4202,7 @@ begin
     jsonb_build_object(
       'orders_total_cents', v_orders_total,
       'waiter_fee_cents', v_waiter_fee_cents,
+      'optional_tip_cents', v_optional_tip_cents,
       'total_final', v_total,
       'items_total_final', v_items
     )

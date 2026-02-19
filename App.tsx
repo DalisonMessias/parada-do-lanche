@@ -1,6 +1,7 @@
 ﻿
 import React, { Suspense, lazy, useCallback, useMemo, useState, useEffect, useRef } from 'react';
 import { supabase, formatCurrency } from './services/supabase';
+import type { RealtimeChannel } from '@supabase/supabase-js';
 import { groupOrderItems } from './services/orderItemGrouping';
 import { AppView, Table, Session, Guest, CartItem, Category, Product, ProductAddon, StoreSettings, Profile, UserRole, Order, Promotion } from './types';
 import Layout from './components/Layout';
@@ -143,10 +144,16 @@ const App: React.FC = () => {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
   const [showCart, setShowCart] = useState(false);
+  const [removingCartItemId, setRemovingCartItemId] = useState<string | null>(null);
   const [showAddonSelector, setShowAddonSelector] = useState(false);
   const [showCalculator, setShowCalculator] = useState(false);
   const [previewImage, setPreviewImage] = useState<{ url: string; name: string } | null>(null);
   const [showRatingModal, setShowRatingModal] = useState(false);
+  const [showGuestsModal, setShowGuestsModal] = useState(false);
+  const [showSplitBillModal, setShowSplitBillModal] = useState(false);
+  const [showTableHistoryModal, setShowTableHistoryModal] = useState(false);
+  const [repeatingOrderId, setRepeatingOrderId] = useState<string | null>(null);
+  const [isCallingWaiter, setIsCallingWaiter] = useState(false);
   const [ratingStars, setRatingStars] = useState(0);
   const [ratingComment, setRatingComment] = useState('');
   const [ratingName, setRatingName] = useState('');
@@ -160,6 +167,7 @@ const App: React.FC = () => {
   const [productObservation, setProductObservation] = useState('');
   const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [sessionOrders, setSessionOrders] = useState<Order[]>([]);
+  const [sessionGuests, setSessionGuests] = useState<Guest[]>([]);
   const [tempRegisterStatus, setTempRegisterStatus] = useState('');
   const [tempRegisterRole, setTempRegisterRole] = useState<UserRole>('WAITER');
   const [adminTab, setAdminTab] = useState<AdminTab>('ACTIVE_TABLES');
@@ -180,6 +188,9 @@ const App: React.FC = () => {
   const adminAutoPrintedOrderIdsRef = useRef<Set<string>>(new Set());
   const adminAutoPrintInFlightOrderIdsRef = useRef<Set<string>>(new Set());
   const sessionResetRef = useRef<string | null>(null);
+  const waiterCallSenderChannelRef = useRef<RealtimeChannel | null>(null);
+  const waiterCallKnownIdsRef = useRef<Set<string>>(new Set());
+  const waiterCallThrottleRef = useRef<number>(0);
   const { toast, confirm } = useFeedback();
 
   useEffect(() => {
@@ -196,6 +207,15 @@ const App: React.FC = () => {
     });
     return () => {
       authListener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (waiterCallSenderChannelRef.current) {
+        supabase.removeChannel(waiterCallSenderChannelRef.current);
+        waiterCallSenderChannelRef.current = null;
+      }
     };
   }, []);
 
@@ -244,6 +264,41 @@ const App: React.FC = () => {
       // noop
     }
   }, [settings?.notification_sound_enabled, settings?.notification_sound_url, toast, view]);
+
+  const ensureWaiterCallSenderChannel = useCallback(async () => {
+    if (waiterCallSenderChannelRef.current) return waiterCallSenderChannelRef.current;
+
+    const channel = supabase.channel('waiter_calls');
+    const subscribed = await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const timeoutId = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(false);
+      }, 4000);
+
+      channel.subscribe((status) => {
+        if (settled) return;
+        if (status === 'SUBSCRIBED') {
+          settled = true;
+          window.clearTimeout(timeoutId);
+          resolve(true);
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          settled = true;
+          window.clearTimeout(timeoutId);
+          resolve(false);
+        }
+      });
+    });
+
+    if (!subscribed) {
+      supabase.removeChannel(channel);
+      return null;
+    }
+
+    waiterCallSenderChannelRef.current = channel;
+    return channel;
+  }, []);
 
   const forceCloseCustomerSession = useCallback(async (sessionId: string) => {
     if (!sessionId) return;
@@ -568,9 +623,17 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session?.id) {
+      setCart([]);
+      return;
+    }
+    if (view !== 'CUSTOMER_MENU') return;
+
+    let active = true;
+
     const fetchCart = async () => {
       const { data } = await supabase.from('cart_items').select('*, product:products(*), guest:session_guests(name)').eq('session_id', session.id);
+      if (!active || !data) return;
       if (data) {
         setCart(data.map(item => {
           let parsed: any = {};
@@ -602,11 +665,75 @@ const App: React.FC = () => {
         }));
       }
     };
-    fetchCart();
-    const channel = supabase.channel(`cart:${session.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'cart_items', filter: `session_id=eq.${session.id}` }, fetchCart)
+    const refreshCart = () => { void fetchCart(); };
+    refreshCart();
+
+    const channel = supabase
+      .channel(`cart:${session.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'cart_items', filter: `session_id=eq.${session.id}` },
+        refreshCart
+      )
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          refreshCart();
+        }
+      });
+
+    const intervalId = window.setInterval(refreshCart, 5000);
+
+    const handleFocus = () => {
+      refreshCart();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshCart();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      supabase.removeChannel(channel);
+    };
+  }, [session?.id, view]);
+
+  useEffect(() => {
+    if (!session?.id) {
+      setSessionGuests([]);
+      return;
+    }
+
+    const fetchSessionGuests = async () => {
+      const { data } = await supabase
+        .from('session_guests')
+        .select('*')
+        .eq('session_id', session.id);
+      if (data) {
+        setSessionGuests(data as Guest[]);
+      }
+    };
+
+    fetchSessionGuests();
+    const channel = supabase
+      .channel(`session_guests:${session.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'session_guests', filter: `session_id=eq.${session.id}` },
+        fetchSessionGuests
+      )
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [session?.id]);
 
   useEffect(() => {
@@ -614,20 +741,28 @@ const App: React.FC = () => {
       setSessionOrders([]);
       return;
     }
+    if (view !== 'CUSTOMER_MENU') return;
+
+    let active = true;
 
     const fetchSessionOrders = async () => {
       const { data } = await supabase
         .from('orders')
-        .select('*')
+        .select('*, items:order_items(id,name_snapshot,qty)')
         .eq('session_id', session.id)
         .order('created_at', { ascending: false });
 
+      if (!active || !data) return;
       if (data) {
         setSessionOrders(data as Order[]);
       }
     };
 
-    fetchSessionOrders();
+    const refreshSessionOrders = () => {
+      void fetchSessionOrders();
+    };
+
+    refreshSessionOrders();
 
     const channel = supabase
       .channel(`session_orders:${session.id}`)
@@ -635,9 +770,8 @@ const App: React.FC = () => {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'orders', filter: `session_id=eq.${session.id}` },
         async (payload) => {
-          fetchSessionOrders();
+          refreshSessionOrders();
           const row = (payload.new || payload.old || {}) as any;
-          const oldRow = (payload.old || {}) as any;
 
           if (payload.eventType === 'INSERT' && row.created_by_guest_id !== guest?.id) {
             await pushLocalNotification('Mesa atualizada', 'Novo pedido enviado para esta mesa.', `order-insert-${session.id}`);
@@ -646,7 +780,7 @@ const App: React.FC = () => {
           if (
             payload.eventType === 'UPDATE' &&
             row.approval_status === 'APPROVED' &&
-            oldRow.approval_status !== 'APPROVED' &&
+            row.status === 'PENDING' &&
             row.created_by_guest_id === guest?.id &&
             guest?.id
           ) {
@@ -666,12 +800,35 @@ const App: React.FC = () => {
           }
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          refreshSessionOrders();
+        }
+      });
+
+    const intervalId = window.setInterval(refreshSessionOrders, 5000);
+
+    const handleFocus = () => {
+      refreshSessionOrders();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshSessionOrders();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
+      active = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       supabase.removeChannel(channel);
     };
-  }, [session?.id, guest?.id]);
+  }, [session?.id, guest?.id, pushLocalNotification, view]);
 
   useEffect(() => {
     if (!session?.id) return;
@@ -1046,39 +1203,78 @@ const App: React.FC = () => {
     view,
   ]);
 
+  useEffect(() => {
+    if (view !== 'ADMIN_DASHBOARD' || !user?.id) return;
+
+    const channel = supabase
+      .channel(`waiter_calls_admin_${user.id}`)
+      .on('broadcast', { event: 'call_waiter' }, async ({ payload }) => {
+        const callId = String((payload as any)?.call_id || '').trim();
+        if (!callId) return;
+        if (waiterCallKnownIdsRef.current.has(callId)) return;
+        waiterCallKnownIdsRef.current.add(callId);
+
+        const tableName = String((payload as any)?.table_name || 'Mesa');
+        const guestName = String((payload as any)?.guest_name || 'Cliente');
+        await pushLocalNotification(
+          'Chamado de garcom',
+          `${tableName}: ${guestName} chamou o garcom.`,
+          `waiter-call-${callId}`
+        );
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [pushLocalNotification, user?.id, view]);
+
   const handleOpenTable = async (name: string) => {
     if (!activeTable) return;
     setIsLoading(true);
     let openSession: Session | null = session;
 
-    if (!openSession || openSession.status !== 'OPEN') {
-      const { data: sessionId, error: sessionError } = await supabase.rpc('get_or_create_open_session', { p_table_id: activeTable.id });
-      if (sessionError || !sessionId) {
+    try {
+      console.log('[DEBUG] handleOpenTable start', { tableId: activeTable.id, providedName: name, currentSession: session });
+
+      if (!openSession || openSession.status !== 'OPEN') {
+        const { data: sessionId, error: sessionError } = await supabase.rpc('get_or_create_open_session', { p_table_id: activeTable.id });
+        console.log('[DEBUG] rpc get_or_create_open_session result', { sessionId, sessionError });
+        if (sessionError || !sessionId) {
+          setIsLoading(false);
+          toast(sessionError?.message || 'Nao foi possivel abrir a mesa.', 'error');
+          return;
+        }
+
+        const { data: loadedSession, error: loadedSessionError } = await supabase.from('sessions').select('*').eq('id', sessionId).maybeSingle();
+        if (loadedSessionError) console.error('Error loading session after RPC:', loadedSessionError);
+        openSession = (loadedSession as Session) || null;
+      }
+
+      if (!openSession) {
         setIsLoading(false);
-        toast(sessionError?.message || 'Nao foi possivel abrir a mesa.', 'error');
+        toast('Nao foi possivel iniciar a sessao da mesa.', 'error');
         return;
       }
 
-      const { data: loadedSession } = await supabase.from('sessions').select('*').eq('id', sessionId).maybeSingle();
-      openSession = (loadedSession as Session) || null;
-    }
+      const isFirstGuest = !openSession.host_guest_id;
+      const { data: newGuest, error: guestError } = await supabase
+        .from('session_guests')
+        .insert({ session_id: openSession.id, name, is_host: isFirstGuest })
+        .select()
+        .single();
 
-    if (!openSession) {
-      setIsLoading(false);
-      toast('Nao foi possivel iniciar a sessao da mesa.', 'error');
-      return;
-    }
+      console.log('[DEBUG] newGuest insert result', { newGuest, guestError });
 
-    const isFirstGuest = !openSession.host_guest_id;
-    const { data: newGuest } = await supabase
-      .from('session_guests')
-      .insert({ session_id: openSession.id, name, is_host: isFirstGuest })
-      .select()
-      .single();
+      if (guestError || !newGuest) {
+        setIsLoading(false);
+        toast(guestError?.message || 'Nao foi possivel criar o convidado da sessao.', 'error');
+        return;
+      }
 
-    if (newGuest) {
       if (isFirstGuest) {
-        await supabase.from('sessions').update({ host_guest_id: newGuest.id }).eq('id', openSession.id);
+        const { error: updateError } = await supabase.from('sessions').update({ host_guest_id: newGuest.id }).eq('id', openSession.id);
+        if (updateError) console.error('Error updating session.host_guest_id:', updateError);
       }
 
       const { data: refreshedSession } = await supabase.from('sessions').select('*').eq('id', openSession.id).maybeSingle();
@@ -1089,10 +1285,66 @@ const App: React.FC = () => {
       }
       sessionResetRef.current = null;
       setGuest(newGuest);
+      setSessionGuests((prev) => (prev.some((row) => row.id === newGuest.id) ? prev : [...prev, newGuest as Guest]));
       localStorage.setItem(`guest_${openSession.id}`, JSON.stringify(newGuest));
+    } catch (err) {
+      console.error('Unhandled error in handleOpenTable:', err);
+      toast('Erro inesperado ao abrir a mesa. Veja o console para mais detalhes.', 'error');
+    } finally {
+      setIsLoading(false);
+      console.log('[DEBUG] handleOpenTable end');
+    }
+  };
+
+  const handleCallWaiter = async () => {
+    if (!activeTable || !session || !guest) return;
+    const now = Date.now();
+    if (now - waiterCallThrottleRef.current < 45_000) {
+      toast('Aguarde alguns segundos antes de chamar novamente.', 'info');
+      return;
     }
 
-    setIsLoading(false);
+    setIsCallingWaiter(true);
+    try {
+      const channel = await ensureWaiterCallSenderChannel();
+      if (!channel) {
+        toast('Nao foi possivel conectar para chamar o garcom.', 'error');
+        return;
+      }
+
+      const callId =
+        (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(16).slice(2)}`) || '';
+
+      const payload = {
+        call_id: callId,
+        table_id: activeTable.id,
+        table_name: activeTable.name || 'Mesa',
+        session_id: session.id,
+        guest_id: guest.id,
+        guest_name: guest.name || 'Cliente',
+        created_at: new Date().toISOString(),
+      };
+
+      const sendStatus = await channel.send({
+        type: 'broadcast',
+        event: 'call_waiter',
+        payload,
+      });
+
+      if (sendStatus !== 'ok') {
+        toast('Falha ao chamar garcom. Tente novamente.', 'error');
+        return;
+      }
+
+      waiterCallThrottleRef.current = now;
+      toast('Garcom chamado com sucesso.', 'success');
+    } catch (error: any) {
+      toast(error?.message || 'Falha ao chamar garcom.', 'error');
+    } finally {
+      setIsCallingWaiter(false);
+    }
   };
 
   const handleUpdateCart = async (productId: string, delta: number) => {
@@ -1229,6 +1481,87 @@ const App: React.FC = () => {
     [sessionOrders]
   );
 
+  const summaryOrders = useMemo(
+    () =>
+      sessionOrders.filter(
+        (order) => order.approval_status !== 'REJECTED' && order.status !== 'CANCELLED'
+      ),
+    [sessionOrders]
+  );
+
+  const summaryOrdersCount = useMemo(() => summaryOrders.length, [summaryOrders]);
+
+  const summaryTableTotalCents = useMemo(
+    () => summaryOrders.reduce((acc, order) => acc + Number(order.total_cents || 0), 0),
+    [summaryOrders]
+  );
+
+  const sortedSessionGuests = useMemo(() => {
+    return [...sessionGuests].sort((a, b) => {
+      if (a.is_host === b.is_host) {
+        return (a.name || '').localeCompare(b.name || '', 'pt-BR');
+      }
+      return a.is_host ? -1 : 1;
+    });
+  }, [sessionGuests]);
+
+  const summaryPeopleCount = useMemo(
+    () => (sortedSessionGuests.length > 0 ? sortedSessionGuests.length : (guest ? 1 : 0)),
+    [sortedSessionGuests, guest]
+  );
+
+  const guestNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    sortedSessionGuests.forEach((sessionGuest) => {
+      map.set(sessionGuest.id, sessionGuest.name || 'Sem nome');
+    });
+    if (guest?.id && !map.has(guest.id)) {
+      map.set(guest.id, guest.name || 'Sem nome');
+    }
+    return map;
+  }, [sortedSessionGuests, guest?.id, guest?.name]);
+
+  const tableHistoryOrders = useMemo(
+    () =>
+      summaryOrders
+        .slice()
+        .sort(
+          (a, b) =>
+            new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime()
+        ),
+    [summaryOrders]
+  );
+
+  const latestOwnOrder = useMemo(
+    () => tableHistoryOrders.find((order) => order.created_by_guest_id === guest?.id) || null,
+    [tableHistoryOrders, guest?.id]
+  );
+
+  const splitPerPersonCents = useMemo(() => {
+    if (summaryPeopleCount <= 0) return 0;
+    return Math.round(summaryTableTotalCents / summaryPeopleCount);
+  }, [summaryPeopleCount, summaryTableTotalCents]);
+
+  const splitByGuestRows = useMemo(() => {
+    const totals = new Map<string, number>();
+
+    tableHistoryOrders.forEach((order) => {
+      const key = order.created_by_guest_id || '__unidentified__';
+      totals.set(key, (totals.get(key) || 0) + Number(order.total_cents || 0));
+    });
+
+    return Array.from(totals.entries())
+      .map(([guestId, total]) => ({
+        guestId,
+        total,
+        name:
+          guestId === '__unidentified__'
+            ? 'Sem identificacao'
+            : guestNameById.get(guestId) || 'Participante',
+      }))
+      .sort((a, b) => b.total - a.total);
+  }, [tableHistoryOrders, guestNameById]);
+
   const hasOwnPendingApproval = useMemo(
     () =>
       sessionOrders.some(
@@ -1247,6 +1580,7 @@ const App: React.FC = () => {
     () => myCartItems.reduce((acc, item) => acc + Math.max(0, Number(item.promo_discount_cents || 0)) * (item.qty || 0), 0),
     [myCartItems]
   );
+  const estimatedPrepTimeMin = Math.min(180, Math.max(5, Number(settings?.estimated_prep_time_min ?? 25)));
   const waiterFeeEnabledForCustomer = settings?.enable_waiter_fee === true;
   const waiterFeeModeForCustomer = settings?.waiter_fee_mode === 'FIXED' ? 'FIXED' : 'PERCENT';
   const waiterFeeRawValueForCustomer = Number(
@@ -1290,6 +1624,126 @@ const App: React.FC = () => {
     }
 
     toast(approve ? 'Pedido aceito e enviado para preparo.' : 'Pedido rejeitado.', approve ? 'success' : 'info');
+  };
+
+  const handleRemoveMyCartItem = async (itemId: string) => {
+    if (!session || !guest) return;
+    if (removingCartItemId) return;
+    setRemovingCartItemId(itemId);
+
+    const { error } = await supabase
+      .from('cart_items')
+      .delete()
+      .eq('id', itemId)
+      .eq('session_id', session.id)
+      .eq('guest_id', guest.id);
+
+    if (error) {
+      toast(`Erro ao remover item: ${error.message}`, 'error');
+      setRemovingCartItemId((prev) => (prev === itemId ? null : prev));
+      return;
+    }
+
+    setCart((prev) => prev.filter((item) => item.id !== itemId));
+    setRemovingCartItemId((prev) => (prev === itemId ? null : prev));
+  };
+
+  const handleRepeatOrder = async (orderId: string) => {
+    if (!session || !guest) return;
+    if (hasOwnPendingApproval) {
+      toast('Aguarde o aceite do seu pedido atual antes de repetir outro.', 'info');
+      return;
+    }
+    if (repeatingOrderId) return;
+
+    setRepeatingOrderId(orderId);
+
+    try {
+      const { data: items, error: itemsError } = await supabase
+        .from('order_items')
+        .select('product_id, qty')
+        .eq('order_id', orderId);
+
+      if (itemsError) {
+        toast(`Erro ao carregar itens do pedido: ${itemsError.message}`, 'error');
+        return;
+      }
+
+      const quantityByProduct = new Map<string, number>();
+      (items || []).forEach((item: { product_id?: string | null; qty?: number | null }) => {
+        const productId = String(item.product_id || '').trim();
+        if (!productId) return;
+        const qty = Math.max(1, Number(item.qty || 1));
+        quantityByProduct.set(productId, (quantityByProduct.get(productId) || 0) + qty);
+      });
+
+      if (quantityByProduct.size === 0) {
+        toast('Esse pedido nao possui itens para repetir.', 'info');
+        return;
+      }
+
+      const availableProductIds = new Set(tableMenuProducts.map((product) => product.id));
+      let addedUnits = 0;
+
+      for (const [productId, qty] of quantityByProduct.entries()) {
+        if (!availableProductIds.has(productId)) continue;
+
+        const existingSimpleItem = cart.find(
+          (item) =>
+            item.session_id === session.id &&
+            item.guest_id === guest.id &&
+            item.product_id === productId &&
+            !String(item.note || '').trim()
+        );
+
+        if (existingSimpleItem) {
+          const { error: updateError } = await supabase
+            .from('cart_items')
+            .update({ qty: existingSimpleItem.qty + qty })
+            .eq('id', existingSimpleItem.id);
+
+          if (updateError) {
+            toast(`Erro ao repetir pedido: ${updateError.message}`, 'error');
+            return;
+          }
+        } else {
+          const { error: insertError } = await supabase.from('cart_items').insert({
+            session_id: session.id,
+            guest_id: guest.id,
+            product_id: productId,
+            qty,
+            note: null,
+          });
+
+          if (insertError) {
+            toast(`Erro ao repetir pedido: ${insertError.message}`, 'error');
+            return;
+          }
+        }
+
+        addedUnits += qty;
+      }
+
+      if (addedUnits === 0) {
+        toast('Itens desse pedido nao estao disponiveis no cardapio atual.', 'info');
+        return;
+      }
+
+      toast('Pedido repetido no carrinho. Adicionais e observacoes devem ser ajustados manualmente.', 'success');
+      setShowCart(true);
+    } catch (error: any) {
+      toast(error?.message || 'Erro inesperado ao repetir pedido.', 'error');
+    } finally {
+      setRepeatingOrderId((prev) => (prev === orderId ? null : prev));
+    }
+  };
+
+  const handleRepeatLastOrder = async () => {
+    if (!latestOwnOrder) {
+      toast('Voce ainda nao tem pedidos para repetir.', 'info');
+      return;
+    }
+    await handleRepeatOrder(latestOwnOrder.id);
   };
 
   const handleSendMyCart = async () => {
@@ -1917,11 +2371,10 @@ const App: React.FC = () => {
       );
     }
 
-    if (view === 'ADMIN_DASHBOARD') {
-      const role = profile?.role || 'WAITER';
-      const isWaiter = role === 'WAITER';
-      const canAccessCounter = settings?.enable_counter_module !== false;
-      const allowedTabs = getAllowedAdminTabs(role, canAccessCounter);
+    const role = profile?.role || 'WAITER';
+    const isWaiter = role === 'WAITER';
+    const canAccessCounter = settings?.enable_counter_module !== false;
+    const allowedTabs = getAllowedAdminTabs(role, canAccessCounter);
 
       const openTab = (tab: AdminTab) => {
         if (!allowedTabs.includes(tab)) return;
@@ -2053,7 +2506,7 @@ const App: React.FC = () => {
       );
 
 
-      return (
+    return (
         <Layout
           isAdmin
           settings={settings}
@@ -2121,8 +2574,8 @@ const App: React.FC = () => {
           </div>
           <CalculatorModal open={showCalculator} onClose={() => setShowCalculator(false)} title="Calculadora" />
         </Layout>
-      );
-    }
+    );
+  }
 
     // NOT_FOUND View
     if (view === 'NOT_FOUND') {
@@ -2190,10 +2643,26 @@ const App: React.FC = () => {
     return (
       <Layout
         settings={settings}
+        wide
         title={activeTable?.name}
         actions={
           guest && (
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleCallWaiter}
+                disabled={isCallingWaiter}
+                className="p-2 rounded-lg border border-gray-200 bg-white text-gray-600 disabled:opacity-60 disabled:cursor-not-allowed"
+                aria-label="Chamar garcom"
+                title="Chamar garcom"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 12h16" />
+                  <path d="M5 12a7 7 0 0 1 14 0v4H5z" />
+                  <path d="M9 18v2" />
+                  <path d="M15 18v2" />
+                </svg>
+              </button>
               <button
                 type="button"
                 onClick={() => setShowRatingModal(true)}
@@ -2205,7 +2674,7 @@ const App: React.FC = () => {
                   <path d="m12 2 3.09 6.26L22 9.27l-5 4.88 1.18 6.88L12 17.77 5.82 21l1.18-6.88-5-4.88 6.91-1.01z" />
                 </svg>
               </button>
-              <div className="px-2.5 py-1 rounded-lg border border-gray-200 bg-white text-right leading-tight min-w-[74px]">
+              <div className="px-2.5 py-1 rounded-lg border border-gray-200 bg-white text-right leading-tight w-full">
                 <p className="text-[9px] font-black text-amber-500">
                   {ratingSummary.count > 0 ? ratingSummary.average.toFixed(1).replace('.', ',') : '--'} ★
                 </p>
@@ -2213,7 +2682,7 @@ const App: React.FC = () => {
                   {ratingSummary.count} aval.
                 </p>
               </div>
-              <span className="bg-gray-50 text-gray-500 border border-gray-200 px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-widest max-w-[82px] truncate">
+              <span className="bg-gray-50 text-gray-500 border border-gray-200 px-2.5 py-1.5 rounded-lg text-[8px] font-black uppercase tracking-widest w-full truncate">
                 {(guest.name || '').split(' ')[0] || guest.name}
               </span>
             </div>
@@ -2234,8 +2703,8 @@ const App: React.FC = () => {
               const n = (e.currentTarget.elements.namedItem('un') as HTMLInputElement).value;
               handleOpenTable(n);
             }} className="w-full space-y-5">
-              <input name="un" type="text" placeholder="Seu Nome" required className="w-full p-4.5 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary text-center font-black text-lg placeholder:text-gray-200" />
-              <button className="w-full bg-primary text-white p-5 rounded-xl font-black uppercase tracking-widest text-base transition-transform active:scale-95">Abrir Cardapio</button>
+              <input name="un" type="text" placeholder="Seu Nome" required className="w-full p-4 h-11 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black text-lg placeholder:text-gray-200" />
+              <button className="w-full bg-primary text-white p-4 rounded-xl font-black uppercase tracking-widest text-base transition-transform active:scale-95">Abrir Cardapio</button>
             </form>
           </div>
         ) : (
@@ -2278,6 +2747,63 @@ const App: React.FC = () => {
             </div>
 
             <div className="p-4 space-y-8">
+              <section className="bg-white border border-gray-100 rounded-2xl p-4 space-y-3">
+                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest">Resumo da Mesa</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 col-span-2">
+                    <p className="text-[8px] text-primary font-black uppercase tracking-widest">Tempo estimado</p>
+                    <p className="text-base text-primary font-black tracking-tight">{estimatedPrepTimeMin} min</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowGuestsModal(true)}
+                    disabled={summaryPeopleCount === 0}
+                    className="text-left rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest">Pessoas</p>
+                    <p className="text-base text-gray-900 font-black tracking-tight">{summaryPeopleCount}</p>
+                  </button>
+                  <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
+                    <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest">Pedidos</p>
+                    <p className="text-base text-gray-900 font-black tracking-tight">{summaryOrdersCount}</p>
+                  </div>
+                  <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
+                    <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest">Total da mesa</p>
+                    <p className="text-base text-gray-900 font-black tracking-tight">{formatCurrency(summaryTableTotalCents)}</p>
+                  </div>
+                  <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
+                    <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest">Meu carrinho</p>
+                    <p className="text-base text-gray-900 font-black tracking-tight">{formatCurrency(myCartTotal)}</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowSplitBillModal(true)}
+                    disabled={summaryOrdersCount === 0 || summaryPeopleCount === 0}
+                    className="w-full py-2.5 rounded-xl border border-gray-200 bg-white text-[8px] font-black uppercase tracking-widest text-gray-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    Dividir conta por pessoa
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRepeatLastOrder}
+                    disabled={!latestOwnOrder || hasOwnPendingApproval || repeatingOrderId !== null}
+                    className="w-full py-2.5 rounded-xl border border-gray-200 bg-white text-[8px] font-black uppercase tracking-widest text-gray-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {repeatingOrderId && latestOwnOrder?.id === repeatingOrderId ? 'Repetindo...' : 'Repetir pedido'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowTableHistoryModal(true)}
+                    disabled={tableHistoryOrders.length === 0}
+                    className="w-full py-2.5 rounded-xl border border-gray-200 bg-white text-[8px] font-black uppercase tracking-widest text-gray-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    Historico da mesa
+                  </button>
+                </div>
+              </section>
+
               {pendingApprovalOrders.length > 0 && (
                 <section className="bg-amber-50 border border-amber-100 rounded-2xl p-4 space-y-3">
                   <div className="flex items-center justify-between">
@@ -2286,39 +2812,57 @@ const App: React.FC = () => {
                       {pendingApprovalOrders.length} pedido(s)
                     </span>
                   </div>
-                  {pendingApprovalOrders.map((order) => (
-                    <div key={order.id} className="bg-white border border-amber-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <p className="font-black text-gray-800">Pedido #{order.id.slice(0, 6)}</p>
-                        <p className="text-[9px] text-gray-500 font-black uppercase tracking-widest mt-1">
-                          {new Date(order.created_at).toLocaleTimeString()} | {formatCurrency(order.total_cents)}
-                        </p>
-                      </div>
-                      {guest.is_host ? (
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => handleApprovePendingOrder(order, true)}
-                            className="px-3 py-2 rounded-lg bg-green-600 text-white text-[9px] font-black uppercase tracking-widest"
-                          >
-                            Aceitar
-                          </button>
-                          <button
-                            onClick={() => handleApprovePendingOrder(order, false)}
-                            className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600 text-[9px] font-black uppercase tracking-widest"
-                          >
-                            Rejeitar
-                          </button>
+                  {pendingApprovalOrders.map((order) => {
+                    const requesterName = order.created_by_guest_id
+                      ? guestNameById.get(order.created_by_guest_id) || 'Participante'
+                      : order.customer_name || 'Sem identificacao';
+                    const orderItems = Array.isArray(order.items) ? order.items : [];
+                    const previewItems = orderItems.slice(0, 3);
+                    const remainingItems = Math.max(0, orderItems.length - previewItems.length);
+
+                    return (
+                      <div key={order.id} className="bg-white border border-amber-200 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2">
+                        <div className="min-w-0 space-y-1">
+                          <p className="font-black text-gray-800">Pedido #{order.id.slice(0, 6)}</p>
+                          <p className="text-[9px] text-gray-500 font-black uppercase tracking-widest">
+                            {new Date(order.created_at).toLocaleTimeString()} | {formatCurrency(order.total_cents)}
+                          </p>
+                          <p className="text-[8px] text-red-600 font-black uppercase tracking-widest">
+                            Quem pediu: {requesterName}
+                          </p>
+                          {previewItems.length > 0 && (
+                            <p className="text-[8px] text-gray-600 font-black tracking-wide">
+                              Itens: {previewItems.map((item) => `${item.qty}x ${item.name_snapshot}`).join(' | ')}
+                              {remainingItems > 0 ? ` | +${remainingItems} item(ns)` : ''}
+                            </p>
+                          )}
                         </div>
-                      ) : (
-                        <p className="text-[9px] text-amber-700 font-black uppercase tracking-widest">Aguardando responsavel da mesa</p>
-                      )}
-                    </div>
-                  ))}
+                        {guest.is_host ? (
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleApprovePendingOrder(order, true)}
+                              className="px-3 py-2 rounded-lg bg-green-600 text-white text-[9px] font-black uppercase tracking-widest"
+                            >
+                              Aceitar
+                            </button>
+                            <button
+                              onClick={() => handleApprovePendingOrder(order, false)}
+                              className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600 text-[9px] font-black uppercase tracking-widest"
+                            >
+                              Rejeitar
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="text-[9px] text-amber-700 font-black uppercase tracking-widest">Aguardando responsavel da mesa</p>
+                        )}
+                      </div>
+                    );
+                  })}
                 </section>
               )}
 
               {hasOwnPendingApproval && (
-                <section className="bg-amber-50 border border-amber-100 rounded-2xl p-4">
+                <section className="bg-amber-50 mb-4 border border-amber-100 rounded-2xl p-4">
                   <p className="text-[10px] text-amber-700 font-black uppercase tracking-widest">
                     Pedido pendente de aceite. Aguarde para editar ou enviar novamente.
                   </p>
@@ -2688,6 +3232,152 @@ const App: React.FC = () => {
               </AppModal>
             )}
 
+            {showGuestsModal && (
+              <AppModal
+                open={showGuestsModal}
+                onClose={() => setShowGuestsModal(false)}
+                title="Pessoas na Mesa"
+                size="sm"
+                zIndex={96}
+                footer={
+                  <button
+                    type="button"
+                    onClick={() => setShowGuestsModal(false)}
+                    className="w-full py-3 rounded-xl border border-gray-200 text-[10px] font-black uppercase tracking-widest text-gray-700"
+                  >
+                    Fechar
+                  </button>
+                }
+              >
+                <div className="space-y-2">
+                  {sortedSessionGuests.length === 0 ? (
+                    <p className="text-sm text-gray-500 font-bold">Ninguem identificado na mesa ainda.</p>
+                  ) : (
+                    sortedSessionGuests.map((sessionGuest) => (
+                      <div key={sessionGuest.id} className="flex items-center justify-between rounded-xl border border-gray-100 bg-gray-50 px-3 py-2.5">
+                        <p className="font-black text-sm text-gray-900 truncate">{sessionGuest.name || 'Sem nome'}</p>
+                        {sessionGuest.is_host && (
+                          <span className="text-[8px] font-black uppercase tracking-widest text-primary">Responsavel</span>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </AppModal>
+            )}
+
+            {showSplitBillModal && (
+              <AppModal
+                open={showSplitBillModal}
+                onClose={() => setShowSplitBillModal(false)}
+                title="Dividir Conta por Pessoa"
+                size="sm"
+                zIndex={97}
+                footer={
+                  <button
+                    type="button"
+                    onClick={() => setShowSplitBillModal(false)}
+                    className="w-full py-3 rounded-xl border border-gray-200 text-[10px] font-black uppercase tracking-widest text-gray-700"
+                  >
+                    Fechar
+                  </button>
+                }
+              >
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
+                      <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest">Total da mesa</p>
+                      <p className="text-sm text-gray-900 font-black tracking-tight">{formatCurrency(summaryTableTotalCents)}</p>
+                    </div>
+                    <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-2">
+                      <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest">Pessoas</p>
+                      <p className="text-sm text-gray-900 font-black tracking-tight">{summaryPeopleCount}</p>
+                    </div>
+                    <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 col-span-2">
+                      <p className="text-[8px] text-primary font-black uppercase tracking-widest">Divisao igual</p>
+                      <p className="text-base text-primary font-black tracking-tight">{formatCurrency(splitPerPersonCents)} por pessoa</p>
+                    </div>
+                  </div>
+
+                  {splitByGuestRows.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest">Consumo por pessoa</p>
+                      {splitByGuestRows.map((row) => (
+                        <div key={row.guestId} className="rounded-xl border border-gray-100 bg-white px-3 py-2 flex items-center justify-between gap-2">
+                          <p className="text-sm font-black text-gray-900 truncate">{row.name}</p>
+                          <p className="text-sm font-black text-gray-900">{formatCurrency(row.total)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </AppModal>
+            )}
+
+            {showTableHistoryModal && (
+              <AppModal
+                open={showTableHistoryModal}
+                onClose={() => setShowTableHistoryModal(false)}
+                title="Historico da Mesa"
+                size="lg"
+                zIndex={98}
+                footer={
+                  <button
+                    type="button"
+                    onClick={() => setShowTableHistoryModal(false)}
+                    className="w-full py-3 rounded-xl border border-gray-200 text-[10px] font-black uppercase tracking-widest text-gray-700"
+                  >
+                    Fechar
+                  </button>
+                }
+              >
+                <div className="space-y-2 max-h-[62vh] overflow-y-auto pr-1">
+                  {tableHistoryOrders.length === 0 ? (
+                    <p className="text-sm text-gray-500 font-bold">Nenhum pedido registrado na mesa ainda.</p>
+                  ) : (
+                    tableHistoryOrders.map((order) => (
+                      <div key={order.id} className="rounded-xl border border-gray-100 bg-white px-3 py-3 space-y-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-black text-gray-900 truncate">Pedido #{order.id.slice(0, 6)}</p>
+                            <p className="text-[8px] text-gray-400 font-black uppercase tracking-widest mt-1">
+                              {new Date(order.created_at).toLocaleString('pt-BR', {
+                                day: '2-digit',
+                                month: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </p>
+                          </div>
+                          <p className="text-base font-black text-gray-900 tracking-tight shrink-0">
+                            {formatCurrency(order.total_cents)}
+                          </p>
+                        </div>
+                        <p className="text-[8px] text-gray-500 font-black uppercase tracking-widest">
+                          Por {order.created_by_guest_id ? guestNameById.get(order.created_by_guest_id) || 'Participante' : 'Sem identificacao'}
+                        </p>
+                        {!!String(order.general_note || '').trim() && (
+                          <p className="text-[8px] text-gray-500 font-black tracking-wide">
+                            Obs: {order.general_note}
+                          </p>
+                        )}
+                        {order.created_by_guest_id === guest?.id && (
+                          <button
+                            type="button"
+                            onClick={() => handleRepeatOrder(order.id)}
+                            disabled={repeatingOrderId !== null || hasOwnPendingApproval}
+                            className="w-full py-2.5 rounded-xl border border-gray-200 bg-gray-50 text-[8px] font-black uppercase tracking-widest text-gray-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {repeatingOrderId === order.id ? 'Repetindo...' : 'Repetir esse pedido'}
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </AppModal>
+            )}
+
             {showCart && (
               <AppModal
                 open={showCart}
@@ -2702,6 +3392,10 @@ const App: React.FC = () => {
                 zIndex={100}
                 footer={
                   <div className="pt-1 flex flex-col gap-4">
+                    <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-2.5 flex items-center justify-between">
+                      <span className="text-[8px] font-black uppercase tracking-widest text-primary">Tempo estimado</span>
+                      <span className="text-sm font-black text-primary">{estimatedPrepTimeMin} min</span>
+                    </div>
                     {myCartPromotionDiscount > 0 && (
                       <div className="flex justify-between items-baseline font-black">
                         <span className="text-gray-400 text-[8px] uppercase tracking-[0.3em] font-black italic">Descontos de Promocao</span>
@@ -2766,7 +3460,19 @@ const App: React.FC = () => {
                           )}
                         </div>
                       </div>
-                      <span className="font-black text-gray-900 text-base tracking-tighter italic">{formatCurrency(getCartItemUnitPrice(item) * item.qty)}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="font-black text-gray-900 text-base tracking-tighter italic">{formatCurrency(getCartItemUnitPrice(item) * item.qty)}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveMyCartItem(item.id)}
+                          disabled={removingCartItemId !== null || isLoading}
+                          className="w-7 h-7 rounded-full border border-red-200 bg-red-50 text-red-600 text-xs font-black leading-none hover:bg-red-100 disabled:opacity-50"
+                          aria-label={`Remover ${item.product?.name || 'item'} do carrinho`}
+                          title="Remover item"
+                        >
+                          X
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -2854,6 +3560,5 @@ const App: React.FC = () => {
       </Layout>
     );
   };
-}
 
 export default App;

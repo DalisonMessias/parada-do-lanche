@@ -34,6 +34,11 @@ const clampPercent = (value: number) => {
   return Math.min(100, Math.max(0, Math.round(value)));
 };
 
+const clampEstimatedPrepTime = (value: number) => {
+  if (!Number.isFinite(value)) return 25;
+  return Math.min(180, Math.max(5, Math.round(value)));
+};
+
 const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profile }) => {
   const { toast } = useFeedback();
   const [loading, setLoading] = useState(false);
@@ -52,6 +57,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
     enable_waiter_fee: false,
     waiter_fee_mode: 'PERCENT' as WaiterFeeMode,
     waiter_fee_value: 10,
+    estimated_prep_time_min: 25,
     default_delivery_fee_cents: 0,
     pix_key_type: 'cpf' as PixKeyType,
     pix_key_value: '',
@@ -76,6 +82,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
       );
       const normalizedWaiterFeeValue =
         waiterFeeMode === 'PERCENT' ? clampPercent(rawWaiterFeeValue) : Math.max(0, rawWaiterFeeValue);
+      const estimatedPrepTime = clampEstimatedPrepTime(Number(settings.estimated_prep_time_min ?? 25));
       const pixType: PixKeyType = (settings.pix_key_type || 'cpf') as PixKeyType;
       const pixValueMasked = maskPixInput(pixType, settings.pix_key_value || '');
 
@@ -89,6 +96,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
         enable_waiter_fee: settings.enable_waiter_fee === true,
         waiter_fee_mode: waiterFeeMode,
         waiter_fee_value: normalizedWaiterFeeValue,
+        estimated_prep_time_min: estimatedPrepTime,
         default_delivery_fee_cents: defaultDeliveryFeeCents,
         pix_key_type: pixType,
         pix_key_value: pixValueMasked,
@@ -159,6 +167,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
       formData.waiter_fee_mode === 'PERCENT'
         ? clampPercent(waiterFeePercentValue)
         : parseMaskedCurrencyToCents(waiterFeeFixedMasked);
+    const estimatedPrepTime = clampEstimatedPrepTime(formData.estimated_prep_time_min);
     const hasThermalPrinter = formData.has_thermal_printer === true;
     const autoPrintEnabled = hasThermalPrinter && formData.auto_print_menu_digital === true;
     const payload = {
@@ -171,6 +180,7 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
       notification_sound_url: soundUrl,
       waiter_fee_mode: formData.waiter_fee_mode,
       waiter_fee_value: waiterFeeValue,
+      estimated_prep_time_min: estimatedPrepTime,
       updated_at: new Date().toISOString(),
     };
     const { error } = await supabase.from('settings').upsert(payload);
@@ -392,6 +402,24 @@ const AdminSettings: React.FC<AdminSettingsProps> = ({ settings, onUpdate, profi
                   </div>
                 </div>
               )}
+            </div>
+
+            <div className="space-y-2 md:col-span-2">
+              <label className="text-[9px] font-black text-gray-400 uppercase tracking-widest ml-1">Tempo estimado de preparo (min)</label>
+              <input
+                type="number"
+                min={5}
+                max={180}
+                step={1}
+                value={formData.estimated_prep_time_min}
+                onChange={(e) => {
+                  const next = clampEstimatedPrepTime(Number(e.target.value || 25));
+                  setFormData((prev) => ({ ...prev, estimated_prep_time_min: next }));
+                }}
+                className="w-full p-4 bg-white border border-gray-200 rounded-xl outline-none focus:border-primary font-black"
+                placeholder="25"
+              />
+              <p className="text-[10px] text-gray-500 font-bold">Mostrado ao cliente como previsao media para pedidos da mesa.</p>
             </div>
 
             <div className="space-y-2 md:col-span-2">

@@ -23,6 +23,7 @@ type FinalizationSummaryData = {
   itemsTotal: number;
   ordersTotalCents: number;
   waiterFeeCents: number;
+  optionalTipCents: number;
   totalFinalCents: number;
 };
 
@@ -58,6 +59,21 @@ const getTodayInputDate = () => {
   const day = String(now.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 };
+
+const brlFormatter = new Intl.NumberFormat('pt-BR', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const parseMaskedCurrencyToCents = (value: string) => {
+  const digits = (value || '').replace(/\D/g, '');
+  if (!digits) return 0;
+  const cents = Number(digits);
+  return Number.isFinite(cents) ? Math.max(0, cents) : 0;
+};
+
+const formatCentsToMaskedCurrency = (cents: number) =>
+  `R$ ${brlFormatter.format(Math.max(0, Number(cents || 0)) / 100)}`;
 
 const orderStatusClass: Record<OrderStatus, string> = {
   PENDING: 'bg-amber-50 text-amber-600 border-amber-100',
@@ -197,6 +213,8 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
   const [splitPeople, setSplitPeople] = useState(2);
   const [showBulkCancelModal, setShowBulkCancelModal] = useState(false);
   const [bulkCancelLoading, setBulkCancelLoading] = useState(false);
+  const [finalizeTargetSessionId, setFinalizeTargetSessionId] = useState<string | null>(null);
+  const [finalizeOptionalTipMasked, setFinalizeOptionalTipMasked] = useState('R$ 0,00');
   const [finalizingSessionId, setFinalizingSessionId] = useState<string | null>(null);
   const [finalizationSummary, setFinalizationSummary] = useState<FinalizationSummaryData | null>(null);
   const [finalizationWhatsapp, setFinalizationWhatsapp] = useState('');
@@ -469,11 +487,16 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
     return (orderWithPhone?.customer_phone || '').trim();
   };
 
-  const buildFinalizationSummaryFallback = (session: SessionAggregate, closedAtIso: string): FinalizationSummaryData => {
+  const buildFinalizationSummaryFallback = (
+    session: SessionAggregate,
+    closedAtIso: string,
+    optionalTipCents = 0
+  ): FinalizationSummaryData => {
     const visibleOrders = getVisibleOrders(session);
     const ordersTotalCents = getOrdersTotal(visibleOrders);
     const onTableSubtotal = getOnTableOrdersSubtotal(visibleOrders);
     const waiterFeeCents = getWaiterFeeCents(onTableSubtotal);
+    const safeOptionalTipCents = Math.max(0, Number(optionalTipCents || 0));
     return {
       sessionId: session.id,
       referenceLabel: getSessionReferenceLabel(session),
@@ -481,7 +504,8 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
       itemsTotal: getConfirmedItemsCountFromOrders(visibleOrders),
       ordersTotalCents,
       waiterFeeCents,
-      totalFinalCents: Math.max(0, ordersTotalCents + waiterFeeCents),
+      optionalTipCents: safeOptionalTipCents,
+      totalFinalCents: Math.max(0, ordersTotalCents + waiterFeeCents + safeOptionalTipCents),
     };
   };
 
@@ -520,6 +544,11 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
       payload.waiter_fee_cents,
       Math.max(totalFinalCents - ordersTotalCents, fallbackSummary.waiterFeeCents)
     );
+    const optionalTipCents = parseNonNegativeInt(
+      payload.optional_tip_cents,
+      fallbackSummary.optionalTipCents
+    );
+    const totalWithOptionalTip = Math.max(0, ordersTotalCents + waiterFeeCents + optionalTipCents);
     const itemsTotal = parseNonNegativeInt(
       payload.items_total_final,
       parseNonNegativeInt(sessionRow.items_total_final, fallbackSummary.itemsTotal)
@@ -535,13 +564,26 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
       itemsTotal,
       ordersTotalCents,
       waiterFeeCents,
-      totalFinalCents,
+      optionalTipCents,
+      totalFinalCents: Math.max(totalFinalCents, totalWithOptionalTip),
     };
   };
 
   const closeFinalizationSummaryModal = () => {
     setFinalizationSummary(null);
     setFinalizationWhatsapp('');
+  };
+
+  const openFinalizeSessionModal = (session: SessionAggregate) => {
+    if (finalizingSessionId === session.id) return;
+    setFinalizeTargetSessionId(session.id);
+    setFinalizeOptionalTipMasked('R$ 0,00');
+  };
+
+  const closeFinalizeSessionModal = () => {
+    if (finalizingSessionId && finalizingSessionId === finalizeTargetSessionId) return;
+    setFinalizeTargetSessionId(null);
+    setFinalizeOptionalTipMasked('R$ 0,00');
   };
 
   const normalizeWhatsAppNumber = (rawNumber: string) => {
@@ -558,6 +600,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
       `Itens: ${summary.itemsTotal}`,
       `Subtotal pedidos: ${formatCurrency(summary.ordersTotalCents)}`,
       `Taxa de garcom: ${formatCurrency(summary.waiterFeeCents)}`,
+      `Gorjeta opcional: ${formatCurrency(summary.optionalTipCents)}`,
       `Total final: ${formatCurrency(summary.totalFinalCents)}`,
     ];
 
@@ -713,7 +756,51 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
     fetchSessions();
   };
 
-  const handleFinalizeSession = async (session: SessionAggregate) => {
+  const applyOptionalTipForLegacyFinalization = async (sessionId: string, optionalTipCents: number) => {
+    if (optionalTipCents <= 0) return;
+
+    const { data: sessionRow } = await supabase
+      .from('sessions')
+      .select('id,total_final')
+      .eq('id', sessionId)
+      .maybeSingle();
+
+    const currentTotal = parseNonNegativeInt((sessionRow as any)?.total_final, 0);
+    const totalWithTip = currentTotal + optionalTipCents;
+
+    await supabase
+      .from('sessions')
+      .update({ total_final: totalWithTip })
+      .eq('id', sessionId);
+
+    const { data: finalizedEventRow } = await supabase
+      .from('session_events')
+      .select('id,payload')
+      .eq('session_id', sessionId)
+      .eq('event_type', 'SESSION_FINALIZED')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!finalizedEventRow?.id) return;
+
+    const payload = (finalizedEventRow.payload && typeof finalizedEventRow.payload === 'object')
+      ? (finalizedEventRow.payload as Record<string, unknown>)
+      : {};
+
+    const nextPayload = {
+      ...payload,
+      optional_tip_cents: optionalTipCents,
+      total_final: totalWithTip,
+    };
+
+    await supabase
+      .from('session_events')
+      .update({ payload: nextPayload })
+      .eq('id', finalizedEventRow.id);
+  };
+
+  const handleFinalizeSession = async (session: SessionAggregate, optionalTipCents = 0) => {
     if (finalizingSessionId === session.id) return;
     setFinalizingSessionId(session.id);
 
@@ -722,17 +809,34 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
       ? `pedido de ${sessionCardTypeLabel(getSessionCardType(session)).toLowerCase()}`
       : (session.table?.name || 'mesa');
     const nowIso = new Date().toISOString();
-    const fallbackSummary = buildFinalizationSummaryFallback(session, nowIso);
+    const safeOptionalTipCents = Math.max(0, Number(optionalTipCents || 0));
+    const fallbackSummary = buildFinalizationSummaryFallback(session, nowIso, safeOptionalTipCents);
 
     try {
-      const { error: finalizeError } = await supabase.rpc('finalize_session_with_history', {
+      let { error: finalizeError } = await supabase.rpc('finalize_session_with_history', {
         p_session_id: session.id,
+        p_optional_tip_cents: safeOptionalTipCents,
       });
+
+      if (finalizeError && /p_optional_tip_cents|function .*does not exist|invalid input syntax/i.test(finalizeError.message || '')) {
+        const legacy = await supabase.rpc('finalize_session_with_history', {
+          p_session_id: session.id,
+        });
+        finalizeError = legacy.error;
+
+        if (!finalizeError) {
+          await applyOptionalTipForLegacyFinalization(session.id, safeOptionalTipCents);
+        }
+      }
 
       if (finalizeError) {
         let { error: sessionError } = await supabase
           .from('sessions')
-          .update({ status: 'EXPIRED', closed_at: nowIso })
+          .update({
+            status: 'EXPIRED',
+            closed_at: nowIso,
+            total_final: fallbackSummary.totalFinalCents,
+          })
           .eq('id', session.id);
 
         if (sessionError && /closed_at/i.test(sessionError.message || '')) {
@@ -764,11 +868,27 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
           .update({ status: 'CANCELLED', approval_status: 'REJECTED' })
           .eq('session_id', session.id)
           .eq('approval_status', 'PENDING_APPROVAL');
+
+        await supabase
+          .from('session_events')
+          .insert({
+            session_id: session.id,
+            table_id: session.table_id,
+            event_type: 'SESSION_FINALIZED',
+            payload: {
+              orders_total_cents: fallbackSummary.ordersTotalCents,
+              waiter_fee_cents: fallbackSummary.waiterFeeCents,
+              optional_tip_cents: fallbackSummary.optionalTipCents,
+              total_final: fallbackSummary.totalFinalCents,
+              items_total_final: fallbackSummary.itemsTotal,
+            },
+          });
       }
 
       const summary = await resolveFinalizationSummary(session, fallbackSummary);
       setFinalizationSummary(summary);
       setFinalizationWhatsapp(getSuggestedWhatsAppFromSession(session));
+      closeFinalizeSessionModal();
       setSelectedSessionId(null);
       toast(
         shouldUseDeliveredLabel
@@ -1037,7 +1157,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
             )}
             {mode === 'ACTIVE' && (
               <button
-                onClick={() => handleFinalizeSession(session)}
+                onClick={() => openFinalizeSessionModal(session)}
                 disabled={finalizingSessionId === session.id}
                 className="flex-1 border border-green-200 bg-green-50 text-green-700 py-3.5 rounded-xl text-[9px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
               >
@@ -1095,6 +1215,23 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
   const bulkCancelQuestionText = isBulkCancelAction
     ? 'Tem certeza que deseja cancelar todos os pedidos ativos desta sessao?'
     : 'Tem certeza que deseja cancelar este pedido?';
+  const finalizeTargetSession = useMemo(
+    () => filteredSessions.find((session) => session.id === finalizeTargetSessionId) || null,
+    [filteredSessions, finalizeTargetSessionId]
+  );
+  const finalizeTipCents = useMemo(
+    () => parseMaskedCurrencyToCents(finalizeOptionalTipMasked),
+    [finalizeOptionalTipMasked]
+  );
+  const finalizeTargetVisibleOrders = finalizeTargetSession ? getVisibleOrders(finalizeTargetSession) : [];
+  const finalizeTargetReferenceLabel = finalizeTargetSession ? getSessionReferenceLabel(finalizeTargetSession) : 'Mesa';
+  const finalizeTargetOrdersSubtotal = finalizeTargetSession ? getOrdersTotal(finalizeTargetVisibleOrders) : 0;
+  const finalizeTargetOnTableSubtotal = finalizeTargetSession ? getOnTableOrdersSubtotal(finalizeTargetVisibleOrders) : 0;
+  const finalizeTargetWaiterFee = finalizeTargetSession ? getWaiterFeeCents(finalizeTargetOnTableSubtotal) : 0;
+  const finalizeTargetIsDeliveryOrPickup = finalizeTargetSession
+    ? (shouldUseDeliveredActionLabel(finalizeTargetSession) || isDeliveryLikeCardType(getSessionCardType(finalizeTargetSession)))
+    : false;
+  const finalizeTargetTotalPreview = Math.max(0, finalizeTargetOrdersSubtotal + finalizeTargetWaiterFee + finalizeTipCents);
 
   useEffect(() => {
     if (!selectedSession) return;
@@ -1254,7 +1391,7 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
               )}
               {mode === 'ACTIVE' && (
                 <button
-                  onClick={() => handleFinalizeSession(selectedSession)}
+                  onClick={() => openFinalizeSessionModal(selectedSession)}
                   disabled={finalizingSessionId === selectedSession.id}
                   className="px-4 py-3 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -1558,6 +1695,84 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
         </AppModal>
       )}
 
+      {finalizeTargetSession && (
+        <AppModal
+          open={Boolean(finalizeTargetSession)}
+          onClose={closeFinalizeSessionModal}
+          size="sm"
+          zIndex={220}
+          title={(
+            <div>
+              <h3 className="text-xl font-black uppercase tracking-tighter text-gray-900">Confirmar Fechamento</h3>
+              <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest mt-2">
+                {finalizeTargetReferenceLabel}
+              </p>
+            </div>
+          )}
+          footer={(
+            <div className="flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeFinalizeSessionModal}
+                disabled={finalizingSessionId === finalizeTargetSession.id}
+                className="px-4 py-2.5 rounded-xl border border-gray-200 text-gray-700 text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Voltar
+              </button>
+              <button
+                type="button"
+                onClick={() => handleFinalizeSession(finalizeTargetSession, finalizeTargetIsDeliveryOrPickup ? 0 : finalizeTipCents)}
+                disabled={finalizingSessionId === finalizeTargetSession.id}
+                className="px-4 py-2.5 rounded-xl bg-gray-900 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {finalizingSessionId === finalizeTargetSession.id ? 'Finalizando...' : 'Confirmar e Finalizar'}
+              </button>
+            </div>
+          )}
+        >
+          <div className="space-y-4">
+            <div className="rounded-xl border border-gray-100 bg-gray-50 px-3 py-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Subtotal pedidos</span>
+                <span className="text-sm font-black text-gray-900">{formatCurrency(finalizeTargetOrdersSubtotal)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Taxa de garcom</span>
+                <span className="text-sm font-black text-gray-900">{formatCurrency(finalizeTargetWaiterFee)}</span>
+              </div>
+              {!finalizeTargetIsDeliveryOrPickup && (
+                <div className="space-y-2 pt-1">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-gray-500">Gorjeta opcional (valor)</label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={finalizeOptionalTipMasked}
+                    onChange={(e) => {
+                      const cents = parseMaskedCurrencyToCents(e.target.value);
+                      setFinalizeOptionalTipMasked(formatCentsToMaskedCurrency(cents));
+                    }}
+                    className="w-full p-3 rounded-xl border border-gray-200 font-black"
+                    placeholder="R$ 0,00"
+                  />
+                </div>
+              )}
+              {finalizeTargetIsDeliveryOrPickup && (
+                <p className="text-[9px] text-gray-500 font-black uppercase tracking-widest">
+                  Gorjeta opcional aplicada apenas no fechamento de mesa.
+                </p>
+              )}
+              <div className="h-px bg-gray-200" />
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-600">Total final</span>
+                <span className="text-base font-black text-primary">
+                  {formatCurrency(finalizeTargetIsDeliveryOrPickup ? (finalizeTargetOrdersSubtotal + finalizeTargetWaiterFee) : finalizeTargetTotalPreview)}
+                </span>
+              </div>
+            </div>
+          </div>
+        </AppModal>
+      )}
+
       {finalizationSummary && (
         <AppModal
           open={Boolean(finalizationSummary)}
@@ -1604,6 +1819,10 @@ const AdminOrders: React.FC<AdminOrdersProps> = ({ mode, settings, profile }) =>
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Taxa de garcom</span>
                 <span className="text-sm font-black text-gray-900">{formatCurrency(finalizationSummary.waiterFeeCents)}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase tracking-widest text-gray-500">Gorjeta opcional</span>
+                <span className="text-sm font-black text-gray-900">{formatCurrency(finalizationSummary.optionalTipCents)}</span>
               </div>
               <div className="h-px bg-gray-200" />
               <div className="flex items-center justify-between">

@@ -4,7 +4,8 @@
 -- - never apply to delivery/pickup orders
 
 create or replace function public.finalize_session_with_history(
-  p_session_id uuid
+  p_session_id uuid,
+  p_optional_tip_cents integer default 0
 )
 returns void
 language plpgsql
@@ -21,7 +22,10 @@ declare
   v_waiter_fee_value integer := 10;
   v_on_table_subtotal integer := 0;
   v_waiter_fee_cents integer := 0;
+  v_optional_tip_cents integer := 0;
 begin
+  v_optional_tip_cents := greatest(coalesce(p_optional_tip_cents, 0), 0);
+
   select table_id into v_table_id
   from public.sessions
   where id = p_session_id
@@ -70,7 +74,7 @@ begin
     end if;
   end if;
 
-  v_total := greatest(v_orders_total + v_waiter_fee_cents, 0);
+  v_total := greatest(v_orders_total + v_waiter_fee_cents + v_optional_tip_cents, 0);
 
   select coalesce(sum(oi.qty), 0)
     into v_items
@@ -110,6 +114,7 @@ begin
     jsonb_build_object(
       'orders_total_cents', v_orders_total,
       'waiter_fee_cents', v_waiter_fee_cents,
+      'optional_tip_cents', v_optional_tip_cents,
       'total_final', v_total,
       'items_total_final', v_items
     )
@@ -123,6 +128,7 @@ begin
     jsonb_build_object(
       'orders_total_cents', v_orders_total,
       'waiter_fee_cents', v_waiter_fee_cents,
+      'optional_tip_cents', v_optional_tip_cents,
       'total_final', v_total,
       'items_total_final', v_items
     )
